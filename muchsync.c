@@ -13,6 +13,28 @@
 
 #define DBVERS "muchsync 0"
 
+int
+dbexec (sqlite3 *db, int (*callback)(void*,int,char**,char**), void *arg,
+	const char *fmt, ...)
+{
+  va_list ap;
+  va_start (ap, fmt);
+  char *query = sqlite3_vmprintf (fmt, ap);
+  va_end (ap);
+
+  char *errmsg;
+  int err = sqlite3_exec (db, query, callback, arg, &errmsg);
+  if (err) {
+    const char *dbpath = sqlite3_db_filename (db, "main");
+    fprintf (stderr, "%s:\n  In query: %s\n  Error: %s\n",
+	     dbpath ? dbpath : "sqlite3 database", query, errmsg);
+    sqlite3_free (errmsg);
+  }
+
+  sqlite3_free (query);
+  return err;
+}
+
 char *
 getconfig (void *ctx, sqlite3 *db, const char *key)
 {
