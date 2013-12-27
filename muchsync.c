@@ -91,6 +91,7 @@ getconfig_int (sqlite3 *db, const char *key, i64 *valp)
 		     "SELECT value FROM configuration WHERE key = %Q;", key);
   if (err == SQLITE_ROW) {
     *valp = sqlite3_column_int64 (pStmt, 0);
+    sqlite3_finalize (pStmt);
     return SQLITE_OK;
   }
   assert (err != SQLITE_OK); /* should be ROW or DONE if no error */
