@@ -14,6 +14,49 @@
 #define DBVERS "muchsync 0"
 
 int
+fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
+{
+  char *query;
+  const char *tail;
+  sqlite3_stmt *stmtp = NULL;
+  int err;
+  va_list ap;
+
+  va_start (ap, fmt);
+  query = sqlite3_vmprintf (fmt, ap);
+  va_end (ap);
+  if (!query) {
+    fprintf (stderr, "sqlite3_vmprintf: out of memory\n");
+    return SQLITE_NOMEM;
+  }
+
+  err = sqlite3_prepare_v2 (db, query, -1, &stmtp, &tail);
+  if (!err && tail && *tail) {
+    fprintf (stderr, "fmtstep: illegal compound query\n  Query: %s\n", query);
+    abort ();
+  }
+  if (!err)
+    err = sqlite3_step (stmtp);
+
+  if (err != SQLITE_ROW) {
+    sqlite3_finalize (stmtp);
+    stmtp = NULL;
+  }
+  if (stmtpp)
+    *stmtpp = stmtp;
+
+  if (err != SQLITE_OK && err != SQLITE_ROW && err != SQLITE_DONE) {
+    const char *dbpath = sqlite3_db_filename (db, "main");
+    if (!dbpath)
+      dbpath = "sqlite3 database";
+    fprintf (stderr, "%s:\n  Query: %s\n  Error: %s\n",
+	     dbpath, query, sqlite3_errmsg (db));
+  }
+  sqlite3_free (query);
+  return err;
+}
+
+int
 dbexec (sqlite3 *db, int (*callback)(void*,int,char**,char**), void *arg,
 	const char *fmt, ...)
 {
