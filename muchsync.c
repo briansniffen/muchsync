@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
+#include <assert.h>
 
 #include <notmuch.h>
 #include <openssl/rand.h>
@@ -12,6 +13,21 @@
 #include <talloc.h>
 
 #define DBVERS "muchsync 0"
+
+typedef sqlite3_int64 i64;
+
+void
+dbperror (sqlite3 *db, const char *query)
+{
+  const char *dbpath = sqlite3_db_filename (db, "main");
+  if (!dbpath)
+    dbpath = "sqlite3 database";
+  if (query)
+    fprintf (stderr, "%s:\n  Query: %s\n  Error: %s\n",
+	     dbpath, query, sqlite3_errmsg (db));
+  else
+    fprintf (stderr, "%s: %s\n", dbpath, sqlite3_errmsg (db));
+}
 
 int
 fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
@@ -26,6 +42,8 @@ fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
   query = sqlite3_vmprintf (fmt, ap);
   va_end (ap);
   if (!query) {
+    if (stmtpp)
+      *stmtpp = NULL;
     fprintf (stderr, "sqlite3_vmprintf: out of memory\n");
     return SQLITE_NOMEM;
   }
@@ -45,128 +63,62 @@ fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
   if (stmtpp)
     *stmtpp = stmtp;
 
-  if (err != SQLITE_OK && err != SQLITE_ROW && err != SQLITE_DONE) {
-    const char *dbpath = sqlite3_db_filename (db, "main");
-    if (!dbpath)
-      dbpath = "sqlite3 database";
-    fprintf (stderr, "%s:\n  Query: %s\n  Error: %s\n",
-	     dbpath, query, sqlite3_errmsg (db));
-  }
-  sqlite3_free (query);
-  return err;
-}
-
-int
-dbexec (sqlite3 *db, int (*callback)(void*,int,char**,char**), void *arg,
-	const char *fmt, ...)
-{
-  va_list ap;
-  va_start (ap, fmt);
-  char *query = sqlite3_vmprintf (fmt, ap);
-  va_end (ap);
-
-  char *errmsg;
-  int err = sqlite3_exec (db, query, callback, arg, &errmsg);
-  if (err) {
-    const char *dbpath = sqlite3_db_filename (db, "main");
-    fprintf (stderr, "%s:\n  In query: %s\n  Error: %s\n",
-	     dbpath ? dbpath : "sqlite3 database", query, errmsg);
-    sqlite3_free (errmsg);
-  }
-
+  if (err != SQLITE_OK && err != SQLITE_ROW && err != SQLITE_DONE)
+    dbperror (db, query);
   sqlite3_free (query);
   return err;
 }
 
 char *
-getconfig (void *ctx, sqlite3 *db, const char *key)
+getconfig_str (void *ctx, sqlite3 *db, const char *key)
 {
   sqlite3_stmt *pStmt;
-  if(sqlite3_prepare_v2 (db,
-			 "SELECT value FROM configuration WHERE key = ?;",
-			 -1, &pStmt, NULL) != SQLITE_OK)
+  if (fmtstep (db, &pStmt,
+	       "SELECT value FROM configuration WHERE key = %Q;", key)
+      != SQLITE_ROW)
     return NULL;
-
-  char *ret = NULL;
-  if (sqlite3_bind_text (pStmt, 1, key, -1, SQLITE_STATIC) != SQLITE_OK
-      || sqlite3_step (pStmt) != SQLITE_ROW)
-    goto leave;
   const char *value = (const char *) sqlite3_column_text (pStmt, 0);
-  if (value)
-    ret = talloc_strdup (ctx, value);
- leave:
+  char *ret = value ? talloc_strdup (ctx, value) : NULL;
   sqlite3_finalize (pStmt);
   return ret;
 }
 
 int
-getconfig_int64 (sqlite3 *db, const char *key, int64_t *valp)
+getconfig_int (sqlite3 *db, const char *key, i64 *valp)
 {
   sqlite3_stmt *pStmt;
-  int err;
-  err = sqlite3_prepare_v2 (db,
-			    "SELECT value FROM configuration WHERE key = ?;",
-			    -1, &pStmt, NULL);
-  if (err)
-    return err;
-
-  err = sqlite3_bind_text (pStmt, 1, key, -1, SQLITE_STATIC);
-  if (!err)
-    err = sqlite3_step (pStmt);
-  if (err == SQLITE_ROW)
-    err = SQLITE_OK;
-  if (!err)
+  int err = fmtstep (db, &pStmt,
+		     "SELECT value FROM configuration WHERE key = %Q;", key);
+  if (err == SQLITE_ROW) {
     *valp = sqlite3_column_int64 (pStmt, 0);
-  sqlite3_finalize (pStmt);
+    return SQLITE_OK;
+  }
+  assert (err != SQLITE_OK); /* should be ROW or DONE if no error */
   return err;
 }
 
 int
-setconfig (sqlite3 *db, const char *key, const char *value)
+setconfig (sqlite3 *db, const char *key, const char *fmt0, ...)
 {
-  static const char query[] =
-    "INSERT OR REPLACE INTO configuration (key, value) VALUES (?, ?);";
-  sqlite3_stmt *pStmt;
-  int err = sqlite3_prepare_v2 (db, query, -1, &pStmt, NULL);
+  char *value, *query;
+  va_list ap;
+  va_start (ap, fmt0);
+  value = sqlite3_vmprintf (fmt0, ap);
+  va_end (ap);
+  if (!value)
+    return SQLITE_NOMEM;
+  query = sqlite3_mprintf ("INSERT OR REPLACE INTO configuration (key, value)"
+			   " VALUES (%Q, %s);", key, value);
+  sqlite3_free (value);
+  if (!query)
+    return SQLITE_NOMEM;
+
+  int err = sqlite3_exec (db, query, NULL, NULL, NULL);
   if (err)
-    return err;
-
-  err = sqlite3_bind_text (pStmt, 1, key, -1, SQLITE_STATIC);
-  if (!err)
-    err = sqlite3_bind_text (pStmt, 2, value, -1, SQLITE_STATIC);
-  if (!err) {
-    err = sqlite3_step (pStmt);
-    if (err == SQLITE_DONE)
-      err = SQLITE_OK;
-  }
-  sqlite3_finalize (pStmt);
+    dbperror (db, query);
+  sqlite3_free (query);
   return err;
 }
-
-int
-setconfig_int64 (sqlite3 *db, const char *key, int64_t value)
-{
-  static const char query[] =
-    "INSERT OR REPLACE INTO configuration (key, value) VALUES (?, ?);";
-  sqlite3_stmt *pStmt;
-  int err = sqlite3_prepare_v2 (db, query, -1, &pStmt, NULL);
-  if (err) {
-    printf ("couldn't prepare %d\n", err);
-    return err;
-  }
-
-  err = sqlite3_bind_text (pStmt, 1, key, -1, SQLITE_STATIC);
-  if (!err)
-    err = sqlite3_bind_int64 (pStmt, 2, value);
-  if (!err) {
-    err = sqlite3_step (pStmt);
-    if (err == SQLITE_DONE)
-      err = SQLITE_OK;
-  }
-  sqlite3_finalize (pStmt);
-  return err;
-}
-
 
 sqlite3 *
 dbcreate (const char *path)
@@ -197,16 +149,17 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
     err = sqlite3_exec (pDb, table_defs, NULL, NULL, NULL);
 
   if (!err)
-    err = setconfig (pDb, "DBVERS", DBVERS);
+    err = setconfig (pDb, "DBVERS", "%Q", DBVERS);
 
-  int64_t self;
+  i64 self;
   if (!err) {
     if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1) {
       fprintf (stderr, "RAND_pseudo_bytes failed\n");
       sqlite3_close_v2 (pDb);
       return NULL;
     }
-    err = setconfig_int64 (pDb, "self", self);
+    self &= ~((i64) 1 << 63);
+    err = setconfig (pDb, "self", "%lld", self);
   }
   if (!err) {
     char *cmd = talloc_asprintf (NULL, "\

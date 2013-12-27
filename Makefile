@@ -14,8 +14,8 @@ all: muchsync
 .PHONY: all
 
 muchsync: muchsync.c
-	$(CC) $(CPPFLAGS) -o $@ muchsync.c $(LDADD)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ muchsync.c $(LDADD)
 
 clean:
-	rm -f muchsync *.o *~
+	rm -f muchsync core.* *.o *~
 .PHONY: clean
