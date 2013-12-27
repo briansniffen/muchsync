@@ -12,22 +12,6 @@
 
 #define DBVERS "muchsync 0"
 
-static const char table_defs[] = "\
-CREATE TABLE messages (message_id TEXT UNIQUE NOT NULL,\
- tags TEXT,\
- writer INTEGER, \
- writer_versioin INTEGER,\
- creator INTEGER, \
- creator_version INTEGER);\n\
-CREATE TABLE files (message_id TEXT,\
- path TEXT UNIQUE NOT NULL,\
- size INTEGER,\
- sha1 BLOB,\
- mtime REAL,\
- ctime REAL);\n\
-CREATE TABLE sync_vector (replica INTEGER PRIMARY KEY, version INTEGER);\n\
-CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
-
 char *
 getconfig (void *ctx, sqlite3 *db, const char *key)
 {
@@ -121,6 +105,22 @@ setconfig_int64 (sqlite3 *db, const char *key, int64_t value)
 sqlite3 *
 dbcreate (const char *path)
 {
+  static const char table_defs[] = "\
+CREATE TABLE messages (message_id TEXT UNIQUE NOT NULL,\
+ tags TEXT,\
+ writer INTEGER, \
+ writer_versioin INTEGER,\
+ creator INTEGER, \
+ creator_version INTEGER);\n\
+CREATE TABLE files (message_id TEXT,\
+ path TEXT UNIQUE NOT NULL,\
+ size INTEGER,\
+ sha1 BLOB,\
+ mtime REAL,\
+ ctime REAL);\n\
+CREATE TABLE sync_vector (replica INTEGER PRIMARY KEY, version INTEGER);\n\
+CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
+
   sqlite3 *pDb = NULL;
   sqlite3_open_v2 (path, &pDb, SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, NULL);
   if (!pDb)
@@ -133,14 +133,21 @@ dbcreate (const char *path)
   if (!err)
     err = setconfig (pDb, "DBVERS", DBVERS);
 
+  int64_t self;
   if (!err) {
-    int64_t self;
     if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1) {
       fprintf (stderr, "RAND_pseudo_bytes failed\n");
       sqlite3_close_v2 (pDb);
       return NULL;
     }
     err = setconfig_int64 (pDb, "self", self);
+  }
+  if (!err) {
+    char *cmd = talloc_asprintf (NULL, "\
+INSERT INTO sync_vector (replica, version) VALUES (%lld, 0);", 
+				 (long long) self);
+    err = sqlite3_exec (pDb, cmd, NULL, NULL, NULL);
+    talloc_free (cmd);
   }
 
   if (!err)
