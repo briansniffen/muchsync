@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
+#include <string.h>
 
 #include <notmuch.h>
 #include <openssl/rand.h>
@@ -174,10 +175,58 @@ dbopen (const char *path)
   return pDb;
 }
 
+
+int
+scan_notmuch (const char *mailpath, sqlite3 *db)
+{
+  notmuch_database_t *notmuch;
+  notmuch_status_t err;
+
+  if (sqlite3_exec (db,
+		    "CREATE TEMP TABLE old_files AS SELECT path FROM files;",
+		    NULL, NULL, NULL))
+    return -1;
+
+  err = notmuch_database_open (mailpath, NOTMUCH_DATABASE_MODE_READ_ONLY,
+			       &notmuch);
+  if (err)
+    return -1;
+
+  int pathprefixlen = strlen (mailpath) + 1;
+  notmuch_query_t *query = notmuch_query_create (notmuch, "");
+  notmuch_query_set_omit_excluded (query, NOTMUCH_EXCLUDE_FALSE);
+  notmuch_query_set_sort (query, NOTMUCH_SORT_UNSORTED);
+  notmuch_messages_t *messages = notmuch_query_search_messages (query);
+  while (notmuch_messages_valid (messages)) {
+    notmuch_message_t *message = notmuch_messages_get (messages);
+
+
+    const char *message_id = notmuch_message_get_message_id (message);
+    notmuch_filenames_t *pathiter = notmuch_message_get_filenames (message);
+    while (notmuch_filenames_valid (pathiter)) {
+      const char *path = notmuch_filenames_get (pathiter);
+
+      printf ("%s %s\n", message_id, path + pathprefixlen);
+
+      notmuch_filenames_move_to_next (pathiter);
+    }
+
+
+
+    notmuch_message_destroy (message);
+    notmuch_messages_move_to_next (messages);
+  }
+
+  notmuch_database_destroy (notmuch);
+  return 0;
+}
+
+
+
 int
 main (int argc, char **argv)
 {
-  if (argc != 2) {
+  if (argc != 3) {
     fprintf (stderr, "usage error\n");
     exit (1);
   }
@@ -185,6 +234,9 @@ main (int argc, char **argv)
   sqlite3 *db = dbopen (argv[1]);
   if (!db)
     exit (1);
+  sqlite3_exec (db, "BEGIN;", NULL, NULL, NULL);
+  scan_notmuch (argv[2], db);
+  sqlite3_exec (db, "COMMIT;", NULL, NULL, NULL);
 
   return 0;
 }
