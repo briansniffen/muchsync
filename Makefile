@@ -5,8 +5,10 @@ CFLAGS=-Wall -g -O
 notmuch_CPPFLAGS=
 notmuch_LDADD=-lnotmuch
 
-CPPFLAGS=$(notmuch_CPPFLAGS) `pkg-config --cflags sqlite3 talloc`
-LDADD=$(notmuch_LDADD) `pkg-config --libs sqlite3 talloc`
+PKGS=libcrypto sqlite3 talloc
+
+CPPFLAGS=$(notmuch_CPPFLAGS) `pkg-config --cflags $(PKGS)`
+LDADD=$(notmuch_LDADD) `pkg-config --libs $(PKGS)`
 
 all: muchsync
 .PHONY: all
