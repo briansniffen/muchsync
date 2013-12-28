@@ -142,40 +142,28 @@ CREATE TABLE files (message_id TEXT,\
 CREATE TABLE sync_vector (replica INTEGER PRIMARY KEY, version INTEGER);\n\
 CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
 
-  sqlite3 *pDb = NULL;
-  sqlite3_open_v2 (path, &pDb, SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, NULL);
-  if (!pDb)
-    return NULL;
-  int err = 0;
-  err = fmtexec (pDb, "BEGIN;");
-  if (!err)
-    err = fmtexec (pDb, table_defs);
-
-  if (!err)
-    err = setconfig_text (pDb, "DBVERS", DBVERS);
-
   i64 self;
-  if (!err) {
-    if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1) {
-      fprintf (stderr, "RAND_pseudo_bytes failed\n");
-      sqlite3_close_v2 (pDb);
-      return NULL;
-    }
-    self &= ~((i64) 1 << 63);
-    err = setconfig_int64 (pDb, "self", self);
+  if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1) {
+    fprintf (stderr, "RAND_pseudo_bytes failed\n");
+    return NULL;
   }
-  if (!err) {
-    char *cmd = talloc_asprintf (NULL, "\
-INSERT INTO sync_vector (replica, version) VALUES (%lld, 0);", 
-				 (long long) self);
-    err = sqlite3_exec (pDb, cmd, NULL, NULL, NULL);
-    talloc_free (cmd);
+  self &= ~((i64) 1 << 63);
+
+  sqlite3 *pDb = NULL;
+  int err = sqlite3_open_v2 (path, &pDb,
+			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, NULL);
+  if (err) {
+    fprintf (stderr, "%s: %s\n", path, sqlite3_errstr (err));
+    return NULL;
   }
 
-  if (!err)
-    err = sqlite3_exec (pDb, "COMMIT;", NULL, NULL, NULL);
-  if (err) {
-    fprintf (stderr, "%s: %s\n", path, sqlite3_errmsg (pDb));
+  if (fmtexec (pDb, "BEGIN;")
+      || fmtexec (pDb, table_defs)
+      || setconfig_text (pDb, "DBVERS", DBVERS)
+      || setconfig_int64 (pDb, "self", self)
+      || fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
+		  " VALUES (%lld, 0);", self)
+      || fmtexec (pDb, "COMMIT;")) {
     sqlite3_close_v2 (pDb);
     return NULL;
   }
