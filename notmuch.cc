@@ -1,5 +1,6 @@
 #include <iomanip>
 #include <memory>
+#include <iostream>
 #include <sstream>
 #include <string>
 
@@ -8,6 +9,8 @@
 #include "muchsync.h"
 
 using namespace std;
+
+constexpr int NOTMUCH_VALUE_MESSAGE_ID = 1;
 
 string
 message_tags (notmuch_message_t *message)
@@ -36,27 +39,98 @@ message_tags (notmuch_message_t *message)
   return tagbuf.str ();
 }
 
-const char message_ids_def[] = "\
-CREATE TABLE IF NOT EXISTS message_ids (\
- docid INTEGER PRIMARY KEY,\
- message_id TEXT UNIQUE NOT NULL);";
-
-bool
-scan_message_ids (sqlite3 *sqldb, const string &path)
+string
+sanitize_tag (const string &tag)
 {
-  Xapian::Database xdb (path + "/.notmuch/xapian");
+  assert (tag.size ());
+  assert (tag[0] == 'K');
 
-  if (fmtexec (sqldb, message_ids_def)
-      || fmtexec (sqldb, "DROP TABLE IF EXISTS old_message_ids; "
-		  "ALTER TABLE message_ids RENAME TO old_message_ids")
-      || fmtexec (sqldb, message_ids_def))
-    return false;
+  ostringstream tagbuf;
+  tagbuf.fill('0');
+  tagbuf.setf(ios::hex, ios::basefield);
 
-  for (Xapian::ValueIterator vi = xdb.valuestream_begin (1),
-	 ve = xdb.valuestream_end (1);
+  char c;
+  for (const char *p = tag.c_str() + 1; (c = *p); p++)
+    if (isalnum (c) || (c >= '+' && c <= '.')
+	|| c == '_' || c == '@' || c == '=')
+      tagbuf << c;
+    else
+      tagbuf << '%' << setw(2) << int (uint8_t (c));
+
+  return tagbuf.str ();
+}
+
+const char message_ids_def[] = R"(CREATE TABLE IF NOT EXISTS messages (
+ docid INTEGER PRIMARY KEY,
+ message_id TEXT UNIQUE NOT NULL,
+ tags TEXT DEFAULT '');)";
+
+void
+scan_message_ids (sqlite3 *sqldb, Xapian::Database &xdb)
+{
+  fmtexec (sqldb, message_ids_def);
+  fmtexec (sqldb, "DROP TABLE IF EXISTS old_messages; "
+	   "ALTER TABLE messages RENAME TO old_messages");
+  fmtexec (sqldb, message_ids_def);
+
+  sqlstmt_t s (sqldb,
+	       "INSERT INTO messages(docid, message_id) VALUES (?, ?);");
+
+  for (Xapian::ValueIterator
+	 vi = xdb.valuestream_begin (NOTMUCH_VALUE_MESSAGE_ID),
+	 ve = xdb.valuestream_end (NOTMUCH_VALUE_MESSAGE_ID);
        vi != ve; vi++) {
-    printf ("%lld %s\n", vi.get_docid(), (*vi).c_str());
+    // printf ("%lld '%s'\n", vi.get_docid(), (*vi).c_str());
+    s.reset ();
+    s.bind (1, vi.get_docid ());
+    s.bind (2, *vi);
+    s.step ();
   }
 
-  return true;
+  /*
+  Xapian::Enquire enquire (xdb);
+  enquire.set_weighting_scheme (Xapian::BoolWeight());
+  enquire.set_query (Xapian::Query ("Tmail"));
+  Xapian::MSet mset = enquire.get_mset (0, xdb.get_doccount());
+  for (Xapian::MSetIterator m = mset.begin(); m != mset.end(); m++) {
+    Xapian::Document doc = m.get_document ();
+    s.reset ();
+    s.bind (1, *m);
+    s.bind (2, doc.get_value (1));
+    s.step ();
+  }
+  */
+}
+
+void
+scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
+{
+    sqlstmt_t s (sqldb, R"(
+UPDATE messages
+  SET tags = (tags || (CASE tags WHEN '' THEN '' ELSE ' ' END) || ?)
+  WHERE docid = ?;)");
+
+  for (Xapian::TermIterator ti = xdb.allterms_begin("K"),
+	 te = xdb.allterms_end("K"); ti != te; ti++) {
+    string tag = sanitize_tag (*ti);
+    cout << tag << "\n";
+    s.bind (1, tag);
+    Xapian::Enquire enquire (xdb);
+    enquire.set_weighting_scheme (Xapian::BoolWeight());
+    enquire.set_query (Xapian::Query (*ti));
+    Xapian::MSet mset = enquire.get_mset (0, xdb.get_doccount());
+    for (Xapian::docid id : mset) {
+      s.bind (2, id);
+      s.step ();
+      s.reset ();
+    }
+  }
+}
+
+void
+scan_xapian (sqlite3 *sqldb, const string &path)
+{
+  Xapian::Database xdb (path + "/.notmuch/xapian");
+  scan_message_ids (sqldb, xdb);
+  scan_tags (sqldb, xdb);
 }

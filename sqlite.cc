@@ -43,7 +43,7 @@ dbthrow (sqlite3 *db, const char *query)
   throw sqlerr_t (errbuf.str ());
 }
 
-bool
+void
 sqlstmt_t::set_status (int status)
 {
   status_ = status;
@@ -254,7 +254,7 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
   }
 
   if (fmtexec (pDb, "BEGIN;")
-      || fmtexec (pDb, messages_def)
+      // || fmtexec (pDb, messages_def)
       || fmtexec (pDb, files_def)
       || fmtexec (pDb, extra_defs)
       || setconfig_text (pDb, "DBVERS", DBVERS)

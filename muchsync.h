@@ -4,12 +4,14 @@
 #include <sqlite3.h>
 #include <notmuch.h>
 
+using std::string;
+
 /* sqlite.cc */
 using sqldb_t = std::unique_ptr<sqlite3, decltype (&sqlite3_close)>;
 using i64 = sqlite3_int64;
 
 struct sqlerr_t : public std::runtime_error {
-  sqlerr_t (const std::string &msg) : std::runtime_error (msg) {}
+  sqlerr_t (const string &msg) : std::runtime_error (msg) {}
 };
 
 class _sqlcolval_t {
@@ -23,7 +25,7 @@ class _sqlcolval_t {
   }
   operator i64 () { return sqlite3_column_int64 (stmt_, iCol_); }
   operator double () { return sqlite3_column_double (stmt_, iCol_); }
-  operator std::string () {
+  operator string () {
     return { static_cast<const char *> (sqlite3_column_blob (stmt_, iCol_)),
 	size_t (sqlite3_column_bytes (stmt_, iCol_)) };
   }
@@ -32,7 +34,7 @@ class _sqlcolval_t {
 class sqlstmt_t {
   sqlite3_stmt *stmt_;
   int status_ = SQLITE_OK;
-  bool set_status (int status);
+  void set_status (int status);
  public:
   explicit sqlstmt_t(sqlite3_stmt *stmt) : stmt_ (stmt) {}
   explicit sqlstmt_t(sqlite3 *db, const char *fmt, ...);
@@ -43,25 +45,20 @@ class sqlstmt_t {
   sqlite3_stmt *get() { return stmt_; }
   int status() const { return status_; }
   bool row() { return status_ == SQLITE_ROW; }
-  bool step() { return set_status(sqlite3_step (stmt_)); }
-  bool reset() { return set_status(sqlite3_reset (stmt_)); }
+  void step() { set_status(sqlite3_step (stmt_)); }
+  void reset() { set_status(sqlite3_reset (stmt_)); }
   _sqlcolval_t operator[] (int iCol) {
     assert (status_ == SQLITE_ROW);
     return { stmt_, iCol };
   }
 
-  bool bind(int i, std::nullptr_t) {
-    return set_status (sqlite3_bind_null(stmt_, i));
-  }
-  bool bind(int i, i64 v) {
-    return set_status (sqlite3_bind_int64(stmt_, i, v));
-  }
-  bool bind(int i, double v) {
-    return set_status (sqlite3_bind_double(stmt_, i, v));
-  }
-  bool bind(int i, std::string v) {
-    return set_status (sqlite3_bind_blob(stmt_, i,
-					 v.c_str(), v.size(), SQLITE_STATIC));
+  void bind(int i, std::nullptr_t) { set_status (sqlite3_bind_null(stmt_, i)); }
+  void bind(int i, i64 v) { set_status (sqlite3_bind_int64(stmt_, i, v)); }
+  void bind(int i, unsigned v) { set_status (sqlite3_bind_int64(stmt_, i, v)); }
+  void bind(int i, double v) { set_status (sqlite3_bind_double(stmt_, i, v)); }
+  void bind(int i, string v) {
+    set_status (sqlite3_bind_blob(stmt_, i,
+				  v.c_str(), v.size(), SQLITE_STATIC));
   }
 };
 
@@ -74,5 +71,5 @@ sqlite3 *dbopen (const char *path);
 int scan_notmuch (const char *mailpath, sqlite3 *db);
 
 /* notmuch.cc */
-std::string message_tags (notmuch_message_t *message);
-bool scan_message_ids (sqlite3 *sqldb, const std::string &path);
+string message_tags (notmuch_message_t *message);
+void scan_xapian (sqlite3 *sqldb, const string &path);
