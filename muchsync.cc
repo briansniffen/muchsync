@@ -25,7 +25,8 @@ main (int argc, char **argv)
   */
   sqlite3_exec (db, "BEGIN;", NULL, NULL, NULL);
   try {
-    scan_xapian (db, argv[2]);
+    //scan_xapian (db, argv[2]);
+    scan_notmuch (db, argv[2]);
     sqlite3_exec (db, "COMMIT;", NULL, NULL, NULL);
   }
   catch (std::runtime_error e) {

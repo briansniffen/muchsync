@@ -216,13 +216,6 @@ getconfig_int64 (sqlite3 *db, const char *key, i64 *valp)
 #define setconfig_int64(db, key, val) setconfig_type(db, key, lld, val)
 #define setconfig_text(db, key, val) setconfig_type(db, key, Q, val)
 
-static const char messages_def[] =  "\
-CREATE TABLE messages (message_id TEXT UNIQUE NOT NULL,\
- tags TEXT,\
- writer INTEGER,\
- writer_versioin INTEGER,\
- creator INTEGER, \
- creator_version INTEGER);";
 static const char files_def[] = "\
 CREATE TABLE files (message_id TEXT,\
  path TEXT UNIQUE NOT NULL,\
@@ -254,8 +247,7 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
   }
 
   if (fmtexec (pDb, "BEGIN;")
-      // || fmtexec (pDb, messages_def)
-      || fmtexec (pDb, files_def)
+      // || fmtexec (pDb, files_def)
       || fmtexec (pDb, extra_defs)
       || setconfig_text (pDb, "DBVERS", DBVERS)
       || setconfig_int64 (pDb, "self", self)
@@ -280,71 +272,6 @@ dbopen (const char *path)
     return NULL;
 
   return pDb;
-}
-
-int
-scan_notmuch (const char *mailpath, sqlite3 *db)
-{
-  notmuch_database_t *notmuch;
-  notmuch_status_t err;
-
-  /*
-  if (fmtexec (db,
-	       "CREATE TEMP TABLE newtags (message_id TEXT UNIQUE NOT NULL,"
-	       " tags TEXT);"))
-    return -1;
-  */
-  if (fmtexec (db, "DROP TABLE IF EXISTS old_messages; "
-	       "ALTER TABLE messages RENAME TO old_messages;")
-      || fmtexec (db, messages_def))
-    return -1;
-
-  /*
-  if (sqlite3_exec (db,
-		    "CREATE TEMP TABLE old_files AS SELECT path FROM files;",
-		    NULL, NULL, NULL))
-    return -1;
-  */
-
-  err = notmuch_database_open (mailpath, NOTMUCH_DATABASE_MODE_READ_ONLY,
-			       &notmuch);
-  if (err)
-    return -1;
-
-  int pathprefixlen = strlen (mailpath) + 1;
-  notmuch_query_t *query = notmuch_query_create (notmuch, "");
-  notmuch_query_set_omit_excluded (query, NOTMUCH_EXCLUDE_FALSE);
-  notmuch_query_set_sort (query, NOTMUCH_SORT_UNSORTED);
-  notmuch_messages_t *messages = notmuch_query_search_messages (query);
-  while (notmuch_messages_valid (messages)) {
-    notmuch_message_t *message = notmuch_messages_get (messages);
-    const char *message_id = notmuch_message_get_message_id (message);
-
-    //printf ("%s (%s)\n", message_id, message_tags(message).c_str());
-
-    fmtexec (db, "INSERT INTO messages(message_id, tags) VALUES (%Q,%Q);",
-	     message_id, message_tags(message).c_str());
-
-    /*
-    notmuch_filenames_t *pathiter = notmuch_message_get_filenames (message);
-    while (notmuch_filenames_valid (pathiter)) {
-      const char *path = notmuch_filenames_get (pathiter);
-
-      printf ("        %s\n", path + pathprefixlen);
-
-      notmuch_filenames_move_to_next (pathiter);
-    }
-    */
-
-    notmuch_message_destroy (message);
-    notmuch_messages_move_to_next (messages);
-  }
-
-  notmuch_database_destroy (notmuch);
-
-
-
-  return 0;
 }
 
 

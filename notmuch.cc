@@ -14,6 +14,75 @@ using namespace std;
 constexpr int NOTMUCH_VALUE_MESSAGE_ID = 1;
 const string notmuch_tag_prefix = "K";
 
+const char message_ids_def[] = R"(CREATE TABLE IF NOT EXISTS messages (
+ docid INTEGER PRIMARY KEY,
+ message_id TEXT UNIQUE NOT NULL,
+ tags TEXT);)";
+
+string
+tag_from_term (const string &term)
+{
+  assert (!strncmp (term.c_str(), notmuch_tag_prefix.c_str(),
+		    notmuch_tag_prefix.length()));
+
+  ostringstream tagbuf;
+  tagbuf.fill('0');
+  tagbuf.setf(ios::hex, ios::basefield);
+
+  char c;
+  for (const char *p = term.c_str() + 1; (c = *p); p++)
+    if (isalnum (c) || (c >= '+' && c <= '.')
+	|| c == '_' || c == '@' || c == '=')
+      tagbuf << c;
+    else
+      tagbuf << '%' << setw(2) << int (uint8_t (c));
+
+  return tagbuf.str ();
+}
+
+inline int
+hexdigit (char c)
+{
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  else if (c >= 'a' && c <= 'f')
+    return c - 'a' + 10;
+  else
+    throw runtime_error ("illegal hexdigit " + string (1, c));
+}
+
+string
+term_from_tag (const string &tag)
+{
+  ostringstream tagbuf;
+  tagbuf << notmuch_tag_prefix;
+  int escape_pos = 0, escape_val;
+  char c;
+  for (const char *p = tag.c_str() + 1; (c = *p); p++) {
+    switch (escape_pos) {
+    case 0:
+      if (c == '%')
+	escape_pos = 1;
+      else
+	tagbuf << c;
+      break;
+    case 1:
+      escape_val = hexdigit(c) << 4;
+      escape_pos = 2;
+      break;
+    case 2:
+      escape_pos = 0;
+      tagbuf << char (escape_val | hexdigit(c));
+      break;
+    }
+  }
+  if (escape_pos)
+    throw runtime_error ("term_from_tag: incomplete escape");
+  return tagbuf.str();
+}
+
+
+
 string
 message_tags (notmuch_message_t *message)
 {
@@ -41,31 +110,64 @@ message_tags (notmuch_message_t *message)
   return tagbuf.str ();
 }
 
-string
-sanitize_tag (const string &tag)
+void
+scan_notmuch (sqlite3 *sqldb, const string &path)
 {
-  assert (!strncmp (tag.c_str(), notmuch_tag_prefix.c_str(),
-		    notmuch_tag_prefix.length()));
+  notmuch_database_t *notmuch;
+  notmuch_status_t err;
 
-  ostringstream tagbuf;
-  tagbuf.fill('0');
-  tagbuf.setf(ios::hex, ios::basefield);
+  fmtexec (sqldb, message_ids_def);
+  fmtexec (sqldb, "DROP TABLE IF EXISTS old_messages; "
+	   "ALTER TABLE messages RENAME TO old_messages");
+  fmtexec (sqldb, message_ids_def);
 
-  char c;
-  for (const char *p = tag.c_str() + 1; (c = *p); p++)
-    if (isalnum (c) || (c >= '+' && c <= '.')
-	|| c == '_' || c == '@' || c == '=')
-      tagbuf << c;
-    else
-      tagbuf << '%' << setw(2) << int (uint8_t (c));
+  sqlstmt_t s (sqldb, "INSERT INTO messages(message_id, tags) VALUES (?, ?);");
 
-  return tagbuf.str ();
+  err = notmuch_database_open (path.c_str(), NOTMUCH_DATABASE_MODE_READ_ONLY,
+			       &notmuch);
+
+  if (err)
+    throw runtime_error (path + ": " + notmuch_status_to_string (err));
+
+  unique_ptr<notmuch_database_t, decltype(&notmuch_database_destroy)>
+    _cleanup {notmuch, notmuch_database_destroy};
+
+  int pathprefixlen = path.length() + 1;
+  notmuch_query_t *query = notmuch_query_create (notmuch, "");
+  notmuch_query_set_omit_excluded (query, NOTMUCH_EXCLUDE_FALSE);
+  notmuch_query_set_sort (query, NOTMUCH_SORT_UNSORTED);
+  notmuch_messages_t *messages = notmuch_query_search_messages (query);
+  while (notmuch_messages_valid (messages)) {
+    notmuch_message_t *message = notmuch_messages_get (messages);
+    const char *message_id = notmuch_message_get_message_id (message);
+    string tags = message_tags (message);
+
+    s.reset ();
+    s.bind (1, message_id);
+    s.bind (2, tags);
+    s.step ();
+
+    //printf ("%s (%s)\n", message_id, message_tags(message).c_str());
+
+    /*
+    fmtexec (db, "INSERT INTO messages(message_id, tags) VALUES (%Q,%Q);",
+	     message_id, message_tags(message).c_str());
+
+    notmuch_filenames_t *pathiter = notmuch_message_get_filenames (message);
+    while (notmuch_filenames_valid (pathiter)) {
+      const char *path = notmuch_filenames_get (pathiter);
+
+      printf ("        %s\n", path + pathprefixlen);
+
+      notmuch_filenames_move_to_next (pathiter);
+    }
+    */
+
+    notmuch_message_destroy (message);
+    notmuch_messages_move_to_next (messages);
+  }
 }
 
-const char message_ids_def[] = R"(CREATE TABLE IF NOT EXISTS messages (
- docid INTEGER PRIMARY KEY,
- message_id TEXT UNIQUE NOT NULL,
- tags TEXT);)";
 
 void
 scan_message_ids (sqlite3 *sqldb, Xapian::Database &xdb)
@@ -88,20 +190,6 @@ scan_message_ids (sqlite3 *sqldb, Xapian::Database &xdb)
     s.bind (2, *vi);
     s.step ();
   }
-
-  /*
-  Xapian::Enquire enquire (xdb);
-  enquire.set_weighting_scheme (Xapian::BoolWeight());
-  enquire.set_query (Xapian::Query ("Tmail"));
-  Xapian::MSet mset = enquire.get_mset (0, xdb.get_doccount());
-  for (Xapian::MSetIterator m = mset.begin(); m != mset.end(); m++) {
-    Xapian::Document doc = m.get_document ();
-    s.reset ();
-    s.bind (1, *m);
-    s.bind (2, doc.get_value (1));
-    s.step ();
-  }
-  */
 }
 
 void
@@ -114,7 +202,7 @@ UPDATE messages
 
   for (Xapian::TermIterator ti = xdb.allterms_begin(notmuch_tag_prefix),
 	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
-    string tag = sanitize_tag (*ti);
+    string tag = tag_from_term (*ti);
     cout << tag << "\n";
     s.bind (1, tag);
     for (Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
