@@ -1,4 +1,6 @@
 
+#include <sstream>
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -18,26 +20,79 @@ using namespace std;
 
 #define DBVERS "muchsync 0"
 
+class sqlite_free_t {
+  void *ptr_;
+public:
+  explicit sqlite_free_t (void *ptr) : ptr_ (ptr) {}
+  sqlite_free_t (const sqlite_free_t &) = delete;
+  ~sqlite_free_t () { sqlite3_free (ptr_); }
+};
+
+void
+dbthrow (sqlite3 *db, const char *query)
+{
+  const char *dbpath = sqlite3_db_filename (db, "main");
+  if (!dbpath)
+    dbpath = "sqlite3 database";
+  ostringstream errbuf;
+  if (query)
+    errbuf << dbpath << ":\n  Query: " << query
+	   << "\n  Error: " << sqlite3_errmsg (db);
+  else
+    errbuf << dbpath << ": " << sqlite3_errmsg (db);
+  throw sqlerr_t (errbuf.str ());
+}
+
 bool
 sqlstmt_t::set_status (int status)
 {
   status_ = status;
   if (status != SQLITE_OK && status != SQLITE_ROW && status != SQLITE_DONE)
-    dbperror (sqlite3_db_handle (stmt_), nullptr);
+    dbthrow (sqlite3_db_handle (stmt_), nullptr);
 }
 
-void
-dbperror (sqlite3 *db, const char *query)
+sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
 {
-  const char *dbpath = sqlite3_db_filename (db, "main");
-  if (!dbpath)
-    dbpath = "sqlite3 database";
-  if (query)
-    fprintf (stderr, "%s:\n  Query: %s\n  Error: %s\n",
-	     dbpath, query, sqlite3_errmsg (db));
-  else
-    fprintf (stderr, "%s: %s\n", dbpath, sqlite3_errmsg (db));
+  char *query;
+  const char *tail;
+  va_list ap;
+
+  va_start (ap, fmt);
+  query = sqlite3_vmprintf (fmt, ap);
+  va_end (ap);
+  if (!query)
+    throw sqlerr_t ("sqlite3_vmprintf: out of memory");
+  sqlite_free_t cleanup (query);
+
+  if (sqlite3_prepare_v2 (db, query, -1, &stmt_, &tail))
+    dbthrow (db, query);
+  if (tail && *tail) {
+    fprintf (stderr, "fmtstep: illegal compound query\n  Query: %s\n", query);
+    abort ();
+  }
 }
+
+sqlstmt_t::sqlstmt_t (const sqldb_t &db, const char *fmt, ...)
+{
+  char *query;
+  const char *tail;
+  va_list ap;
+
+  va_start (ap, fmt);
+  query = sqlite3_vmprintf (fmt, ap);
+  va_end (ap);
+  if (!query)
+    throw sqlerr_t ("sqlite3_vmprintf: out of memory");
+  sqlite_free_t cleanup (query);
+
+  if (sqlite3_prepare_v2 (db.get(), query, -1, &stmt_, &tail))
+    dbthrow (db.get(), query);
+  if (tail && *tail) {
+    fprintf (stderr, "fmtstep: illegal compound query\n  Query: %s\n", query);
+    abort ();
+  }
+}
+
 
 int
 fmtexec (sqlite3 *db, const char *fmt, ...)
@@ -51,7 +106,7 @@ fmtexec (sqlite3 *db, const char *fmt, ...)
     return SQLITE_NOMEM;
   int err = sqlite3_exec (db, query, NULL, NULL, NULL);
   if (err)
-    dbperror (db, query);
+    dbthrow (db, query);
   sqlite3_free (query);
   return err;
 }
@@ -74,7 +129,7 @@ fmtstmt (sqlite3 *db, const char *fmt, ...)
   }
 
   if (sqlite3_prepare_v2 (db, query, -1, &stmtp, &tail)) {
-    dbperror (db, query);
+    dbthrow (db, query);
     return sqlstmt_t (nullptr);
   }
   if (tail && *tail) {
@@ -119,7 +174,7 @@ fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
     *stmtpp = stmtp;
 
   if (err != SQLITE_OK && err != SQLITE_ROW && err != SQLITE_DONE)
-    dbperror (db, query);
+    dbthrow (db, query);
   sqlite3_free (query);
   return err;
 }

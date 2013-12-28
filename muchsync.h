@@ -5,7 +5,12 @@
 #include <notmuch.h>
 
 /* sqlite.cc */
+using sqldb_t = std::unique_ptr<sqlite3, decltype (&sqlite3_close)>;
 using i64 = sqlite3_int64;
+
+struct sqlerr_t : public std::runtime_error {
+  sqlerr_t (const std::string &msg) : std::runtime_error (msg) {}
+};
 
 class _sqlcolval_t {
   sqlite3_stmt *stmt_;
@@ -30,12 +35,14 @@ class sqlstmt_t {
   bool set_status (int status);
  public:
   explicit sqlstmt_t(sqlite3_stmt *stmt) : stmt_ (stmt) {}
+  explicit sqlstmt_t(sqlite3 *db, const char *fmt, ...);
+  explicit sqlstmt_t(const sqldb_t &db, const char *fmt, ...);
   sqlstmt_t(sqlstmt_t &&r) : stmt_ (r.stmt_) { r.stmt_ = nullptr; }
   ~sqlstmt_t() { sqlite3_finalize (stmt_); }
 
   sqlite3_stmt *get() { return stmt_; }
-  explicit operator bool() { return stmt_; }
   int status() const { return status_; }
+  bool row() { return status_ == SQLITE_ROW; }
   bool step() { return set_status(sqlite3_step (stmt_)); }
   bool reset() { return set_status(sqlite3_reset (stmt_)); }
   _sqlcolval_t operator[] (int iCol) {
@@ -58,7 +65,7 @@ class sqlstmt_t {
   }
 };
 
-void dbperror (sqlite3 *db, const char *query);
+void dbthrow (sqlite3 *db, const char *query);
 int fmtexec (sqlite3 *db, const char *fmt, ...);
 sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
 int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
