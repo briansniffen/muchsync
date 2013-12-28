@@ -18,7 +18,13 @@ using namespace std;
 
 #define DBVERS "muchsync 0"
 
-typedef sqlite3_int64 i64;
+bool
+sqlstmt_t::set_status (int status)
+{
+  status_ = status;
+  if (status != SQLITE_OK && status != SQLITE_ROW && status != SQLITE_DONE)
+    dbperror (sqlite3_db_handle (stmt_), nullptr);
+}
 
 void
 dbperror (sqlite3 *db, const char *query)
@@ -48,6 +54,34 @@ fmtexec (sqlite3 *db, const char *fmt, ...)
     dbperror (db, query);
   sqlite3_free (query);
   return err;
+}
+
+sqlstmt_t
+fmtstmt (sqlite3 *db, const char *fmt, ...)
+{
+  char *query;
+  const char *tail;
+  sqlite3_stmt *stmtp;
+  int err;
+  va_list ap;
+
+  va_start (ap, fmt);
+  query = sqlite3_vmprintf (fmt, ap);
+  va_end (ap);
+  if (!query) {
+    fprintf (stderr, "sqlite3_vmprintf(%s): out of memory\n", fmt);
+    return sqlstmt_t (nullptr);
+  }
+
+  if (sqlite3_prepare_v2 (db, query, -1, &stmtp, &tail)) {
+    dbperror (db, query);
+    return sqlstmt_t (nullptr);
+  }
+  if (tail && *tail) {
+    fprintf (stderr, "fmtstep: illegal compound query\n  Query: %s\n", query);
+    abort ();
+  }
+  return sqlstmt_t (stmtp);
 }
 
 int

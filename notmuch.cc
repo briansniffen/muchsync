@@ -1,6 +1,9 @@
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <string>
+
+#include <xapian.h>
 
 #include "muchsync.h"
 
@@ -33,3 +36,27 @@ message_tags (notmuch_message_t *message)
   return tagbuf.str ();
 }
 
+const char message_ids_def[] = "\
+CREATE TABLE IF NOT EXISTS message_ids (\
+ docid INTEGER PRIMARY KEY,\
+ message_id TEXT UNIQUE NOT NULL);";
+
+bool
+scan_message_ids (sqlite3 *sqldb, const string &path)
+{
+  Xapian::Database xdb (path + "/.notmuch/xapian");
+
+  if (fmtexec (sqldb, message_ids_def)
+      || fmtexec (sqldb, "DROP TABLE IF EXISTS old_message_ids; "
+		  "ALTER TABLE message_ids RENAME TO old_message_ids")
+      || fmtexec (sqldb, message_ids_def))
+    return false;
+
+  for (Xapian::ValueIterator vi = xdb.valuestream_begin (1),
+	 ve = xdb.valuestream_end (1);
+       vi != ve; vi++) {
+    printf ("%lld %s\n", vi.get_docid(), (*vi).c_str());
+  }
+
+  return true;
+}
