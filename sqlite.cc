@@ -14,6 +14,8 @@
 
 #include "muchsync.h"
 
+using namespace std;
+
 #define DBVERS "muchsync 0"
 
 typedef sqlite3_int64 i64;
@@ -125,22 +127,25 @@ getconfig_int64 (sqlite3 *db, const char *key, i64 *valp)
 #define setconfig_int64(db, key, val) setconfig_type(db, key, lld, val)
 #define setconfig_text(db, key, val) setconfig_type(db, key, Q, val)
 
-sqlite3 *
-dbcreate (const char *path)
-{
-  static const char table_defs[] = "\
+static const char messages_def[] =  "\
 CREATE TABLE messages (message_id TEXT UNIQUE NOT NULL,\
  tags TEXT,\
  writer INTEGER,\
  writer_versioin INTEGER,\
  creator INTEGER, \
- creator_version INTEGER);\n\
+ creator_version INTEGER);";
+static const char files_def[] = "\
 CREATE TABLE files (message_id TEXT,\
  path TEXT UNIQUE NOT NULL,\
  size INTEGER,\
  sha1 BLOB,\
  mtime REAL,\
- ctime REAL);\n\
+ ctime REAL);";
+
+sqlite3 *
+dbcreate (const char *path)
+{
+  static const char extra_defs[] = "\
 CREATE TABLE sync_vector (replica INTEGER PRIMARY KEY, version INTEGER);\n\
 CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
 
@@ -160,7 +165,9 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
   }
 
   if (fmtexec (pDb, "BEGIN;")
-      || fmtexec (pDb, table_defs)
+      || fmtexec (pDb, messages_def)
+      || fmtexec (pDb, files_def)
+      || fmtexec (pDb, extra_defs)
       || setconfig_text (pDb, "DBVERS", DBVERS)
       || setconfig_int64 (pDb, "self", self)
       || fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
@@ -186,17 +193,29 @@ dbopen (const char *path)
   return pDb;
 }
 
-
 int
 scan_notmuch (const char *mailpath, sqlite3 *db)
 {
   notmuch_database_t *notmuch;
   notmuch_status_t err;
 
+  /*
+  if (fmtexec (db,
+	       "CREATE TEMP TABLE newtags (message_id TEXT UNIQUE NOT NULL,"
+	       " tags TEXT);"))
+    return -1;
+  */
+  if (fmtexec (db, "DROP TABLE IF EXISTS old_messages; "
+	       "ALTER TABLE messages RENAME TO old_messages;")
+      || fmtexec (db, messages_def))
+    return -1;
+
+  /*
   if (sqlite3_exec (db,
 		    "CREATE TEMP TABLE old_files AS SELECT path FROM files;",
 		    NULL, NULL, NULL))
     return -1;
+  */
 
   err = notmuch_database_open (mailpath, NOTMUCH_DATABASE_MODE_READ_ONLY,
 			       &notmuch);
@@ -210,25 +229,32 @@ scan_notmuch (const char *mailpath, sqlite3 *db)
   notmuch_messages_t *messages = notmuch_query_search_messages (query);
   while (notmuch_messages_valid (messages)) {
     notmuch_message_t *message = notmuch_messages_get (messages);
-
-
     const char *message_id = notmuch_message_get_message_id (message);
+
+    //printf ("%s (%s)\n", message_id, message_tags(message).c_str());
+
+    fmtexec (db, "INSERT INTO messages(message_id, tags) VALUES (%Q,%Q);",
+	     message_id, message_tags(message).c_str());
+
+    /*
     notmuch_filenames_t *pathiter = notmuch_message_get_filenames (message);
     while (notmuch_filenames_valid (pathiter)) {
       const char *path = notmuch_filenames_get (pathiter);
 
-      printf ("%s %s\n", message_id, path + pathprefixlen);
+      printf ("        %s\n", path + pathprefixlen);
 
       notmuch_filenames_move_to_next (pathiter);
     }
-
-
+    */
 
     notmuch_message_destroy (message);
     notmuch_messages_move_to_next (messages);
   }
 
   notmuch_database_destroy (notmuch);
+
+
+
   return 0;
 }
 

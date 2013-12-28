@@ -17,7 +17,11 @@ main (int argc, char **argv)
   if (!db)
     exit (1);
   sqlite3_exec (db, "BEGIN;", NULL, NULL, NULL);
-  scan_notmuch (argv[2], db);
+  if (scan_notmuch (argv[2], db)) {
+    fprintf (stderr, "scan_notmuch failed\n");
+    fmtexec(db, "ROLLBACK;");
+    exit (1);
+  }
   sqlite3_exec (db, "COMMIT;", NULL, NULL, NULL);
   sqlite3_close_v2 (db);
 

@@ -6,7 +6,7 @@ LDADD = $(sqlite3_LIBS) $(libcrypto_LIBS) $(xapian_LIBS) \
 
 bin_PROGRAMS = muchsync
 
-muchsync_SOURCES = muchsync.cc sqlite.cc muchsync.h
+muchsync_SOURCES = muchsync.cc notmuch.cc sqlite.cc muchsync.h
 
 CLEANFILES = *~
 maintainer-clean-local:
