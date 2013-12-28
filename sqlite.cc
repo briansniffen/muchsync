@@ -12,6 +12,8 @@
 #include <sqlite3.h>
 #include <talloc.h>
 
+#include "muchsync.h"
+
 #define DBVERS "muchsync 0"
 
 typedef sqlite3_int64 i64;
@@ -231,21 +233,3 @@ scan_notmuch (const char *mailpath, sqlite3 *db)
 }
 
 
-
-int
-main (int argc, char **argv)
-{
-  if (argc != 3) {
-    fprintf (stderr, "usage error\n");
-    exit (1);
-  }
-
-  sqlite3 *db = dbopen (argv[1]);
-  if (!db)
-    exit (1);
-  sqlite3_exec (db, "BEGIN;", NULL, NULL, NULL);
-  scan_notmuch (argv[2], db);
-  sqlite3_exec (db, "COMMIT;", NULL, NULL, NULL);
-
-  return 0;
-}

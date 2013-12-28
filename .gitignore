@@ -1,3 +1,16 @@
 *.o
 *~
+.deps
+/INSTALL
+/aclocal.m4
+/autom4te.cache
+/compile
+/config.log
+/config.status
+/configure
+/depcomp
+/install-sh
+/missing
 /muchsync
+Makefile
+Makefile.in
