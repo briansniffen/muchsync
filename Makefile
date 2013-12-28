@@ -1,6 +1,6 @@
 
 CC=cc
-CFLAGS=-Wall -g -O
+CFLAGS=-Wall -Werror -g -O
 
 notmuch_CPPFLAGS=
 notmuch_LDADD=-lnotmuch

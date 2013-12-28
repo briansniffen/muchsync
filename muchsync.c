@@ -30,6 +30,23 @@ dbperror (sqlite3 *db, const char *query)
 }
 
 int
+fmtexec (sqlite3 *db, const char *fmt, ...)
+{
+  char *query;
+  va_list ap;
+  va_start (ap, fmt);
+  query = sqlite3_vmprintf (fmt, ap);
+  va_end (ap);
+  if (!query)
+    return SQLITE_NOMEM;
+  int err = sqlite3_exec (db, query, NULL, NULL, NULL);
+  if (err)
+    dbperror (db, query);
+  sqlite3_free (query);
+  return err;
+}
+
+int
 fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
 {
   char *query;
@@ -70,7 +87,7 @@ fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
 }
 
 char *
-getconfig_str (void *ctx, sqlite3 *db, const char *key)
+getconfig_text (void *ctx, sqlite3 *db, const char *key)
 {
   sqlite3_stmt *pStmt;
   if (fmtstep (db, &pStmt,
@@ -84,7 +101,7 @@ getconfig_str (void *ctx, sqlite3 *db, const char *key)
 }
 
 int
-getconfig_int (sqlite3 *db, const char *key, i64 *valp)
+getconfig_int64 (sqlite3 *db, const char *key, i64 *valp)
 {
   sqlite3_stmt *pStmt;
   int err = fmtstep (db, &pStmt,
@@ -98,28 +115,13 @@ getconfig_int (sqlite3 *db, const char *key, i64 *valp)
   return err;
 }
 
-int
-setconfig (sqlite3 *db, const char *key, const char *fmt0, ...)
-{
-  char *value, *query;
-  va_list ap;
-  va_start (ap, fmt0);
-  value = sqlite3_vmprintf (fmt0, ap);
-  va_end (ap);
-  if (!value)
-    return SQLITE_NOMEM;
-  query = sqlite3_mprintf ("INSERT OR REPLACE INTO configuration (key, value)"
-			   " VALUES (%Q, %s);", key, value);
-  sqlite3_free (value);
-  if (!query)
-    return SQLITE_NOMEM;
-
-  int err = sqlite3_exec (db, query, NULL, NULL, NULL);
-  if (err)
-    dbperror (db, query);
-  sqlite3_free (query);
-  return err;
-}
+/* type should be Q for strings, lld for i64s, f for double */
+#define setconfig_type(db, key, type, val)				\
+  fmtexec(db,							\
+	  "INSERT OR REPLACE INTO configuration (key, value)"	\
+          "VALUES (%Q, %" #type ");", key, val)
+#define setconfig_int64(db, key, val) setconfig_type(db, key, lld, val)
+#define setconfig_text(db, key, val) setconfig_type(db, key, Q, val)
 
 sqlite3 *
 dbcreate (const char *path)
@@ -127,7 +129,7 @@ dbcreate (const char *path)
   static const char table_defs[] = "\
 CREATE TABLE messages (message_id TEXT UNIQUE NOT NULL,\
  tags TEXT,\
- writer INTEGER, \
+ writer INTEGER,\
  writer_versioin INTEGER,\
  creator INTEGER, \
  creator_version INTEGER);\n\
@@ -145,12 +147,12 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
   if (!pDb)
     return NULL;
   int err = 0;
-  err = sqlite3_exec (pDb, "BEGIN;", NULL, NULL, NULL);
+  err = fmtexec (pDb, "BEGIN;");
   if (!err)
-    err = sqlite3_exec (pDb, table_defs, NULL, NULL, NULL);
+    err = fmtexec (pDb, table_defs);
 
   if (!err)
-    err = setconfig (pDb, "DBVERS", "%Q", DBVERS);
+    err = setconfig_text (pDb, "DBVERS", DBVERS);
 
   i64 self;
   if (!err) {
@@ -160,7 +162,7 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
       return NULL;
     }
     self &= ~((i64) 1 << 63);
-    err = setconfig (pDb, "self", "%lld", self);
+    err = setconfig_int64 (pDb, "self", self);
   }
   if (!err) {
     char *cmd = talloc_asprintf (NULL, "\
