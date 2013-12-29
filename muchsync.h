@@ -52,13 +52,20 @@ class sqlstmt_t {
     return { stmt_, iCol };
   }
 
-  void bind(int i, std::nullptr_t) { set_status (sqlite3_bind_null(stmt_, i)); }
-  void bind(int i, i64 v) { set_status (sqlite3_bind_int64(stmt_, i, v)); }
-  void bind(int i, unsigned v) { set_status (sqlite3_bind_int64(stmt_, i, v)); }
-  void bind(int i, double v) { set_status (sqlite3_bind_double(stmt_, i, v)); }
-  void bind(int i, string v) {
-    set_status (sqlite3_bind_blob(stmt_, i,
+  void bind_null(int i) { set_status (sqlite3_bind_null(stmt_, i)); }
+  void bind_int(int i, i64 v) { set_status (sqlite3_bind_int64(stmt_, i, v)); }
+  void bind_real(int i, double v) {
+    set_status (sqlite3_bind_double(stmt_, i, v));
+  }
+  void bind_text(int i, string v) {
+    set_status (sqlite3_bind_text(stmt_, i,
 				  v.c_str(), v.size(), SQLITE_STATIC));
+  }
+  void bind_text(int i, const char *p, int len) {
+    set_status (sqlite3_bind_text(stmt_, i, p, len, SQLITE_STATIC));
+  }
+  void bind_blob(int i, const void *p, int len) {
+    set_status (sqlite3_bind_blob(stmt_, i, p, len, SQLITE_STATIC));
   }
 };
 

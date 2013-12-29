@@ -1,9 +1,10 @@
 #include <cstring>
 #include <iomanip>
-#include <memory>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 #include <xapian.h>
 
@@ -13,11 +14,17 @@ using namespace std;
 
 constexpr int NOTMUCH_VALUE_MESSAGE_ID = 1;
 const string notmuch_tag_prefix = "K";
+const string notmuch_directory_prefix = "XDIRECTORY";
+const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 
 const char message_ids_def[] = R"(CREATE TABLE IF NOT EXISTS messages (
  docid INTEGER PRIMARY KEY,
  message_id TEXT UNIQUE NOT NULL,
  tags TEXT);)";
+const char xapian_filenames_def[] =
+  R"(CREATE TABLE IF NOT EXISTS xapian_filenames (
+  docid INTEGER,
+  filename TEXT UNIQUE);)";
 
 string
 tag_from_term (const string &term)
@@ -143,8 +150,8 @@ scan_notmuch (sqlite3 *sqldb, const string &path)
     string tags = message_tags (message);
 
     s.reset ();
-    s.bind (1, message_id);
-    s.bind (2, tags);
+    s.bind_text (1, message_id);
+    s.bind_text (2, tags);
     s.step ();
 
     //printf ("%s (%s)\n", message_id, message_tags(message).c_str());
@@ -186,8 +193,8 @@ scan_message_ids (sqlite3 *sqldb, Xapian::Database &xdb)
        vi != ve; vi++) {
     // printf ("%lld '%s'\n", vi.get_docid(), (*vi).c_str());
     s.reset ();
-    s.bind (1, vi.get_docid ());
-    s.bind (2, *vi);
+    s.bind_int (1, vi.get_docid ());
+    s.bind_text (2, *vi);
     s.step ();
   }
 }
@@ -204,13 +211,85 @@ UPDATE messages
 	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
     string tag = tag_from_term (*ti);
     cout << tag << "\n";
-    s.bind (1, tag);
+    s.bind_text (1, tag);
     for (Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
 	   pe = xdb.postlist_end (*ti); pi != pe; pi++) {
-      i64 docid = *pi;
-      s.bind (2, docid);
+      s.bind_int (2, *pi);
       s.step ();
       s.reset ();
+    }
+  }
+}
+
+unordered_map<Xapian::docid, string>
+xapian_directories (Xapian::Database &xdb)
+{
+  unordered_map<Xapian::docid, string> ret;
+
+  for (Xapian::TermIterator
+	 ti = xdb.allterms_begin(notmuch_directory_prefix),
+	 te = xdb.allterms_end(notmuch_directory_prefix);
+       ti != te; ti++) {
+    string dir = (*ti).substr(notmuch_directory_prefix.length());
+    Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
+      pe = xdb.postlist_end (*ti);
+    if (pi == pe)
+      cerr << "warning: directory term " << *ti << " has no postings";
+    else {
+      // cout << *pi << ' ' << dir << '\n';
+      ret.emplace (*pi, dir);
+      if (++pi != pe)
+	cerr << "warning: directory term " << *ti << " has multiple postings";
+    }
+  }
+
+  return ret;
+}
+
+void
+scan_xapian_filenames (sqlite3 *sqldb, Xapian::Database &xdb)
+{
+  auto dirs = xapian_directories (xdb);
+
+  fmtexec (sqldb, xapian_filenames_def);
+  fmtexec (sqldb, "DROP TABLE IF EXISTS old_xapian_filenames; "
+	   "ALTER TABLE xapian_filenames RENAME TO old_xapian_filenames");
+  fmtexec (sqldb, xapian_filenames_def);
+
+  sqlstmt_t s (sqldb, "INSERT INTO xapian_filenames(docid, filename)"
+	       " VALUES (?, ?);");
+
+  for (Xapian::TermIterator
+	 ti = xdb.allterms_begin(notmuch_file_direntry_prefix),
+	 te = xdb.allterms_end(notmuch_file_direntry_prefix);
+       ti != te; ti++) {
+    string term = *ti;
+    char *dirent;
+    Xapian::docid dirno;
+    if (term.size() <= notmuch_file_direntry_prefix.size()
+	|| (dirno = strtoul(term.c_str() + notmuch_file_direntry_prefix.size(),
+			    &dirent, 10), *dirent++ != ':')) {
+      cerr << "warning: malformed file direntry " << term << '\n';
+      continue;
+    }
+    string path;
+    try { path = dirs.at (dirno) + "/" + dirent; } catch (out_of_range) {
+      cerr << "warning: unknown directory for " << term << '\n';
+      continue;
+    }
+
+    Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
+      pe = xdb.postlist_end (*ti);
+    if (pi == pe)
+      cerr << "warning: file direntry term " << *ti << " has no postings";
+    else {
+      s.bind_int (1, *pi);
+      s.bind_text (2, path);
+      s.step();
+      s.reset();
+      if (++pi != pe)
+	cerr << "warning: file direntry term " << *ti
+	     << " has multiple postings";
     }
   }
 }
@@ -219,6 +298,7 @@ void
 scan_xapian (sqlite3 *sqldb, const string &path)
 {
   Xapian::Database xdb (path + "/.notmuch/xapian");
+  scan_xapian_filenames (sqldb, xdb);
   scan_message_ids (sqldb, xdb);
   scan_tags (sqldb, xdb);
 }
