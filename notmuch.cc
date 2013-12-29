@@ -31,7 +31,8 @@ save_old_table (sqlite3 *sqldb, const string &table, const char *create)
 {
   fmtexec (sqldb, "%s", create);
   fmtexec (sqldb, "DROP TABLE IF EXISTS \"old_%s\";"
-		  "ALTER TABLE \"%s\" RENAME TO \"old_%s\";", create);
+		  "ALTER TABLE \"%s\" RENAME TO \"old_%s\";",
+	   table.c_str(), table.c_str(), table.c_str());
   fmtexec (sqldb, "%s", create);
 }
 
