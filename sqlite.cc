@@ -20,14 +20,6 @@ using namespace std;
 
 #define DBVERS "muchsync 0"
 
-class sqlite_free_t {
-  void *ptr_;
-public:
-  explicit sqlite_free_t (void *ptr) : ptr_ (ptr) {}
-  sqlite_free_t (const sqlite_free_t &) = delete;
-  ~sqlite_free_t () { sqlite3_free (ptr_); }
-};
-
 void
 dbthrow (sqlite3 *db, const char *query)
 {
@@ -62,7 +54,7 @@ sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
   va_end (ap);
   if (!query)
     throw sqlerr_t ("sqlite3_vmprintf: out of memory");
-  sqlite_free_t cleanup (query);
+  cleanup _c (bind (sqlite3_free, query));
 
   if (sqlite3_prepare_v2 (db, query, -1, &stmt_, &tail))
     dbthrow (db, query);
@@ -83,7 +75,7 @@ sqlstmt_t::sqlstmt_t (const sqldb_t &db, const char *fmt, ...)
   va_end (ap);
   if (!query)
     throw sqlerr_t ("sqlite3_vmprintf: out of memory");
-  sqlite_free_t cleanup (query);
+  cleanup _c (bind (sqlite3_free, query));
 
   if (sqlite3_prepare_v2 (db.get(), query, -1, &stmt_, &tail))
     dbthrow (db.get(), query);

@@ -6,6 +6,16 @@
 
 using std::string;
 
+/* Kludgy way to fit C cleanup functions into the C++ RAII scheme. */
+class cleanup {
+  std::function<void()> action_;
+public:
+  cleanup(std::function<void()> &&action) : action_(action) {}
+  template<typename R> cleanup(std::function<R()> &action)
+    : action_([action](){ action(); }) {}
+  ~cleanup() { action_(); }
+};
+
 /* sqlite.cc */
 using sqldb_t = std::unique_ptr<sqlite3, decltype (&sqlite3_close)>;
 using i64 = sqlite3_int64;
@@ -80,3 +90,5 @@ sqlite3 *dbopen (const char *path);
 string message_tags (notmuch_message_t *message);
 void scan_xapian (sqlite3 *sqldb, const string &path);
 void scan_notmuch (sqlite3 *db, const string &path);
+
+/* maildir.cc */
