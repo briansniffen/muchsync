@@ -1,0 +1,39 @@
+
+Each replica of maildir has:
+  * Unique ID
+  * Current version number
+  * Sync version vector
+  * For each message
+    - id of last replica to modify tags
+    - current version number of that replica when it modified tags
+    - Set of tags as of current version number
+
+Before syncing to or from another replica:
+  * Bump current version number by one
+  * Set own ID to new version number in sync version vector
+  * Scan all messages.  If tag differs from last seen, set state to:
+    - modifying replica := current replica's unique id
+    - version number := current version number
+    - set of tags := current tags in xapian database
+
+To sync A -> B:
+  B sends A its "sync version vector"
+  A sends B its "sync version vector"
+  A sends B message state messages more recent than A's sync vector
+  For each such message:
+    If B's message state is than A's sync vector:
+      merge flags
+      set modifying replica to B and version to B's current version
+    Otherwise:  entirely replace B's state with A's state for this message
+  B sets it's sync version vector to pairwise max of A's and B's.
+
+
+Keeping local database up to date:
+  Keep track of ctime of last scan
+  Scan file system to find all files with more recent ctime
+  Look up each file in xapian, check all filenames for document
+      (because this could be a rename, in which case old name is gone)
+  This handles both new files and renames, but not deletes
+  Deletes require scanning whole database and calling access on files
+    Deletes should be kept in database for a while to propagate them
+    But shouldn't re-appear, old version on other replicas before sync time
