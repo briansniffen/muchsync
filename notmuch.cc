@@ -17,7 +17,7 @@ const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 
-const char message_ids_def[] = R"(CREATE TABLE IF NOT EXISTS messages (
+const char messages_def[] = R"(CREATE TABLE IF NOT EXISTS messages (
  docid INTEGER PRIMARY KEY,
  message_id TEXT UNIQUE NOT NULL,
  tags TEXT);)";
@@ -25,6 +25,15 @@ const char xapian_filenames_def[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_filenames (
   docid INTEGER,
   filename TEXT UNIQUE);)";
+
+void
+save_old_table (sqlite3 *sqldb, const string &table, const char *create)
+{
+  fmtexec (sqldb, "%s", create);
+  fmtexec (sqldb, "DROP TABLE IF EXISTS \"old_%s\";"
+		  "ALTER TABLE \"%s\" RENAME TO \"old_%s\";", create);
+  fmtexec (sqldb, "%s", create);
+}
 
 string
 tag_from_term (const string &term)
@@ -123,11 +132,7 @@ scan_notmuch (sqlite3 *sqldb, const string &path)
   notmuch_database_t *notmuch;
   notmuch_status_t err;
 
-  fmtexec (sqldb, message_ids_def);
-  fmtexec (sqldb, "DROP TABLE IF EXISTS old_messages; "
-	   "ALTER TABLE messages RENAME TO old_messages");
-  fmtexec (sqldb, message_ids_def);
-
+  save_old_table (sqldb, "messages", messages_def);
   sqlstmt_t s (sqldb, "INSERT INTO messages(message_id, tags) VALUES (?, ?);");
 
   err = notmuch_database_open (path.c_str(), NOTMUCH_DATABASE_MODE_READ_ONLY,
@@ -179,11 +184,7 @@ scan_notmuch (sqlite3 *sqldb, const string &path)
 void
 scan_message_ids (sqlite3 *sqldb, Xapian::Database &xdb)
 {
-  fmtexec (sqldb, message_ids_def);
-  fmtexec (sqldb, "DROP TABLE IF EXISTS old_messages; "
-	   "ALTER TABLE messages RENAME TO old_messages");
-  fmtexec (sqldb, message_ids_def);
-
+  save_old_table (sqldb, "messages", messages_def);
   sqlstmt_t s (sqldb, "INSERT INTO messages(docid, message_id, tags)"
 	       " VALUES (?, ?, '');");
 
@@ -250,12 +251,7 @@ void
 scan_xapian_filenames (sqlite3 *sqldb, Xapian::Database &xdb)
 {
   auto dirs = xapian_directories (xdb);
-
-  fmtexec (sqldb, xapian_filenames_def);
-  fmtexec (sqldb, "DROP TABLE IF EXISTS old_xapian_filenames; "
-	   "ALTER TABLE xapian_filenames RENAME TO old_xapian_filenames");
-  fmtexec (sqldb, xapian_filenames_def);
-
+  save_old_table (sqldb, "xapian_filenames", xapian_filenames_def);
   sqlstmt_t s (sqldb, "INSERT INTO xapian_filenames(docid, filename)"
 	       " VALUES (?, ?);");
 
