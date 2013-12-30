@@ -171,6 +171,17 @@ fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
   return err;
 }
 
+void
+save_old_table (sqlite3 *sqldb, const string &table, const char *create)
+{
+  fmtexec (sqldb, "%s", create);
+  fmtexec (sqldb, "DROP TABLE IF EXISTS \"old_%s\";"
+		  "ALTER TABLE \"%s\" RENAME TO \"old_%s\";",
+	   table.c_str(), table.c_str(), table.c_str());
+  fmtexec (sqldb, "%s", create);
+}
+
+
 char *
 getconfig_text (void *ctx, sqlite3 *db, const char *key)
 {

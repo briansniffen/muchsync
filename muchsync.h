@@ -83,7 +83,7 @@ void dbthrow (sqlite3 *db, const char *query);
 int fmtexec (sqlite3 *db, const char *fmt, ...);
 sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
 int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
-
+void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 sqlite3 *dbopen (const char *path);
 
 /* notmuch.cc */
@@ -92,3 +92,4 @@ void scan_xapian (sqlite3 *sqldb, const string &path);
 void scan_notmuch (sqlite3 *db, const string &path);
 
 /* maildir.cc */
+void scan_maildir (sqlite3 *sqldb, const string &maildir);

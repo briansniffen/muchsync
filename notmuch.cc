@@ -26,16 +26,6 @@ const char xapian_filenames_def[] =
   docid INTEGER,
   filename TEXT UNIQUE);)";
 
-void
-save_old_table (sqlite3 *sqldb, const string &table, const char *create)
-{
-  fmtexec (sqldb, "%s", create);
-  fmtexec (sqldb, "DROP TABLE IF EXISTS \"old_%s\";"
-		  "ALTER TABLE \"%s\" RENAME TO \"old_%s\";",
-	   table.c_str(), table.c_str(), table.c_str());
-  fmtexec (sqldb, "%s", create);
-}
-
 string
 tag_from_term (const string &term)
 {
