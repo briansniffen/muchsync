@@ -79,8 +79,12 @@ class sqlstmt_t {
     return set_status (sqlite3_bind_double(stmt_, i, v));
   }
   sqlstmt_t &bind_text(int i, const string &v) {
-    return set_status (sqlite3_bind_text(stmt_, i,
-					 v.c_str(), v.size(), SQLITE_STATIC));
+    return set_status (sqlite3_bind_text(stmt_, i, v.data(), v.size(),
+					 SQLITE_STATIC));
+  }
+  sqlstmt_t &bind_text(int i, string &&v) {
+    return set_status (sqlite3_bind_text(stmt_, i, v.data(), v.size(),
+					 SQLITE_TRANSIENT));
   }
   sqlstmt_t &bind_text(int i, const char *p, int len = -1) {
     return set_status (sqlite3_bind_text(stmt_, i, p, len, SQLITE_STATIC));
@@ -105,6 +109,10 @@ class sqlstmt_t {
   template<typename... Rest>
     sqlstmt_t &_param(int i, const string &v, Rest... rest) {
     return this->bind_text(i, v)._param(i+1, rest...);
+  }
+  template<typename... Rest>
+    sqlstmt_t &_param(int i, string &&v, Rest... rest) {
+    return this->bind_text(i, move (v))._param(i+1, rest...);
   }
   template<typename... Rest>
     sqlstmt_t &_param(int i, const char *v, Rest... rest) {
