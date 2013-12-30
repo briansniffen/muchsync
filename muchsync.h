@@ -82,7 +82,7 @@ class sqlstmt_t {
     return set_status (sqlite3_bind_text(stmt_, i,
 					 v.c_str(), v.size(), SQLITE_STATIC));
   }
-  sqlstmt_t &bind_text(int i, const char *p, int len) {
+  sqlstmt_t &bind_text(int i, const char *p, int len = -1) {
     return set_status (sqlite3_bind_text(stmt_, i, p, len, SQLITE_STATIC));
   }
   sqlstmt_t &bind_blob(int i, const void *p, int len) {
@@ -95,12 +95,28 @@ class sqlstmt_t {
     return this->bind_int(i, v)._param(i+1, rest...);
   }
   template<typename... Rest>
+    sqlstmt_t &_param(int i, unsigned v, Rest... rest) {
+    return this->bind_int(i, v)._param(i+1, rest...);
+  }
+  template<typename... Rest>
+    sqlstmt_t &_param(int i, int v, Rest... rest) {
+    return this->bind_int(i, v)._param(i+1, rest...);
+  }
+  template<typename... Rest>
     sqlstmt_t &_param(int i, const string &v, Rest... rest) {
+    return this->bind_text(i, v)._param(i+1, rest...);
+  }
+  template<typename... Rest>
+    sqlstmt_t &_param(int i, const char *v, Rest... rest) {
     return this->bind_text(i, v)._param(i+1, rest...);
   }
   template<typename... Rest>
     sqlstmt_t &_param(int i, double v, Rest... rest) {
     return this->bind_real(i, v)._param(i+1, rest...);
+  }
+  template<typename... Rest>
+    sqlstmt_t &_param(int i, std::nullptr_t, Rest... rest) {
+    return this->bind_null(i)._param(i+1, rest...);
   }
   template<typename... Args>
     sqlstmt_t &param(Args... args) { _param (1, args...); }
