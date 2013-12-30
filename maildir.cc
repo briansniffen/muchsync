@@ -15,7 +15,7 @@ using namespace std;
 const char maildir_def[] = R"(CREATE TABLE IF NOT EXISTS maildir (
   filename TEXT UNIQUE NOT NULL,
   ctime REAL,
-  mtime REAL
+  mtime REAL,
   size INTEGER,
   hash TEXT
 );)";
@@ -134,40 +134,39 @@ get_msgid (const string &file, string &msgid)
 }
 
 static void
-import_message (const sqlstmt_t &insert,
-		const sqlstmt_t &lookup,
-		const sqlstmt_t &updmsg,
-		FTSENT *f)
+import_message (sqlstmt_t &record, sqlstmt_t &lookup, sqlstmt_t &insert,
+		double start, int skip, FTSENT *f)
 {
-  string path = f->fts_accpath, base, flags;
+  string filename ((f->fts_accpath) + skip);
 
-  ifstream msg (path);
-  string message_id;
-  bool idok = get_msgid(msg, message_id);
-  string hash = get_sha (msg);
-  if (msg.fail()) {
-    cerr << "Warning: Cannot read " << path << '\n';
+  double ctime{ts_to_double(f->fts_statp->st_ctim)},
+    mtime{ts_to_double(f->fts_statp->st_mtim)};
+  i64 size = f->fts_statp->st_size;
+  string hash;
+
+  record.reset().param(filename).step();
+
+  if (mtime < start && ctime < start)
     return;
-  }
-  if (!idok || message_id.size() > 189)
-    message_id = "notmuch-sha1-" + hash;
 
-  /*
-  sqlite3_bind_text(s, 1, base.c_str(), base.size(), SQLITE_STATIC);
-  sqlite3_bind_text(s, 2, flags.c_str(), flags.size(), SQLITE_STATIC);
-  sqlite3_bind_text(s, 3, message_id.c_str(), message_id.size(), SQLITE_STATIC);
-  sqlite3_bind_int64(s, 4, msg.tellg());
-  sqlite3_bind_blob(s, 5, hash.c_str(), hash.size(), SQLITE_STATIC);
-  sqlite3_bind_double(s, 6, ts_to_double(f->fts_statp->st_mtim));
-  sqlite3_bind_double(s, 7, ts_to_double(f->fts_statp->st_ctim));
-  sqlite3_bind_null(s, 8);
-  sqlite3_bind_null(s, 9);
-  
-  if (sqlite3_step(s) != SQLITE_DONE) {
-    cerr << "Insert failed\n";
-    throw sql_error (db);
+  lookup.reset().param(filename).step();
+
+  if (lookup.done() || !lookup[3] || size != i64 (lookup[2])
+      || mtime != double (lookup[1])) {
+    ifstream msg (f->fts_accpath);
+    hash = get_sha (msg);
+    if (msg.fail()) {
+      cerr << "Warning: Cannot read " << filename << '\n';
+      return;
+    }
   }
-  */
+  else if (ctime == double (lookup[0]))
+    return;
+  else
+    hash = string (lookup[3]);
+
+  insert.reset().param(filename, ctime, mtime, size, hash).step();
+  //cout << filename << "..." << hash << '\n';
 }
 
 void
@@ -175,13 +174,44 @@ scan_maildir (sqlite3 *sqldb, const string &maildir)
 {
   fmtexec (sqldb, maildir_def);
   fmtexec (sqldb,
-	   "DROP TABLE IF EXISTS current_files;"
-	   "CREATE TABLE current_files(filename TEXT UNIQUE NOT NULL);");
-  sqlstmt_t maxctime_stmt (sqldb,
-			   "SELECT ifnull(max(ctime), 0) FROM maildir;");
-  double maxctime = (maxctime_stmt.step(), maxctime_stmt[0]);
+	   "DROP TABLE IF EXISTS deleted_files;"
+	   "CREATE TEMP TABLE deleted_files(filename TEXT UNIQUE NOT NULL);"
+	   "INSERT INTO deleted_files"
+	   " SELECT filename FROM maildir WHERE hash IS NOT NULL;");
 
-  printf ("max ctime is %f\n", maxctime);
-  
-  //sqlstmt_t lookup (sqldb, R"(SQL(SELECT ;)");
+  double newtime, oldtime;
+  {
+    timespec ts;
+    if (clock_gettime (CLOCK_REALTIME, &ts)) {
+      perror ("clock_gettime");
+      throw runtime_error (string ("clock_gettime: ") + strerror (errno));
+    }
+    newtime = ts_to_double (ts);
+
+    try { oldtime = getconfig<double> (sqldb, "timestamp"); }
+    catch (sqldone_t) { oldtime = 0; }
+  }
+  if (oldtime > newtime) {
+    cerr << "Warning: ignoring database timestamp in the future\n";
+    oldtime = 0;
+  }
+
+  sqlstmt_t
+    record(sqldb, "DELETE FROM deleted_files WHERE filename = ?;"),
+    lookup(sqldb, "SELECT ctime, mtime, size, hash FROM maildir"
+	   " WHERE filename = ?;"),
+    insert(sqldb, "INSERT OR REPLACE INTO"
+	   " maildir (filename, ctime, mtime, size, hash)"
+	   " VALUES (?, ?, ?, ?, ?);");
+
+  foreach_msg (maildir,
+               [&] (FTSENT *f) {
+                 import_message (record, lookup, insert,
+				 oldtime, maildir.size(), f);
+               });
+
+  fmtexec (sqldb, "UPDATE maildir"
+	   " SET ctime = NULL, mtime = NULL, size = NULL, hash = NULL"
+	   " WHERE filename IN (SELECT * from deleted_files);");
+  setconfig (sqldb, "timestamp", newtime);
 }

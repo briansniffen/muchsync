@@ -54,6 +54,7 @@ class sqlstmt_t {
   explicit sqlstmt_t(sqlite3_stmt *stmt) : stmt_ (stmt) {}
   explicit sqlstmt_t(sqlite3 *db, const char *fmt, ...);
   explicit sqlstmt_t(const sqldb_t &db, const char *fmt, ...);
+  sqlstmt_t(const sqlstmt_t &r) = delete;
   sqlstmt_t(sqlstmt_t &&r) : stmt_ (r.stmt_) { r.stmt_ = nullptr; }
   ~sqlstmt_t() { sqlite3_finalize (stmt_); }
 
@@ -126,8 +127,9 @@ class sqlstmt_t {
     sqlstmt_t &_param(int i, std::nullptr_t, Rest... rest) {
     return this->bind_null(i)._param(i+1, rest...);
   }
-  template<typename... Args>
-    sqlstmt_t &param(Args... args) { _param (1, args...); }
+  template<typename... Args> sqlstmt_t &param(Args&&... args) {
+    return _param (1, std::forward<Args> (args)...);
+  }
 };
 
 void dbthrow (sqlite3 *db, const char *query);

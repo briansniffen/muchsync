@@ -244,6 +244,25 @@ dbopen (const char *path)
   if (!pDb)
     return NULL;
 
+  try {
+    if (getconfig<string> (pDb, "DBVERS") != DBVERS) {
+      cerr << path << ": invalid database version (" << DBVERS << ")\n";
+      sqlite3_close_v2 (pDb);
+      return NULL;
+    }
+    getconfig<i64> (pDb, "self");
+  }
+  catch (sqldone_t) {
+    cerr << path << ": invalid configuration\n";
+    sqlite3_close_v2 (pDb);
+    return NULL;
+  }
+  catch (sqlerr_t &e) {
+    cerr << path << ": " << e.what() << '\n';
+    sqlite3_close_v2 (pDb);
+    return NULL;
+  }
+
   return pDb;
 }
 
