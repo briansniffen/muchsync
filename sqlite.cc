@@ -1,4 +1,5 @@
 
+#include <iostream>
 #include <sstream>
 
 #include <stdio.h>
@@ -35,12 +36,25 @@ dbthrow (sqlite3 *db, const char *query)
   throw sqlerr_t (errbuf.str ());
 }
 
-void
+sqlstmt_t &
 sqlstmt_t::set_status (int status)
 {
   status_ = status;
   if (status != SQLITE_OK && status != SQLITE_ROW && status != SQLITE_DONE)
     dbthrow (sqlite3_db_handle (stmt_), nullptr);
+  return *this;
+}
+
+void
+sqlstmt_t::fail ()
+{
+  assert (status_ != SQLITE_OK);
+  if (status_ == SQLITE_DONE)
+    throw sqldone_t(string ("No rows left in query: ") + sqlite3_sql (stmt_));
+  else
+    throw sqlerr_t(string ("sqlstmt_t::operator[]: used after error\n"
+			   "  Query: ") + sqlite3_sql (stmt_)
+		   + "\n  Error: " + sqlite3_errstr(status_));
 }
 
 sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
@@ -59,7 +73,7 @@ sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
   if (sqlite3_prepare_v2 (db, query, -1, &stmt_, &tail))
     dbthrow (db, query);
   if (tail && *tail) {
-    fprintf (stderr, "fmtstep: illegal compound query\n  Query: %s\n", query);
+    fprintf (stderr, "sqlstmt_t: illegal compound query\n  Query: %s\n", query);
     abort ();
   }
 }
@@ -80,13 +94,12 @@ sqlstmt_t::sqlstmt_t (const sqldb_t &db, const char *fmt, ...)
   if (sqlite3_prepare_v2 (db.get(), query, -1, &stmt_, &tail))
     dbthrow (db.get(), query);
   if (tail && *tail) {
-    fprintf (stderr, "fmtstep: illegal compound query\n  Query: %s\n", query);
+    cerr << "sqlstmt_t: illegal compound query\n  Query: %s\n" << query;
     abort ();
   }
 }
 
-
-int
+void
 fmtexec (sqlite3 *db, const char *fmt, ...)
 {
   char *query;
@@ -95,12 +108,11 @@ fmtexec (sqlite3 *db, const char *fmt, ...)
   query = sqlite3_vmprintf (fmt, ap);
   va_end (ap);
   if (!query)
-    return SQLITE_NOMEM;
+    throw sqlerr_t ("sqlite3_vmprintf: out of memory in fmtexec");
   int err = sqlite3_exec (db, query, NULL, NULL, NULL);
-  if (err)
+  if (err != SQLITE_OK && err != SQLITE_DONE && err != SQLITE_ROW)
     dbthrow (db, query);
   sqlite3_free (query);
-  return err;
 }
 
 sqlstmt_t
@@ -125,12 +137,13 @@ fmtstmt (sqlite3 *db, const char *fmt, ...)
     return sqlstmt_t (nullptr);
   }
   if (tail && *tail) {
-    fprintf (stderr, "fmtstep: illegal compound query\n  Query: %s\n", query);
+    fprintf (stderr, "fmtstmt: illegal compound query\n  Query: %s\n", query);
     abort ();
   }
   return sqlstmt_t (stmtp);
 }
 
+/*
 int
 fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
 {
@@ -170,6 +183,7 @@ fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...)
   sqlite3_free (query);
   return err;
 }
+*/
 
 void
 save_old_table (sqlite3 *sqldb, const string &table, const char *create)
@@ -180,52 +194,6 @@ save_old_table (sqlite3 *sqldb, const string &table, const char *create)
 	   table.c_str(), table.c_str(), table.c_str());
   fmtexec (sqldb, "%s", create);
 }
-
-
-char *
-getconfig_text (void *ctx, sqlite3 *db, const char *key)
-{
-  sqlite3_stmt *pStmt;
-  if (fmtstep (db, &pStmt,
-	       "SELECT value FROM configuration WHERE key = %Q;", key)
-      != SQLITE_ROW)
-    return NULL;
-  const char *value = (const char *) sqlite3_column_text (pStmt, 0);
-  char *ret = value ? talloc_strdup (ctx, value) : NULL;
-  sqlite3_finalize (pStmt);
-  return ret;
-}
-
-int
-getconfig_int64 (sqlite3 *db, const char *key, i64 *valp)
-{
-  sqlite3_stmt *pStmt;
-  int err = fmtstep (db, &pStmt,
-		     "SELECT value FROM configuration WHERE key = %Q;", key);
-  if (err == SQLITE_ROW) {
-    *valp = sqlite3_column_int64 (pStmt, 0);
-    sqlite3_finalize (pStmt);
-    return SQLITE_OK;
-  }
-  assert (err != SQLITE_OK); /* should be ROW or DONE if no error */
-  return err;
-}
-
-/* type should be Q for strings, lld for i64s, f for double */
-#define setconfig_type(db, key, type, val)				\
-  fmtexec(db,							\
-	  "INSERT OR REPLACE INTO configuration (key, value)"	\
-          "VALUES (%Q, %" #type ");", key, val)
-#define setconfig_int64(db, key, val) setconfig_type(db, key, lld, val)
-#define setconfig_text(db, key, val) setconfig_type(db, key, Q, val)
-
-static const char files_def[] = "\
-CREATE TABLE files (message_id TEXT,\
- path TEXT UNIQUE NOT NULL,\
- size INTEGER,\
- sha1 BLOB,\
- mtime REAL,\
- ctime REAL);";
 
 sqlite3 *
 dbcreate (const char *path)
@@ -249,15 +217,17 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
     return NULL;
   }
 
-  if (fmtexec (pDb, "BEGIN;")
-      // || fmtexec (pDb, files_def)
-      || fmtexec (pDb, extra_defs)
-      || setconfig_text (pDb, "DBVERS", DBVERS)
-      || setconfig_int64 (pDb, "self", self)
-      || fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
-		  " VALUES (%lld, 0);", self)
-      || fmtexec (pDb, "COMMIT;")) {
+  try {
+    fmtexec (pDb, "BEGIN;");
+    fmtexec (pDb, extra_defs);
+    setconfig (pDb, "DBVERS", DBVERS);
+    setconfig (pDb, "self", self);
+    fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
+	     " VALUES (%lld, 0);", self);
+    fmtexec (pDb, "COMMIT;");
+  } catch (sqlerr_t exc) {
     sqlite3_close_v2 (pDb);
+    cerr << exc.what () << '\n';
     return NULL;
   }
   return pDb;

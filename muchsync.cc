@@ -16,23 +16,19 @@ main (int argc, char **argv)
   sqlite3 *db = dbopen (argv[1]);
   if (!db)
     exit (1);
-  /*
-  if (scan_notmuch (argv[2], db)) {
-    fprintf (stderr, "scan_notmuch failed\n");
-    fmtexec(db, "ROLLBACK;");
-    exit (1);
-  }
-  */
-  sqlite3_exec (db, "BEGIN;", NULL, NULL, NULL);
+
+  printf ("self = %lld\n", getconfig<i64>(db, "self"));
+
+  fmtexec (db, "BEGIN;");
   try {
     // scan_xapian (db, argv[2]);
     //scan_notmuch (db, argv[2]);
     scan_maildir (db, argv[2]);
-    sqlite3_exec (db, "COMMIT;", NULL, NULL, NULL);
+    fmtexec(db, "COMMIT;"); // see what happened
   }
   catch (std::runtime_error e) {
     fprintf (stderr, "%s\n", e.what ());
-    fmtexec(db, "COMMIT;"); // see what happened
+    fmtexec(db, "COMMIT;"); // XXX - see what happened
     exit (1);
   }
   sqlite3_close_v2 (db);

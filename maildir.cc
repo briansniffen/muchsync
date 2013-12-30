@@ -178,7 +178,7 @@ scan_maildir (sqlite3 *sqldb, const string &maildir)
 	   "DROP TABLE IF EXISTS current_files;"
 	   "CREATE TABLE current_files(filename TEXT UNIQUE NOT NULL);");
   sqlstmt_t maxctime_stmt (sqldb,
-			   "SELECT ifnull(max(ctime), 0) FROM old_maildir;");
+			   "SELECT ifnull(max(ctime), 0) FROM maildir;");
   double maxctime = (maxctime_stmt.step(), maxctime_stmt[0]);
 
   printf ("max ctime is %f\n", maxctime);
