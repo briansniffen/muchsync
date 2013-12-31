@@ -11,13 +11,12 @@ class cleanup {
   std::function<void()> action_;
 public:
   cleanup(std::function<void()> &&action) : action_(action) {}
-  template<typename R> cleanup(std::function<R()> &action)
-    : action_([action](){ action(); }) {}
+  template<typename... Args> cleanup (Args... args)
+    : action_(std::bind(args...)) {}
   ~cleanup() { action_(); }
 };
 
 /* sqlite.cc */
-using sqldb_t = std::unique_ptr<sqlite3, decltype (&sqlite3_close)>;
 using i64 = sqlite3_int64;
 
 struct sqlerr_t : public std::runtime_error {
@@ -53,7 +52,6 @@ class sqlstmt_t {
  public:
   explicit sqlstmt_t(sqlite3_stmt *stmt) : stmt_ (stmt) {}
   explicit sqlstmt_t(sqlite3 *db, const char *fmt, ...);
-  explicit sqlstmt_t(const sqldb_t &db, const char *fmt, ...);
   sqlstmt_t(const sqlstmt_t &r) = delete;
   sqlstmt_t(sqlstmt_t &&r) : stmt_ (r.stmt_) { r.stmt_ = nullptr; }
   ~sqlstmt_t() { sqlite3_finalize (stmt_); }
@@ -138,8 +136,6 @@ sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
 int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
 void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 
-sqlite3 *dbopen (const char *path);
-
 /* notmuch.cc */
 string message_tags (notmuch_message_t *message);
 void scan_xapian (sqlite3 *sqldb, const string &path);
@@ -147,6 +143,7 @@ void scan_notmuch (sqlite3 *db, const string &path);
 
 /* maildir.cc */
 void scan_maildir (sqlite3 *sqldb, const string &maildir);
+
 
 template<typename T> T
 getconfig (sqlite3 *db, const string &key)

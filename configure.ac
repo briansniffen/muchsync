@@ -8,12 +8,11 @@ AC_CONFIG_SRCDIR([configure.ac])
 AC_CONFIG_MACRO_DIRS([m4])
 
 AC_PROG_CXX
-AX_CXX_COMPILE_STDCXX_11(,mandatory)
+AX_CXX_COMPILE_STDCXX_11(noext,mandatory)
 dnl AC_USE_SYSTEM_EXTENSIONS
 
 PKG_CHECK_MODULES([sqlite3], [sqlite3])
 PKG_CHECK_MODULES([libcrypto], [libcrypto])
-PKG_CHECK_MODULES([talloc], [talloc])
 
 AC_PATH_PROG(XAPIAN_CONFIG, xapian-config)
 test -n "$XAPIAN_CONFIG" || AC_MSG_ERROR(Cannot find xapian-config)

@@ -128,12 +128,9 @@ scan_notmuch (sqlite3 *sqldb, const string &path)
 
   err = notmuch_database_open (path.c_str(), NOTMUCH_DATABASE_MODE_READ_ONLY,
 			       &notmuch);
-
   if (err)
     throw runtime_error (path + ": " + notmuch_status_to_string (err));
-
-  unique_ptr<notmuch_database_t, decltype(&notmuch_database_destroy)>
-    _cleanup {notmuch, notmuch_database_destroy};
+  cleanup _c (notmuch_database_destroy, notmuch);
 
   int pathprefixlen = path.length() + 1;
   notmuch_query_t *query = notmuch_query_create (notmuch, "");
