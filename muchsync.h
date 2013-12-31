@@ -1,6 +1,7 @@
 #include <cassert>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <sqlite3.h>
 #include <notmuch.h>
 
@@ -58,8 +59,14 @@ class sqlstmt_t {
 
   sqlite3_stmt *get() { return stmt_; }
   int status() const { return status_; }
-  bool row() { return status_ == SQLITE_ROW; }
-  bool done() { return status_ == SQLITE_DONE; }
+  bool row() {
+    if (status_ == SQLITE_ROW)
+      return true;
+    // Something like SQLITE_OK indicates row() not used after step()
+    assert (status_ == SQLITE_DONE);
+    return false;
+  }
+  bool done() { return !row(); }
   sqlstmt_t &step() { return set_status(sqlite3_step (stmt_)); }
   sqlstmt_t &reset() { return set_status(sqlite3_reset (stmt_)); }
   _sqlcolval_t operator[] (int iCol) {
@@ -143,6 +150,12 @@ void scan_notmuch (sqlite3 *db, const string &path);
 
 /* maildir.cc */
 void scan_maildir (sqlite3 *sqldb, const string &maildir);
+
+/* muchsync.cc */
+// Writestamp is the pair (replica-id, version-number)
+using writestamp = std::pair<i64,i64>;
+// Version vector is a set of writestamps with distinct replica-ids
+using versvector = std::unordered_map<i64,i64>;
 
 
 template<typename T> T

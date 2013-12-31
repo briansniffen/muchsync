@@ -1,5 +1,6 @@
 
 #include <iostream>
+#include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -81,6 +82,34 @@ dbopen (const char *path)
   return pDb;
 }
 
+versvector
+get_sync_vector (sqlite3 *db)
+{
+  versvector vv;
+  sqlstmt_t s (db, "SELECT replica, version FROM sync_vector;");
+  while (s.step().row())
+    vv.emplace (s[0], s[1]);
+  return vv;
+}
+
+string
+show_sync_vector (const versvector &vv)
+{
+  ostringstream sb;
+  sb << '<';
+  bool first = true;
+  for (auto ws : vv) {
+    if (first)
+      first = false;
+    else
+      sb << ", ";
+    sb << ws.first << '-' << ws.second;
+  }
+  sb << '>';
+  return sb.str();
+}
+
+
 int
 main (int argc, char **argv)
 {
@@ -92,10 +121,25 @@ main (int argc, char **argv)
   sqlite3 *db = dbopen (argv[1]);
   if (!db)
     exit (1);
+  cleanup _c (sqlite3_close_v2, db);
 
-  printf ("self = %lld\n", getconfig<i64>(db, "self"));
 
+  i64 self = getconfig<i64>(db, "self");
   fmtexec (db, "BEGIN;");
+  fmtexec (db, "UPDATE sync_vector"
+	   " SET version = version + 1 WHERE replica = %lld;",
+	   self);
+  if (sqlite3_changes (db) != 1) {
+    cerr << "My replica id (" << self << ") not in sync vector\n";
+    return 1;
+  }
+  versvector vv = get_sync_vector (db);
+  i64 vers = vv.at(self);
+
+  printf ("self = %lld\n", self);
+  printf ("version = %lld\n", vers);
+  printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
+
   try {
     // scan_xapian (db, argv[2]);
     //scan_notmuch (db, argv[2]);
@@ -107,7 +151,6 @@ main (int argc, char **argv)
     fmtexec(db, "COMMIT;"); // XXX - see what happened
     exit (1);
   }
-  sqlite3_close_v2 (db);
 
   return 0;
 }
