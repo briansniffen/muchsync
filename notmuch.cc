@@ -311,7 +311,7 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
       string path = dp->second + "/" + dirent;
       if (lookup.reset().param(path).step().done()
 	  || i64(lookup[0]) != i64 (*pi)
-	  || i64(lookup[0]) != dirno) {
+	  || i64(lookup[1]) != dirno) {
 	// XXX something wrong, as this branch always taken.
 	cout << "lookup " << int (lookup.done()) << ' ';
 	cout << *pi << ' ' << dirno;
@@ -320,8 +320,6 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
 	cout << '\n';
 	insert.reset().param(i64(*pi), dirno, path).step();
       }
-      else
-	cout << "skipping " << path << '\n';
       if (++pi != pe)
 	cerr << "warning: file direntry term " << *ti
 	     << " has multiple postings";
