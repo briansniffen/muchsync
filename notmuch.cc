@@ -25,6 +25,10 @@ const char xapian_filenames_def[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_filenames (
   docid INTEGER,
   filename TEXT UNIQUE);)";
+const char xapian_directories_def[] =
+  R"(CREATE TABLE IF NOT EXISTS xapian_directories (
+  docid INTEGER PRIMARY KEY,
+  directory TEXT UNIQUE);)";
 
 string
 tag_from_term (const string &term)
@@ -279,10 +283,46 @@ scan_xapian_filenames (sqlite3 *sqldb, Xapian::Database &xdb)
 }
 
 void
-scan_xapian (sqlite3 *sqldb, const string &path)
+scan_xapian_directories (sqlite3 *sqldb, Xapian::Database &xdb)
+{
+  save_old_table (sqldb, "xapian_directories", xapian_directories_def);
+  sqlstmt_t insert (sqldb, "INSERT INTO xapian_directories (docid, directory)"
+		    " VALUES (?,?);");
+
+  for (Xapian::TermIterator
+	 ti = xdb.allterms_begin(notmuch_directory_prefix),
+	 te = xdb.allterms_end(notmuch_directory_prefix);
+       ti != te; ti++) {
+    string dir = (*ti).substr(notmuch_directory_prefix.length());
+    if (dir.length() >= 4) {
+      string end (dir.substr (dir.length() - 4));
+      if (end != "/cur" && end != "/new")
+	continue;
+    }
+    else if (dir != "cur" && dir != "new")
+      continue;
+    Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
+      pe = xdb.postlist_end (*ti);
+    if (pi == pe)
+      cerr << "warning: directory term " << *ti << " has no postings";
+    else {
+      insert.reset().param (i64 (*pi), dir).step();
+      if (++pi != pe)
+	cerr << "warning: directory term " << *ti << " has multiple postings";
+    }
+  }
+}
+
+
+void
+scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 {
   Xapian::Database xdb (path + "/.notmuch/xapian");
+  cout << "scanning filenames...\n";
+  scan_xapian_directories (sqldb, xdb);
   scan_xapian_filenames (sqldb, xdb);
+  cout << "scanning message ids...\n";
   scan_message_ids (sqldb, xdb);
+  cout << "scanning tags...\n";
   scan_tags (sqldb, xdb);
 }

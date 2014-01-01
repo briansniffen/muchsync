@@ -164,7 +164,7 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 
 /* notmuch.cc */
 string message_tags (notmuch_message_t *message);
-void scan_xapian (sqlite3 *sqldb, const string &path);
+void scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path);
 void scan_notmuch (sqlite3 *db, const string &path);
 
 /* maildir.cc */

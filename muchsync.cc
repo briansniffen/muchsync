@@ -142,9 +142,9 @@ main (int argc, char **argv)
   printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
 
   try {
-    scan_xapian (db, argv[2]);
+    scan_xapian (db, ws, argv[2]);
     //scan_notmuch (db, argv[2]);
-    scan_maildir (db, ws, argv[2]);
+    //scan_maildir (db, ws, argv[2]);
     fmtexec(db, "COMMIT;");
   }
   catch (std::runtime_error e) {
