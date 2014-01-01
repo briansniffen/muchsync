@@ -27,11 +27,18 @@ const char xapian_filenames_def[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_filenames (
   docid INTEGER NOT NULL,
   dir_docid INTEGER NOT NULL,
-  path TEXT PRIMARY KEY);)";
+  path TEXT PRIMARY KEY,
+  replica INTEGER,
+  version INTEGER);)";
 const char xapian_directories_def[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_directories (
   docid INTEGER PRIMARY KEY,
   path TEXT UNIQUE);)";
+const char deleted_files_def[] =
+  R"(CREATE TABLE IF NOT EXISTS deleted_files (
+  path TEXT PRIMARY KEY,
+  replica INTEGER,
+  version INTEGER);)";
 
 string
 tag_from_term (const string &term)
@@ -270,9 +277,12 @@ void
 scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
 {
   auto dirs = get_xapian_directories (sqldb);
-  save_old_table (sqldb, "xapian_filenames", xapian_filenames_def);
-  sqlstmt_t s (sqldb, "INSERT INTO xapian_filenames(docid, dir_docid, path)"
-	       " VALUES (?, ?, ?);");
+  fmtexec (sqldb, xapian_filenames_def);
+  sqlstmt_t lookup (sqldb, "SELECT docid, dir_docid FROM xapian_filenames"
+		    " WHERE path = ?");
+  sqlstmt_t insert (sqldb, "INSERT OR REPLACE INTO xapian_filenames"
+		    " (docid, dir_docid, path, replica, version)"
+		    " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second);
 
   for (Xapian::TermIterator
 	 ti = xdb.allterms_begin(notmuch_file_direntry_prefix),
@@ -298,10 +308,20 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
     if (pi == pe)
       cerr << "warning: file direntry term " << *ti << " has no postings";
     else {
-      s.bind_int (1, *pi);
-      s.bind_int (2, dirno);
-      s.bind_text (3, dp->second + "/" + dirent);
-      s.step().reset();
+      string path = dp->second + "/" + dirent;
+      if (lookup.reset().param(path).step().done()
+	  || i64(lookup[0]) != i64 (*pi)
+	  || i64(lookup[0]) != dirno) {
+	// XXX something wrong, as this branch always taken.
+	cout << "lookup " << int (lookup.done()) << ' ';
+	cout << *pi << ' ' << dirno;
+	if (lookup.row())
+	  cout << " <- " << i64(lookup[0]) << ' ' << i64(lookup[1]);
+	cout << '\n';
+	insert.reset().param(i64(*pi), dirno, path).step();
+      }
+      else
+	cout << "skipping " << path << '\n';
       if (++pi != pe)
 	cerr << "warning: file direntry term " << *ti
 	     << " has multiple postings";
@@ -317,9 +337,7 @@ find_deleted (sqlite3 *sqldb, writestamp ws, const string &path)
     throw runtime_error (path + ": " + strerror (errno));
   cleanup _c (close, fd);
 
-  fmtexec (sqldb, "CREATE TABLE IF NOT EXISTS deleted_files"
-	   " (path TEXT PRIMARY KEY, replica INTEGER, version INTEGER);");
-
+  fmtexec (sqldb, deleted_files_def);
   sqlstmt_t insert (sqldb, "INSERT INTO deleted_files (path, replica, version)"
 		    " VALUES (?, %lld, %lld);", ws.first, ws.second);
   sqlstmt_t s (sqldb, "SELECT path FROM xapian_filenames;");
@@ -335,8 +353,9 @@ void
 scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 {
   Xapian::Database xdb (path + "/.notmuch/xapian");
-  cout << "scanning filenames...\n";
+  cout << "scanning direcotires...\n";
   scan_xapian_directories (sqldb, xdb);
+  cout << "scanning filenames...\n";
   scan_xapian_filenames (sqldb, ws, xdb);
   cout << "finding deleted...\n";
   find_deleted (sqldb, ws, path);
