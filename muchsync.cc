@@ -135,16 +135,17 @@ main (int argc, char **argv)
   }
   versvector vv = get_sync_vector (db);
   i64 vers = vv.at(self);
+  writestamp ws { self, vers };
 
   printf ("self = %lld\n", self);
   printf ("version = %lld\n", vers);
   printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
 
   try {
-    // scan_xapian (db, argv[2]);
+    scan_xapian (db, argv[2]);
     //scan_notmuch (db, argv[2]);
-    scan_maildir (db, argv[2]);
-    fmtexec(db, "COMMIT;"); // see what happened
+    scan_maildir (db, ws, argv[2]);
+    fmtexec(db, "COMMIT;");
   }
   catch (std::runtime_error e) {
     fprintf (stderr, "%s\n", e.what ());

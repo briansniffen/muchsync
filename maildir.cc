@@ -13,11 +13,13 @@
 using namespace std;
 
 const char maildir_def[] = R"(CREATE TABLE IF NOT EXISTS maildir (
-  filename TEXT UNIQUE NOT NULL,
+  filename TEXT PRIMARY KEY,
   ctime REAL,
   mtime REAL,
   size INTEGER,
-  hash TEXT
+  hash TEXT,
+  replica INTEGER,
+  version INTEGER
 );)";
 
 constexpr double
@@ -26,34 +28,11 @@ ts_to_double (const timespec &ts)
   return ts.tv_sec + ts.tv_nsec / 1000000000.0;
 }
 
-bool
-foreach_msg (const string &path, function<void (FTSENT *)> action)
+constexpr bool
+changed_since (const struct stat *sb, double time)
 {
-  char *paths[] {const_cast<char *> (path.c_str()), nullptr};
-  unique_ptr<FTS, decltype (&fts_close)>
-    ftsp {fts_open (paths, FTS_LOGICAL, nullptr), fts_close};
-  if (!ftsp)
-    return false;
-  bool in_msg_dir = false, looks_like_maildir = false;
-  while (FTSENT *f = fts_read (ftsp.get())) {
-    if (in_msg_dir) {
-      if (f->fts_info == FTS_D)
-	fts_set (ftsp.get(), f, FTS_SKIP);
-      else if (f->fts_info == FTS_DP) {
-	assert (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new"));
-	in_msg_dir = false;
-      }
-      else if (f->fts_name[0] != '.')
-	action (f);
-    }
-    else if (f->fts_info == FTS_D) {
-      if (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new"))
-	in_msg_dir = looks_like_maildir = true;
-      else if (f->fts_statp->st_nlink <= 2)
-	fts_set (ftsp.get(), f, FTS_SKIP);
-    }
-  }
-  return looks_like_maildir;
+  return ts_to_double (sb->st_mtim) >= time
+    || ts_to_double (sb->st_ctim) >= time;
 }
 
 bool
@@ -133,21 +112,15 @@ get_msgid (const string &file, string &msgid)
   return get_msgid (msg, msgid);
 }
 
-static void
-import_message (sqlstmt_t &record, sqlstmt_t &lookup, sqlstmt_t &insert,
-		double start, int skip, FTSENT *f)
+inline void
+check_message (sqlstmt_t &lookup, sqlstmt_t &insert, int skip, FTSENT *f)
 {
-  string filename ((f->fts_accpath) + skip);
+  string filename (f->fts_accpath + skip);
 
-  double ctime{ts_to_double(f->fts_statp->st_ctim)},
-    mtime{ts_to_double(f->fts_statp->st_mtim)};
+  double ctime (ts_to_double(f->fts_statp->st_ctim)),
+    mtime (ts_to_double(f->fts_statp->st_mtim));
   i64 size = f->fts_statp->st_size;
   string hash;
-
-  record.reset().param(filename).step();
-
-  if (mtime < start && ctime < start)
-    return;
 
   lookup.reset().param(filename).step();
 
@@ -166,18 +139,49 @@ import_message (sqlstmt_t &record, sqlstmt_t &lookup, sqlstmt_t &insert,
     hash = string (lookup[3]);
 
   insert.reset().param(filename, ctime, mtime, size, hash).step();
-  //cout << filename << "..." << hash << '\n';
+  // cout << filename << "..." << hash << '\n';
+}
+
+static void
+traverse_maildir (const string &dir, double oldest,
+		  sqlstmt_t &lookup, sqlstmt_t &insert)
+{
+  int dirlen = dir.length();
+  char *paths[] {const_cast<char *> (dir.c_str()), nullptr};
+  unique_ptr<FTS, decltype (&fts_close)>
+    ftsp {fts_open (paths, FTS_LOGICAL, nullptr), fts_close};
+  if (!ftsp)
+    throw runtime_error (dir + ": " + strerror (errno));
+  bool in_msg_dir = false;
+  while (FTSENT *f = fts_read (ftsp.get())) {
+    if (in_msg_dir) {
+      if (f->fts_info == FTS_D)
+	fts_set (ftsp.get(), f, FTS_SKIP);
+      else if (f->fts_info == FTS_DP) {
+	assert (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new"));
+	in_msg_dir = false;
+      }
+      else if (f->fts_name[0] != '.'
+	       && changed_since (f->fts_statp, oldest))
+	check_message (lookup, insert, dirlen, f);
+    }
+    else if (f->fts_info == FTS_D) {
+      if (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new")) {
+	if (changed_since (f->fts_statp, oldest))
+	  in_msg_dir = true;
+	else
+	  fts_set (ftsp.get(), f, FTS_SKIP);
+      }
+      else if (f->fts_statp->st_nlink <= 2)
+	fts_set (ftsp.get(), f, FTS_SKIP);
+    }
+  }
 }
 
 void
-scan_maildir (sqlite3 *sqldb, const string &maildir)
+scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir)
 {
   fmtexec (sqldb, maildir_def);
-  fmtexec (sqldb,
-	   "DROP TABLE IF EXISTS deleted_files;"
-	   "CREATE TEMP TABLE deleted_files(filename TEXT UNIQUE NOT NULL);"
-	   "INSERT INTO deleted_files"
-	   " SELECT filename FROM maildir WHERE hash IS NOT NULL;");
 
   double newtime, oldtime;
   {
@@ -197,21 +201,14 @@ scan_maildir (sqlite3 *sqldb, const string &maildir)
   }
 
   sqlstmt_t
-    record(sqldb, "DELETE FROM deleted_files WHERE filename = ?;"),
     lookup(sqldb, "SELECT ctime, mtime, size, hash FROM maildir"
 	   " WHERE filename = ?;"),
     insert(sqldb, "INSERT OR REPLACE INTO"
-	   " maildir (filename, ctime, mtime, size, hash)"
-	   " VALUES (?, ?, ?, ?, ?);");
+	   " maildir (filename, ctime, mtime, size, hash,"
+	   " replica, version)"
+	   " VALUES (?, ?, ?, ?, ?, %lld, %lld);", ws.first, ws.second);
 
-  foreach_msg (maildir,
-               [&] (FTSENT *f) {
-                 import_message (record, lookup, insert,
-				 oldtime, maildir.size(), f);
-               });
+  traverse_maildir (maildir, oldtime, lookup, insert);
 
-  fmtexec (sqldb, "UPDATE maildir"
-	   " SET ctime = NULL, mtime = NULL, size = NULL, hash = NULL"
-	   " WHERE filename IN (SELECT * from deleted_files);");
   setconfig (sqldb, "timestamp", newtime);
 }

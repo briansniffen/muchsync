@@ -143,21 +143,11 @@ sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
 int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
 void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 
-/* notmuch.cc */
-string message_tags (notmuch_message_t *message);
-void scan_xapian (sqlite3 *sqldb, const string &path);
-void scan_notmuch (sqlite3 *db, const string &path);
-
-/* maildir.cc */
-void scan_maildir (sqlite3 *sqldb, const string &maildir);
-
 /* muchsync.cc */
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
-
-
 template<typename T> T
 getconfig (sqlite3 *db, const string &key)
 {
@@ -172,3 +162,10 @@ setconfig (sqlite3 *db, const string &key, const T &value)
   sqlstmt_t(db, query).param(key, value).step();
 }
 
+/* notmuch.cc */
+string message_tags (notmuch_message_t *message);
+void scan_xapian (sqlite3 *sqldb, const string &path);
+void scan_notmuch (sqlite3 *db, const string &path);
+
+/* maildir.cc */
+void scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir);
