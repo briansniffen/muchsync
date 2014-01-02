@@ -19,10 +19,13 @@ const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 
-const char messages_def[] = R"(CREATE TABLE IF NOT EXISTS messages (
- docid INTEGER PRIMARY KEY,
- message_id TEXT UNIQUE NOT NULL,
- tags TEXT);)";
+const char messages_def[] =
+  R"(CREATE TABLE IF NOT EXISTS messages (
+  docid INTEGER UNIQUE,
+  message_id TEXT UNIQUE NOT NULL,
+  tags TEXT,
+  replica INTEGER,
+  version INTEGER);)";
 const char xapian_filenames_def[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_filenames (
   docid INTEGER NOT NULL,
@@ -39,6 +42,26 @@ const char deleted_files_def[] =
   path TEXT PRIMARY KEY,
   replica INTEGER,
   version INTEGER);)";
+
+static double
+time_stamp ()
+{
+  timespec ts;
+  clock_gettime (CLOCK_MONOTONIC, &ts);
+  return ts_to_double (ts);
+}
+
+static double start_time_stamp {time_stamp()};
+static double last_time_stamp {start_time_stamp};
+
+void
+print_time (string msg)
+{
+  double now = time_stamp();
+  cout << msg << "... " << now - start_time_stamp
+       << " (+" << now - last_time_stamp << ")\n";
+  last_time_stamp = now;
+}
 
 string
 tag_from_term (const string &term)
@@ -182,38 +205,34 @@ scan_notmuch (sqlite3 *sqldb, const string &path)
   }
 }
 
-
-void
+static void
 scan_message_ids (sqlite3 *sqldb, Xapian::Database &xdb)
 {
-  save_old_table (sqldb, "messages", messages_def);
-  sqlstmt_t s (sqldb, "INSERT INTO messages(docid, message_id, tags)"
-	       " VALUES (?, ?, '');");
+  fmtexec (sqldb, "DROP TABLE IF EXISTS current_messages; "
+	   "CREATE TEMP TABLE current_messages"
+	   " (docid INTEGER PRIMARY KEY, message_id TEXT NOT NULL,"
+	   " tags TEXT DEFAULT '');");
+  sqlstmt_t s (sqldb, "INSERT INTO current_messages (docid, message_id)"
+	       " VALUES (?, ?);");
 
   for (Xapian::ValueIterator
 	 vi = xdb.valuestream_begin (NOTMUCH_VALUE_MESSAGE_ID),
 	 ve = xdb.valuestream_end (NOTMUCH_VALUE_MESSAGE_ID);
-       vi != ve; vi++) {
-    // printf ("%lld '%s'\n", vi.get_docid(), (*vi).c_str());
-    s.reset ();
-    s.bind_int (1, vi.get_docid ());
-    s.bind_text (2, *vi);
-    s.step ();
-  }
+       vi != ve; vi++)
+    s.reset().param(i64(vi.get_docid()), *vi).step();
 }
 
-void
+static void
 scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
 {
-    sqlstmt_t s (sqldb, R"(
-UPDATE messages
-  SET tags = (tags || (CASE tags WHEN '' THEN '' ELSE ' ' END) || ?)
-  WHERE docid = ?;)");
+    sqlstmt_t s (sqldb, "UPDATE current_messages SET tags = tags"
+		 " || (CASE tags WHEN '' THEN '' ELSE ' ' END) || ?"
+		 " WHERE docid = ?;");
 
   for (Xapian::TermIterator ti = xdb.allterms_begin(notmuch_tag_prefix),
 	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
     string tag = tag_from_term (*ti);
-    cout << tag << "\n";
+    cout << "  " << tag << "\n";
     s.bind_text (1, tag);
     for (Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
 	   pe = xdb.postlist_end (*ti); pi != pe; pi++) {
@@ -312,12 +331,6 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
       if (lookup.reset().param(path).step().done()
 	  || i64(lookup[0]) != i64 (*pi)
 	  || i64(lookup[1]) != dirno) {
-	// XXX something wrong, as this branch always taken.
-	cout << "lookup " << int (lookup.done()) << ' ';
-	cout << *pi << ' ' << dirno;
-	if (lookup.row())
-	  cout << " <- " << i64(lookup[0]) << ' ' << i64(lookup[1]);
-	cout << '\n';
 	insert.reset().param(i64(*pi), dirno, path).step();
       }
       if (++pi != pe)
@@ -346,28 +359,36 @@ find_deleted (sqlite3 *sqldb, writestamp ws, const string &path)
   }
 }
 
-double
-now ()
-{
-  timespec ts;
-  clock_gettime (CLOCK_REALTIME, &ts);
-  return ts_to_double (ts);
-}
-
 void
 scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 {
-  double start = now ();
   Xapian::Database xdb (path + "/.notmuch/xapian");
-  cout << "scanning direcotires... " << now() - start << "\n";
+
+  fmtexec (sqldb, "pragma secure_delete = 0;");
+
+  print_time ("scanning directories");
   scan_xapian_directories (sqldb, xdb);
-  cout << "scanning filenames... " << now() - start << "\n";
+  print_time ("scanning filenames");
   scan_xapian_filenames (sqldb, ws, xdb);
-  cout << "finding deleted... " << now() - start << "\n";
+  print_time ("finding deleted");
   find_deleted (sqldb, ws, path);
-  cout << "scanning message ids... " << now() - start << "\n";
+  print_time ("scanning message ids");
   scan_message_ids (sqldb, xdb);
-  cout << "scanning tags... " << now() - start << "\n";
+  print_time ("gathering all tags");
   scan_tags (sqldb, xdb);
-  cout << "done " << now() - start << "\n";
+  print_time ("processing deleted messages");
+  fmtexec (sqldb, "UPDATE messages SET"
+	   " docid = NULL, tags = NULL, replica = %lld, version = %lld"
+	   " WHERE docid NOT IN"
+	   " (SELECT docid FROM current_messages INNER JOIN messages"
+	   " USING (docid, message_id));", ws.first, ws.second);
+  print_time ("updating tags");
+  fmtexec (sqldb, messages_def);
+  fmtexec (sqldb, "INSERT OR REPLACE INTO"
+	   " messages (docid, message_id, tags, replica, version) "
+	   "SELECT cm.docid, cm.message_id, cm.tags, %lld, %lld"
+	   " FROM current_messages cm LEFT OUTER JOIN messages m"
+	   " USING (docid, message_id) WHERE m.tags IS NOT cm.tags",
+	   ws.first, ws.second);
+  print_time ("done");
 }

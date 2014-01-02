@@ -5,7 +5,7 @@ AC_PREREQ([2.69])
 AC_INIT(muchsync, 0)
 AM_INIT_AUTOMAKE([-Wall])
 AC_CONFIG_SRCDIR([configure.ac])
-AC_CONFIG_MACRO_DIRS([m4])
+AC_CONFIG_MACRO_DIR([m4])
 
 AC_PROG_CXX
 AX_CXX_COMPILE_STDCXX_11(noext,mandatory)
