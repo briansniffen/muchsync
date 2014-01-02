@@ -5,9 +5,12 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
+#include <openssl/sha.h>
 #include <xapian.h>
 
 #include "muchsync.h"
@@ -26,23 +29,27 @@ const char messages_def[] =
   tags TEXT,
   replica INTEGER,
   version INTEGER);)";
-const char xapian_filenames_def[] =
-  R"(CREATE TABLE IF NOT EXISTS xapian_filenames (
+const char files_def[] =
+  R"(CREATE TABLE IF NOT EXISTS files (
   docid INTEGER,
   dir_docid INTEGER,
   path TEXT PRIMARY KEY,
+  mtime REAL,
+  size INT,
+  hash TEXT UNIQUE,
   replica INTEGER,
   version INTEGER);)";
-const char xapian_directories_def[] =
-  R"(CREATE TABLE IF NOT EXISTS xapian_directories (
+const char directories_def[] =
+  R"(CREATE TABLE IF NOT EXISTS directories (
   docid INTEGER PRIMARY KEY,
-  path TEXT UNIQUE);)";
+  path TEXT UNIQUE,
+  mctime REAL);)";
 
 static double
 time_stamp ()
 {
   timespec ts;
-  clock_gettime (CLOCK_MONOTONIC, &ts);
+  clock_gettime (CLOCK_REALTIME, &ts);
   return ts_to_double (ts);
 }
 
@@ -239,11 +246,12 @@ scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
 }
 
 void
-scan_xapian_directories (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
+scan_directories (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb,
+			 int rootfd)
 {
-  save_old_table (sqldb, "xapian_directories", xapian_directories_def);
-  sqlstmt_t insert (sqldb, "INSERT INTO xapian_directories (docid, path)"
-                    " VALUES (?,?);");
+  save_old_table (sqldb, "directories", directories_def);
+  sqlstmt_t insert (sqldb, "INSERT INTO directories"
+		    " (docid, path, mctime) VALUES (?,?,?);");
 
   for (Xapian::TermIterator
          ti = xdb.allterms_begin(notmuch_directory_prefix),
@@ -262,17 +270,29 @@ scan_xapian_directories (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
     if (pi == pe)
       cerr << "warning: directory term " << *ti << " has no postings";
     else {
-      insert.param (i64 (*pi), dir).step().reset();
+      insert.reset();
+      insert.bind_int (1, *pi);
+      insert.bind_text (2, dir);
+      struct stat sb;
+      if (fstatat (rootfd, dir.c_str(), &sb, 0)) {
+	cerr << dir << ": " << strerror (errno) << '\n';
+	insert.bind_null (3);
+      }
+      else {
+	insert.bind_real (3, max (ts_to_double (sb.st_mtim),
+				  ts_to_double (sb.st_ctim)));
+      }
+      insert.step();
       if (++pi != pe)
         cerr << "warning: directory term " << *ti << " has multiple postings";
     }
   }
 
-  fmtexec (sqldb, "UPDATE xapian_filenames "
+  fmtexec (sqldb, "UPDATE files "
 	   "SET docid = NULL, dir_docid = NULL, replica = %lld, version = %lld"
 	   " WHERE dir_docid IN (SELECT docid FROM"
-	   " (SELECT * from old_xapian_directories"
-	   " EXCEPT SELECT * from xapian_directories))",
+	   " (SELECT docid, path from old_directories"
+	   " EXCEPT SELECT docid, path from directories))",
 	   ws.first, ws.second);
 }
 
@@ -280,10 +300,51 @@ unordered_map<Xapian::docid, string>
 get_xapian_directories (sqlite3 *sqldb)
 {
   unordered_map<Xapian::docid, string> ret;
-  sqlstmt_t s (sqldb, "SELECT docid, path FROM xapian_directories;");
+  sqlstmt_t s (sqldb, "SELECT docid, path FROM directories;");
   while (s.step().row())
     ret.emplace (s.integer(0), s.str(1));
   return ret;
+}
+
+void
+scan_by_directory (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
+{
+  sqlstmt_t dirscan (sqldb, "SELECT docid, path"
+		     " FROM directories n LEFT OUTER JOIN old_directories o"
+		     " USING (docid, path) "
+		     " WHERE (n.mctime IS NULL) | (n.mctime IS NOT o.mctime);");
+
+  sqlstmt_t lookup (sqldb, "SELECT docid, dir_docid FROM files WHERE path = ?");
+  sqlstmt_t insert (sqldb, "INSERT OR REPLACE INTO files"
+		    " (docid, dir_docid, path, replica, version)"
+		    " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second);
+
+  while (dirscan.step().row()) {
+    Xapian::docid dir_docid = dirscan.integer(0);
+    string dir = dirscan.str(1);
+    string dirtermprefix = (notmuch_file_direntry_prefix
+			    + to_string (dir_docid) + ":");
+    for (Xapian::TermIterator
+	   ti = xdb.allterms_begin(dirtermprefix),
+	   te = xdb.allterms_end(dirtermprefix);
+	 ti != te; ti++) {
+      string dirent { (*ti).substr (dirtermprefix.length()) };
+      Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
+	pe = xdb.postlist_end (*ti);
+      if (pi == pe)
+	cerr << "warning: file direntry term " << *ti << " has no postings";
+      else {
+	string path = dir + "/" + dirent;
+	if (lookup.reset().bind_text(1, path).step().done()
+	    || lookup.integer(0) != *pi
+	    || lookup.integer(1) != dir_docid)
+	  insert.reset().param(i64(*pi), dir_docid, path).step();
+	if (++pi != pe)
+	  cerr << "warning: file direntry term " << *ti
+	       << " has multiple postings";
+      }
+    }
+  }
 }
 
 void
@@ -291,9 +352,9 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
 {
   auto dirs = get_xapian_directories (sqldb);
 
-  sqlstmt_t lookup (sqldb, "SELECT docid, dir_docid FROM xapian_filenames"
+  sqlstmt_t lookup (sqldb, "SELECT docid, dir_docid FROM files"
 		    " WHERE path = ?");
-  sqlstmt_t insert (sqldb, "INSERT OR REPLACE INTO xapian_filenames"
+  sqlstmt_t insert (sqldb, "INSERT OR REPLACE INTO files"
 		    " (docid, dir_docid, path, replica, version)"
 		    " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second);
 
@@ -333,18 +394,47 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
   }
 }
 
-void
-find_deleted (sqlite3 *sqldb, writestamp ws, const string &path)
+string
+hexdump (const string &s)
 {
-  int fd = open (path.c_str(), O_RDONLY);
+  ostringstream os;
+  os << hex << setw (2) << setfill ('0');
+  for (auto c : s)
+    os << (int (c) & 0xff);
+  return os.str ();
+}
+
+string
+get_sha (int dfd, string direntry)
+{
+  int fd = openat(dfd, direntry.c_str(), O_RDONLY);
   if (fd < 0)
-    throw runtime_error (path + ": " + strerror (errno));
+    throw runtime_error (direntry + ": " + strerror (errno));
   cleanup _c (close, fd);
 
-  sqlstmt_t scan (sqldb, "SELECT rowid, path FROM xapian_filenames"
+  SHA_CTX ctx;
+  SHA1_Init (&ctx);
+
+  char buf[16384];
+  int n;
+  while ((n = read (fd, buf, sizeof (buf))) > 0)
+    SHA1_Update (&ctx, buf, n);
+  if (n < 0)
+    throw runtime_error (direntry + ": " + strerror (errno));
+  unsigned char resbuf[SHA256_DIGEST_LENGTH];
+  SHA1_Final (resbuf, &ctx);
+  return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
+}
+
+void
+find_deleted (sqlite3 *sqldb, writestamp ws, int fd)
+{
+  sqlstmt_t scan (sqldb, "SELECT rowid, path FROM files"
 		  " WHERE docid IS NOT NULL;");
-  sqlstmt_t delfile (sqldb, "UPDATE xapian_filenames "
-		     "SET docid = NULL, replica = %lld, version = %lld"
+  sqlstmt_t delfile (sqldb, "UPDATE files "
+		     "SET docid = NULL,"
+		     " mtime = NULL, size = NULL, hash = NULL,"
+                     " replica = %lld, version = %lld"
 		     " WHERE rowid = ?;", ws.first, ws.second);
   while (scan.step().row())
     if (faccessat (fd, scan.c_str(1), 0, 0) && errno == ENOENT) {
@@ -356,18 +446,25 @@ find_deleted (sqlite3 *sqldb, writestamp ws, const string &path)
 void
 scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 {
+  double start_scan_time { time_stamp() };
+
+  int rootfd = open (path.c_str(), O_RDONLY);
+  if (rootfd < 0)
+    throw runtime_error (path + ": " + strerror (errno));
+  cleanup _c (close, rootfd);
+
   Xapian::Database xdb (path + "/.notmuch/xapian");
 
   fmtexec (sqldb, "pragma secure_delete = 0;");
   fmtexec (sqldb, messages_def);
-  fmtexec (sqldb, xapian_filenames_def);
+  fmtexec (sqldb, files_def);
 
   print_time ("scanning directories");
-  scan_xapian_directories (sqldb, ws, xdb);
+  scan_directories (sqldb, ws, xdb, rootfd);
   print_time ("scanning filenames");
-  scan_xapian_filenames (sqldb, ws, xdb);
-  print_time ("finding deleted files");
-  find_deleted (sqldb, ws, path);
+  scan_by_directory (sqldb, ws, xdb);
+  print_time ("finding deleted/changed files");
+  find_deleted (sqldb, ws, rootfd);
   print_time ("scanning message ids");
   scan_message_ids (sqldb, xdb);
   print_time ("gathering all tags");
@@ -386,4 +483,6 @@ scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 	   " USING (docid) WHERE m.tags IS NOT cm.tags",
 	   ws.first, ws.second);
   print_time ("done");
+
+  setconfig (sqldb, "last_scan", start_scan_time);
 }
