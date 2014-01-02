@@ -118,8 +118,8 @@ check_message (sqlstmt_t &lookup, sqlstmt_t &insert, int skip, FTSENT *f)
 
   lookup.reset().param(filename).step();
 
-  if (lookup.done() || !lookup[3] || size != i64 (lookup[2])
-      || mtime != double (lookup[1])) {
+  if (lookup.done() || lookup.null(3) || size != lookup.integer(2)
+      || mtime != lookup.real(1)) {
     ifstream msg (f->fts_accpath);
     hash = get_sha (msg);
     if (msg.fail()) {
@@ -127,10 +127,10 @@ check_message (sqlstmt_t &lookup, sqlstmt_t &insert, int skip, FTSENT *f)
       return;
     }
   }
-  else if (ctime == double (lookup[0]))
+  else if (ctime == lookup.real(0))
     return;
   else
-    hash = string (lookup[3]);
+    hash = lookup.str(3);
 
   insert.reset().param(filename, ctime, mtime, size, hash).step();
   // cout << filename << "..." << hash << '\n';

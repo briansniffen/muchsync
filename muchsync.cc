@@ -88,7 +88,7 @@ get_sync_vector (sqlite3 *db)
   versvector vv;
   sqlstmt_t s (db, "SELECT replica, version FROM sync_vector;");
   while (s.step().row())
-    vv.emplace (s[0], s[1]);
+    vv.emplace (s.integer(0), s.integer(1));
   return vv;
 }
 

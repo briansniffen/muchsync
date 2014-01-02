@@ -34,28 +34,13 @@ struct sqldone_t : public std::runtime_error {
   sqldone_t (const string &msg) : std::runtime_error (msg) {}
 };
 
-class _sqlcolval_t {
-  sqlite3_stmt *stmt_;
-  int iCol_;
- public:
-  _sqlcolval_t(sqlite3_stmt *stmt, int iCol) : stmt_ (stmt), iCol_ (iCol) {}
-  _sqlcolval_t(_sqlcolval_t &&) = default;
-  explicit operator bool() {
-    return sqlite3_column_type (stmt_, iCol_) != SQLITE_NULL;
-  }
-  operator i64() { return sqlite3_column_int64 (stmt_, iCol_); }
-  operator double() { return sqlite3_column_double (stmt_, iCol_); }
-  operator string() {
-    return { static_cast<const char *> (sqlite3_column_blob (stmt_, iCol_)),
-	size_t (sqlite3_column_bytes (stmt_, iCol_)) };
-  }
-};
-
 class sqlstmt_t {
   sqlite3_stmt *stmt_;
   int status_ = SQLITE_OK;
   sqlstmt_t &set_status (int status);
   void fail ();
+  void ensure_row () { if (status_ != SQLITE_ROW) fail(); }
+
  public:
   explicit sqlstmt_t(sqlite3_stmt *stmt) : stmt_ (stmt) {}
   explicit sqlstmt_t(sqlite3 *db, const char *fmt, ...);
@@ -75,12 +60,32 @@ class sqlstmt_t {
   bool done() { return !row(); }
   sqlstmt_t &step() { return set_status(sqlite3_step (stmt_)); }
   sqlstmt_t &reset() { return set_status(sqlite3_reset (stmt_)); }
-  _sqlcolval_t operator[] (int iCol) {
-    if (status_ != SQLITE_ROW)
-      fail();
-    return { stmt_, iCol };
+
+  /* Access columns */
+  template<typename T> T column (int);
+  bool null(int iCol) {
+    ensure_row();
+    return sqlite3_column_type (stmt_, iCol) != SQLITE_NULL;
+  }
+  i64 integer(int iCol) {
+    ensure_row();
+    return sqlite3_column_int64 (stmt_, iCol);
+  }
+  double real(int iCol) {
+    ensure_row();
+    return sqlite3_column_double (stmt_, iCol);
+  }
+  string str(int iCol) {
+    ensure_row();
+    return { static_cast<const char *> (sqlite3_column_blob (stmt_, iCol)),
+	size_t (sqlite3_column_bytes (stmt_, iCol)) };
+  }
+  const char *c_str(int iCol) {
+    ensure_row();
+    return reinterpret_cast<const char *> (sqlite3_column_text (stmt_, iCol));
   }
 
+  /* Bind parameters */
   sqlstmt_t &bind_null(int i) {
     return set_status (sqlite3_bind_null(stmt_, i));
   }
@@ -143,6 +148,32 @@ class sqlstmt_t {
   }
 };
 
+template<> inline bool
+sqlstmt_t::column (int iCol)
+{
+  return null (iCol);
+}
+template<> inline i64
+sqlstmt_t::column (int iCol)
+{
+  return integer (iCol);
+}
+template<> inline double
+sqlstmt_t::column (int iCol)
+{
+  return real (iCol);
+}
+template<> inline string
+sqlstmt_t::column (int iCol)
+{
+  return str (iCol);
+}
+template<> inline const char *
+sqlstmt_t::column (int iCol)
+{
+  return c_str (iCol);
+}
+
 void dbthrow (sqlite3 *db, const char *query);
 void fmtexec (sqlite3 *db, const char *fmt, ...);
 sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
@@ -154,11 +185,15 @@ void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
+
+/*
+ * Example: getconfig(db, "key", &sqlstmt_t::integer)
+ */
 template<typename T> T
 getconfig (sqlite3 *db, const string &key)
 {
   static const char query[] = "SELECT value FROM configuration WHERE key = ?;";
-  return sqlstmt_t(db, query).param(key).step()[0];
+  return sqlstmt_t(db, query).param(key).step().template column<T>(0);
 }
 template<typename T> void
 setconfig (sqlite3 *db, const string &key, const T &value)

@@ -28,8 +28,8 @@ const char messages_def[] =
   version INTEGER);)";
 const char xapian_filenames_def[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_filenames (
-  docid INTEGER NOT NULL,
-  dir_docid INTEGER NOT NULL,
+  docid INTEGER,
+  dir_docid INTEGER,
   path TEXT PRIMARY KEY,
   replica INTEGER,
   version INTEGER);)";
@@ -37,11 +37,6 @@ const char xapian_directories_def[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_directories (
   docid INTEGER PRIMARY KEY,
   path TEXT UNIQUE);)";
-const char deleted_files_def[] =
-  R"(CREATE TABLE IF NOT EXISTS deleted_files (
-  path TEXT PRIMARY KEY,
-  replica INTEGER,
-  version INTEGER);)";
 
 static double
 time_stamp ()
@@ -244,21 +239,21 @@ scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
 }
 
 void
-scan_xapian_directories (sqlite3 *sqldb, Xapian::Database &xdb)
+scan_xapian_directories (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
 {
   save_old_table (sqldb, "xapian_directories", xapian_directories_def);
   sqlstmt_t insert (sqldb, "INSERT INTO xapian_directories (docid, path)"
-		    " VALUES (?,?);");
+                    " VALUES (?,?);");
 
   for (Xapian::TermIterator
-	 ti = xdb.allterms_begin(notmuch_directory_prefix),
-	 te = xdb.allterms_end(notmuch_directory_prefix);
+         ti = xdb.allterms_begin(notmuch_directory_prefix),
+         te = xdb.allterms_end(notmuch_directory_prefix);
        ti != te; ti++) {
     string dir = (*ti).substr(notmuch_directory_prefix.length());
     if (dir.length() >= 4) {
       string end (dir.substr (dir.length() - 4));
       if (end != "/cur" && end != "/new")
-	continue;
+        continue;
     }
     else if (dir != "cur" && dir != "new")
       continue;
@@ -269,17 +264,16 @@ scan_xapian_directories (sqlite3 *sqldb, Xapian::Database &xdb)
     else {
       insert.param (i64 (*pi), dir).step().reset();
       if (++pi != pe)
-	cerr << "warning: directory term " << *ti << " has multiple postings";
+        cerr << "warning: directory term " << *ti << " has multiple postings";
     }
   }
 
-#if 0
-  fmtexec (sqldb, "DELETE FROM xapian_filenames WHERE dir_docid IN"
-	   " (SELECT docid from"
-	   " (SELECT * FROM old_xapian_directories"
-	   " EXECPT SELECT * FROM xapian_directories));"
-	   );
-#endif
+  fmtexec (sqldb, "UPDATE xapian_filenames "
+	   "SET docid = NULL, dir_docid = NULL, replica = %lld, version = %lld"
+	   " WHERE dir_docid IN (SELECT docid FROM"
+	   " (SELECT * from old_xapian_directories"
+	   " EXCEPT SELECT * from xapian_directories))",
+	   ws.first, ws.second);
 }
 
 unordered_map<Xapian::docid, string>
@@ -288,7 +282,7 @@ get_xapian_directories (sqlite3 *sqldb)
   unordered_map<Xapian::docid, string> ret;
   sqlstmt_t s (sqldb, "SELECT docid, path FROM xapian_directories;");
   while (s.step().row())
-    ret.emplace (i64(s[0]), string(s[1]));
+    ret.emplace (s.integer(0), s.str(1));
   return ret;
 }
 
@@ -296,10 +290,10 @@ void
 scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
 {
   auto dirs = get_xapian_directories (sqldb);
-  fmtexec (sqldb, xapian_filenames_def);
+
   sqlstmt_t lookup (sqldb, "SELECT docid, dir_docid FROM xapian_filenames"
 		    " WHERE path = ?");
-  sqlstmt_t insert (sqldb, "INSERT OR REPLACE INTO xapian_filenames"
+  sqlstmt_t insert (sqldb, "INSERT INTO xapian_filenames"
 		    " (docid, dir_docid, path, replica, version)"
 		    " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second);
 
@@ -328,11 +322,10 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
       cerr << "warning: file direntry term " << *ti << " has no postings";
     else {
       string path = dp->second + "/" + dirent;
-      if (lookup.reset().param(path).step().done()
-	  || i64(lookup[0]) != i64 (*pi)
-	  || i64(lookup[1]) != dirno) {
+      if (lookup.reset().bind_text(1, path).step().done()
+	  || lookup.integer(0) != *pi
+	  || lookup.integer(1) != dirno)
 	insert.reset().param(i64(*pi), dirno, path).step();
-      }
       if (++pi != pe)
 	cerr << "warning: file direntry term " << *ti
 	     << " has multiple postings";
@@ -348,15 +341,16 @@ find_deleted (sqlite3 *sqldb, writestamp ws, const string &path)
     throw runtime_error (path + ": " + strerror (errno));
   cleanup _c (close, fd);
 
-  fmtexec (sqldb, deleted_files_def);
-  sqlstmt_t insert (sqldb, "INSERT INTO deleted_files (path, replica, version)"
-		    " VALUES (?, %lld, %lld);", ws.first, ws.second);
-  sqlstmt_t s (sqldb, "SELECT path FROM xapian_filenames;");
-  while (s.step().row()) {
-    string path (s[0]);
-    if (faccessat (fd, path.c_str (), 0, 0) && errno == ENOENT)
-      insert.param(path).step().reset();
-  }
+  sqlstmt_t scan (sqldb, "SELECT rowid, path FROM xapian_filenames"
+		  " WHERE docid IS NOT NULL;");
+  sqlstmt_t delfile (sqldb, "UPDATE xapian_filenames "
+		     "SET docid = NULL, replica = %lld, version = %lld"
+		     " WHERE rowid = ?;", ws.first, ws.second);
+  while (scan.step().row())
+    if (faccessat (fd, scan.c_str(1), 0, 0) && errno == ENOENT) {
+      cout << "deleting " << scan.str(1) << "\n";
+      delfile.reset().param(scan.integer(0)).step();
+    }
 }
 
 void
@@ -365,12 +359,14 @@ scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
   Xapian::Database xdb (path + "/.notmuch/xapian");
 
   fmtexec (sqldb, "pragma secure_delete = 0;");
+  fmtexec (sqldb, messages_def);
+  fmtexec (sqldb, xapian_filenames_def);
 
   print_time ("scanning directories");
-  scan_xapian_directories (sqldb, xdb);
+  scan_xapian_directories (sqldb, ws, xdb);
   print_time ("scanning filenames");
   scan_xapian_filenames (sqldb, ws, xdb);
-  print_time ("finding deleted");
+  print_time ("finding deleted files");
   find_deleted (sqldb, ws, path);
   print_time ("scanning message ids");
   scan_message_ids (sqldb, xdb);
@@ -383,12 +379,11 @@ scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 	   " (SELECT docid FROM current_messages INNER JOIN messages"
 	   " USING (docid, message_id));", ws.first, ws.second);
   print_time ("updating tags");
-  fmtexec (sqldb, messages_def);
   fmtexec (sqldb, "INSERT OR REPLACE INTO"
 	   " messages (docid, message_id, tags, replica, version) "
 	   "SELECT cm.docid, cm.message_id, cm.tags, %lld, %lld"
 	   " FROM current_messages cm LEFT OUTER JOIN messages m"
-	   " USING (docid, message_id) WHERE m.tags IS NOT cm.tags",
+	   " USING (docid) WHERE m.tags IS NOT cm.tags",
 	   ws.first, ws.second);
   print_time ("done");
 }
