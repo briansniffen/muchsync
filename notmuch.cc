@@ -293,7 +293,7 @@ scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
 
   sqlstmt_t lookup (sqldb, "SELECT docid, dir_docid FROM xapian_filenames"
 		    " WHERE path = ?");
-  sqlstmt_t insert (sqldb, "INSERT INTO xapian_filenames"
+  sqlstmt_t insert (sqldb, "INSERT OR REPLACE INTO xapian_filenames"
 		    " (docid, dir_docid, path, replica, version)"
 		    " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second);
 
