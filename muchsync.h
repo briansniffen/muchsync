@@ -7,6 +7,12 @@
 
 using std::string;
 
+constexpr double
+ts_to_double (const timespec &ts)
+{
+  return ts.tv_sec + ts.tv_nsec / 1000000000.0;
+}
+
 /* Kludgy way to fit C cleanup functions into the C++ RAII scheme. */
 class cleanup {
   std::function<void()> action_;

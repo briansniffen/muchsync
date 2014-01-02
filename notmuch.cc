@@ -346,21 +346,28 @@ find_deleted (sqlite3 *sqldb, writestamp ws, const string &path)
   }
 }
 
+double
+now ()
+{
+  timespec ts;
+  clock_gettime (CLOCK_REALTIME, &ts);
+  return ts_to_double (ts);
+}
 
 void
 scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 {
+  double start = now ();
   Xapian::Database xdb (path + "/.notmuch/xapian");
-  cout << "scanning direcotires...\n";
+  cout << "scanning direcotires... " << now() - start << "\n";
   scan_xapian_directories (sqldb, xdb);
-  cout << "scanning filenames...\n";
+  cout << "scanning filenames... " << now() - start << "\n";
   scan_xapian_filenames (sqldb, ws, xdb);
-  cout << "finding deleted...\n";
+  cout << "finding deleted... " << now() - start << "\n";
   find_deleted (sqldb, ws, path);
-#if 0
-  cout << "scanning message ids...\n";
+  cout << "scanning message ids... " << now() - start << "\n";
   scan_message_ids (sqldb, xdb);
-  cout << "scanning tags...\n";
+  cout << "scanning tags... " << now() - start << "\n";
   scan_tags (sqldb, xdb);
-#endif
+  cout << "done " << now() - start << "\n";
 }
