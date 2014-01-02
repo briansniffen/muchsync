@@ -65,7 +65,7 @@ class sqlstmt_t {
   template<typename T> T column (int);
   bool null(int iCol) {
     ensure_row();
-    return sqlite3_column_type (stmt_, iCol) != SQLITE_NULL;
+    return sqlite3_column_type (stmt_, iCol) == SQLITE_NULL;
   }
   i64 integer(int iCol) {
     ensure_row();
@@ -207,6 +207,3 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 string message_tags (notmuch_message_t *message);
 void scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path);
 void scan_notmuch (sqlite3 *db, const string &path);
-
-/* maildir.cc */
-void scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir);

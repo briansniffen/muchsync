@@ -36,7 +36,7 @@ const char files_def[] =
   path TEXT PRIMARY KEY,
   mtime REAL,
   size INT,
-  hash TEXT UNIQUE,
+  hash TEXT,
   replica INTEGER,
   version INTEGER);)";
 const char directories_def[] =
@@ -126,8 +126,6 @@ term_from_tag (const string &tag)
     throw runtime_error ("term_from_tag: incomplete escape");
   return tagbuf.str();
 }
-
-
 
 string
 message_tags (notmuch_message_t *message)
@@ -306,7 +304,7 @@ get_xapian_directories (sqlite3 *sqldb)
   return ret;
 }
 
-void
+static void
 scan_by_directory (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
 {
   sqlstmt_t dirscan (sqldb, "SELECT docid, path"
@@ -347,54 +345,7 @@ scan_by_directory (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
   }
 }
 
-void
-scan_xapian_filenames (sqlite3 *sqldb, writestamp ws, Xapian::Database &xdb)
-{
-  auto dirs = get_xapian_directories (sqldb);
-
-  sqlstmt_t lookup (sqldb, "SELECT docid, dir_docid FROM files"
-		    " WHERE path = ?");
-  sqlstmt_t insert (sqldb, "INSERT OR REPLACE INTO files"
-		    " (docid, dir_docid, path, replica, version)"
-		    " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second);
-
-  for (Xapian::TermIterator
-	 ti = xdb.allterms_begin(notmuch_file_direntry_prefix),
-	 te = xdb.allterms_end(notmuch_file_direntry_prefix);
-       ti != te; ti++) {
-    string term = *ti;
-    char *dirent;
-    Xapian::docid dirno;
-    if (term.size() <= notmuch_file_direntry_prefix.size()
-	|| (dirno = strtoul(term.c_str() + notmuch_file_direntry_prefix.size(),
-			    &dirent, 10), *dirent++ != ':')) {
-      cerr << "warning: malformed file direntry " << term << '\n';
-      continue;
-    }
-    auto dp = dirs.find (dirno);
-    if (dp == dirs.end()) {
-      cerr << "warning: dir entry with unknown directory " << term << '\n';
-      continue;
-    }
-
-    Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
-      pe = xdb.postlist_end (*ti);
-    if (pi == pe)
-      cerr << "warning: file direntry term " << *ti << " has no postings";
-    else {
-      string path = dp->second + "/" + dirent;
-      if (lookup.reset().bind_text(1, path).step().done()
-	  || lookup.integer(0) != *pi
-	  || lookup.integer(1) != dirno)
-	insert.reset().param(i64(*pi), dirno, path).step();
-      if (++pi != pe)
-	cerr << "warning: file direntry term " << *ti
-	     << " has multiple postings";
-    }
-  }
-}
-
-string
+static string
 hexdump (const string &s)
 {
   ostringstream os;
@@ -404,12 +355,12 @@ hexdump (const string &s)
   return os.str ();
 }
 
-string
-get_sha (int dfd, string direntry)
+static string
+get_sha (int dfd, const char *direntry)
 {
-  int fd = openat(dfd, direntry.c_str(), O_RDONLY);
+  int fd = openat(dfd, direntry, O_RDONLY);
   if (fd < 0)
-    throw runtime_error (direntry + ": " + strerror (errno));
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
   cleanup _c (close, fd);
 
   SHA_CTX ctx;
@@ -420,27 +371,50 @@ get_sha (int dfd, string direntry)
   while ((n = read (fd, buf, sizeof (buf))) > 0)
     SHA1_Update (&ctx, buf, n);
   if (n < 0)
-    throw runtime_error (direntry + ": " + strerror (errno));
-  unsigned char resbuf[SHA256_DIGEST_LENGTH];
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+  unsigned char resbuf[SHA_DIGEST_LENGTH];
   SHA1_Final (resbuf, &ctx);
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
 
-void
-find_deleted (sqlite3 *sqldb, writestamp ws, int fd)
+static void
+find_changed_files (sqlite3 *sqldb, writestamp ws, int fd)
 {
-  sqlstmt_t scan (sqldb, "SELECT rowid, path FROM files"
-		  " WHERE docid IS NOT NULL;");
+  sqlstmt_t scan (sqldb, "SELECT rowid, path, mtime, size, hash FROM files"
+		  " WHERE (docid IS NOT NULL)"
+		  " & (dir_docid IN (SELECT docid FROM"
+		  " (SELECT * FROM directories EXCEPT"
+		  " SELECT * FROM old_directories)))");
   sqlstmt_t delfile (sqldb, "UPDATE files "
 		     "SET docid = NULL,"
 		     " mtime = NULL, size = NULL, hash = NULL,"
                      " replica = %lld, version = %lld"
 		     " WHERE rowid = ?;", ws.first, ws.second);
-  while (scan.step().row())
-    if (faccessat (fd, scan.c_str(1), 0, 0) && errno == ENOENT) {
-      cout << "deleting " << scan.str(1) << "\n";
+  sqlstmt_t updfile (sqldb, "UPDATE files SET mtime = ?, size = ?, hash = ?,"
+		     " replica = %lld, version = %lld WHERE rowid = ?;",
+		     ws.first, ws.second);
+  while (scan.step().row()) {
+    struct stat sb;
+    if (fstatat (fd, scan.c_str(1), &sb, 0) == 0) {
+      double mtim = ts_to_double(sb.st_mtim);
+      if (scan.null(4) || mtim != scan.real(2)
+	  || sb.st_size != scan.integer(3)) {
+	string hash;
+	try { hash = get_sha (fd, scan.c_str(1)); }
+	catch (runtime_error &e) { cerr << e.what(); continue; }
+	// cout << scan.str(1) << ": " << hash << '\n';
+	updfile.reset().param(mtim, i64(sb.st_size), hash,
+			      scan.integer(0)).step();
+      }
+    }
+    else if (errno == ENOENT) {
+      // cout << "deleting " << scan.str(1) << "\n";
       delfile.reset().param(scan.integer(0)).step();
     }
+    else {
+      cerr << scan.c_str(1) << ": " << strerror (errno) << '\n';
+    }
+  }
 }
 
 void
@@ -464,7 +438,7 @@ scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
   print_time ("scanning filenames");
   scan_by_directory (sqldb, ws, xdb);
   print_time ("finding deleted/changed files");
-  find_deleted (sqldb, ws, rootfd);
+  find_changed_files (sqldb, ws, rootfd);
   print_time ("scanning message ids");
   scan_message_ids (sqldb, xdb);
   print_time ("gathering all tags");
