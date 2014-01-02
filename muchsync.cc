@@ -11,19 +11,47 @@ using namespace std;
 
 #define DBVERS "muchsync 0"
 
+const char schema_def[] =
+R"(CREATE TABLE configuration (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT);
+CREATE TABLE sync_vector (
+  replica INTEGER PRIMARY KEY,
+  version INTEGER);
+CREATE TABLE messages (
+  docid INTEGER UNIQUE,
+  message_id TEXT UNIQUE NOT NULL,
+  tags TEXT,
+  replica INTEGER,
+  version INTEGER);
+CREATE TABLE hashes (
+  hash TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  docid INTEGER,
+  replica INTEGER,
+  version INTEGER,
+  create_replica INEGER,
+  create_version INTEGER);
+CREATE TABLE files (
+  docid INTEGER,
+  dir_docid INTEGER,
+  path TEXT PRIMARY KEY,
+  inode INT,
+  mtime REAL,
+  size INT,
+  hash TEXT,
+  replica INTEGER,
+  version INTEGER);)";
+
 sqlite3 *
 dbcreate (const char *path)
 {
-  static const char extra_defs[] = "\
-CREATE TABLE sync_vector (replica INTEGER PRIMARY KEY, version INTEGER);\n\
-CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
-
   i64 self;
   if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1) {
     fprintf (stderr, "RAND_pseudo_bytes failed\n");
     return NULL;
   }
-  self &= ~((i64) 1 << 63);
+  self &= ~(i64 (1) << 63);
 
   sqlite3 *pDb = NULL;
   int err = sqlite3_open_v2 (path, &pDb,
@@ -35,7 +63,7 @@ CREATE TABLE configuration (key TEXT PRIMARY KEY NOT NULL, value TEXT);";
 
   try {
     fmtexec (pDb, "BEGIN;");
-    fmtexec (pDb, extra_defs);
+    fmtexec (pDb, schema_def);
     setconfig (pDb, "DBVERS", DBVERS);
     setconfig (pDb, "self", self);
     fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
@@ -59,6 +87,8 @@ dbopen (const char *path)
     sqlite3_open_v2 (path, &pDb, SQLITE_OPEN_READWRITE, NULL);
   if (!pDb)
     return NULL;
+
+  fmtexec (pDb, "pragma secure_delete = 0;");
 
   try {
     if (getconfig<string> (pDb, "DBVERS") != DBVERS) {
@@ -103,12 +133,11 @@ show_sync_vector (const versvector &vv)
       first = false;
     else
       sb << ", ";
-    sb << ws.first << '-' << ws.second;
+    sb << 'R' << ws.first << '=' << ws.second;
   }
   sb << '>';
   return sb.str();
 }
-
 
 int
 main (int argc, char **argv)

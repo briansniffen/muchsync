@@ -37,3 +37,11 @@ Keeping local database up to date:
   Deletes require scanning whole database and calling access on files
     Deletes should be kept in database for a while to propagate them
     But shouldn't re-appear, old version on other replicas before sync time
+
+
+* Xapian lets us iterate through:
+    dirname, dir_docid
+    docid, message-id
+    dir_docid, filename, docid
+    tag, docid
+

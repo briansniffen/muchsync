@@ -84,6 +84,10 @@ class sqlstmt_t {
     ensure_row();
     return reinterpret_cast<const char *> (sqlite3_column_text (stmt_, iCol));
   }
+  sqlite3_value *value(int iCol) {
+    ensure_row();
+    return sqlite3_column_value(stmt_, iCol);
+  }
 
   /* Bind parameters */
   sqlstmt_t &bind_null(int i) {
@@ -108,6 +112,9 @@ class sqlstmt_t {
   }
   sqlstmt_t &bind_blob(int i, const void *p, int len) {
     return set_status (sqlite3_bind_blob(stmt_, i, p, len, SQLITE_STATIC));
+  }
+  sqlstmt_t &bind_value(int i, const sqlite3_value *v) {
+    return set_status (sqlite3_bind_value (stmt_, i, v));
   }
 
   sqlstmt_t &_param(int) { return *this; }
@@ -142,6 +149,10 @@ class sqlstmt_t {
   template<typename... Rest>
     sqlstmt_t &_param(int i, std::nullptr_t, Rest... rest) {
     return this->bind_null(i)._param(i+1, rest...);
+  }
+  template<typename... Rest>
+    sqlstmt_t &_param(int i, const sqlite3_value *v, Rest... rest) {
+    return this->bind_value(i, v)._param(i+1, rest...);
   }
   template<typename... Args> sqlstmt_t &param(Args&&... args) {
     return _param (1, std::forward<Args> (args)...);
@@ -206,4 +217,4 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 /* notmuch.cc */
 string message_tags (notmuch_message_t *message);
 void scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path);
-void scan_notmuch (sqlite3 *db, const string &path);
+//void scan_notmuch (sqlite3 *db, const string &path);

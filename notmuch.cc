@@ -22,23 +22,6 @@ const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 
-const char messages_def[] =
-  R"(CREATE TABLE IF NOT EXISTS messages (
-  docid INTEGER UNIQUE,
-  message_id TEXT UNIQUE NOT NULL,
-  tags TEXT,
-  replica INTEGER,
-  version INTEGER);)";
-const char files_def[] =
-  R"(CREATE TABLE IF NOT EXISTS files (
-  docid INTEGER,
-  dir_docid INTEGER,
-  path TEXT PRIMARY KEY,
-  mtime REAL,
-  size INT,
-  hash TEXT,
-  replica INTEGER,
-  version INTEGER);)";
 const char directories_def[] =
   R"(CREATE TABLE IF NOT EXISTS directories (
   docid INTEGER PRIMARY KEY,
@@ -154,6 +137,7 @@ message_tags (notmuch_message_t *message)
   return tagbuf.str ();
 }
 
+#if 0
 void
 scan_notmuch (sqlite3 *sqldb, const string &path)
 {
@@ -204,6 +188,7 @@ scan_notmuch (sqlite3 *sqldb, const string &path)
     notmuch_messages_move_to_next (messages);
   }
 }
+#endif
 
 static void
 scan_message_ids (sqlite3 *sqldb, Xapian::Database &xdb)
@@ -380,31 +365,43 @@ get_sha (int dfd, const char *direntry)
 static void
 find_changed_files (sqlite3 *sqldb, writestamp ws, int fd)
 {
-  sqlstmt_t scan (sqldb, "SELECT rowid, path, mtime, size, hash FROM files"
-		  " WHERE (docid IS NOT NULL)"
-		  " & (dir_docid IN (SELECT docid FROM"
-		  " (SELECT * FROM directories EXCEPT"
-		  " SELECT * FROM old_directories)))");
-  sqlstmt_t delfile (sqldb, "UPDATE files "
-		     "SET docid = NULL,"
-		     " mtime = NULL, size = NULL, hash = NULL,"
-                     " replica = %lld, version = %lld"
-		     " WHERE rowid = ?;", ws.first, ws.second);
+  sqlstmt_t scan
+    (sqldb,
+     "SELECT f.rowid, path, mtime, size, hash, inode, docid, m.message_id"
+     " FROM files f INNER JOIN current_messages m USING (docid)"
+     " WHERE dir_docid IN (SELECT docid FROM"
+     " (SELECT * FROM directories EXCEPT"
+     " SELECT * FROM old_directories))");
+  sqlstmt_t create_hash
+    (sqldb, "INSERT OR IGNORE INTO hashes"
+     " (hash, message_id, docid, replica, version,"
+     " create_replica, create_version)"
+     " VALUES (?, ?, ?, %lld, %lld, %lld, %lld);",
+     ws.first, ws.second, ws.first, ws.second);
+  sqlstmt_t update_hash
+    (sqldb, "UPDATE hashes SET message_id = ?, docid = ?,"
+     " replica = %lld, version = %lld WHERE hash = ?;", ws.first, ws.second);
+  sqlstmt_t delfile (sqldb, "DELETE FROM files WHERE rowid = ?;");
   sqlstmt_t updfile (sqldb, "UPDATE files SET mtime = ?, size = ?, hash = ?,"
-		     " replica = %lld, version = %lld WHERE rowid = ?;",
-		     ws.first, ws.second);
+		     " replica = %lld, version = %lld, inode = ?"
+		     " WHERE rowid = ?;", ws.first, ws.second);
+
   while (scan.step().row()) {
     struct stat sb;
     if (fstatat (fd, scan.c_str(1), &sb, 0) == 0) {
       double mtim = ts_to_double(sb.st_mtim);
       if (scan.null(4) || mtim != scan.real(2)
-	  || sb.st_size != scan.integer(3)) {
+	  || sb.st_size != scan.integer(3)
+	  || sb.st_ino != scan.integer(6)) {
 	string hash;
 	try { hash = get_sha (fd, scan.c_str(1)); }
 	catch (runtime_error &e) { cerr << e.what(); continue; }
-	// cout << scan.str(1) << ": " << hash << '\n';
+	cout << scan.str(1) << ": " << hash << '\n';
+	create_hash.reset().param(hash, scan.value(7), scan.value(6)).step();
+	if (sqlite3_changes (sqldb) <= 0)
+	  update_hash.reset().param(scan.value(7), scan.value(6), hash).step();
 	updfile.reset().param(mtim, i64(sb.st_size), hash,
-			      scan.integer(0)).step();
+			      i64(sb.st_ino), scan.integer(0)).step();
       }
     }
     else if (errno == ENOENT) {
@@ -429,20 +426,16 @@ scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path)
 
   Xapian::Database xdb (path + "/.notmuch/xapian");
 
-  fmtexec (sqldb, "pragma secure_delete = 0;");
-  fmtexec (sqldb, messages_def);
-  fmtexec (sqldb, files_def);
-
-  print_time ("scanning directories");
-  scan_directories (sqldb, ws, xdb, rootfd);
-  print_time ("scanning filenames");
-  scan_by_directory (sqldb, ws, xdb);
-  print_time ("finding deleted/changed files");
-  find_changed_files (sqldb, ws, rootfd);
-  print_time ("scanning message ids");
+  print_time ("scanning message ids in xapian");
   scan_message_ids (sqldb, xdb);
   print_time ("gathering all tags");
   scan_tags (sqldb, xdb);
+  print_time ("scanning directories in xapian");
+  scan_directories (sqldb, ws, xdb, rootfd);
+  print_time ("scanning filenames in modified directories");
+  scan_by_directory (sqldb, ws, xdb);
+  print_time ("finding changed files in file system");
+  find_changed_files (sqldb, ws, rootfd);
   print_time ("processing deleted messages");
   fmtexec (sqldb, "UPDATE messages SET"
 	   " docid = NULL, tags = NULL, replica = %lld, version = %lld"
