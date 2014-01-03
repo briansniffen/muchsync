@@ -42,7 +42,7 @@ CREATE TEMP TRIGGER message_id_delete AFTER DELETE ON main.message_ids
   END;
 
 CREATE TABLE IF NOT EXISTS deleted_dirs (
-  docid INTEGER PRIMARY KEY,
+  dir_docid INTEGER PRIMARY KEY,
   path TEXT UNIQUE); 
 
 CREATE TABLE IF NOT EXISTS new_files (
@@ -63,7 +63,7 @@ CREATE TEMP TRIGGER file_delete AFTER DELETE ON main.xapian_files
 const char xapian_dirs_schema[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_dirs (
   path TEXT UNIQUE NOT NULL,
-  docid INTEGER PRIMARY KEY,
+  dir_docid INTEGER PRIMARY KEY,
   mctime REAL);)";
 
 template<typename T> void
@@ -227,8 +227,8 @@ static void
 xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
 {
   save_old_table (sqldb, "xapian_dirs", xapian_dirs_schema);
-  sqlstmt_t insert
-    (sqldb, "INSERT INTO xapian_dirs (path, docid, mctime) VALUES (?, ?,?);");
+  sqlstmt_t insert (sqldb,
+      "INSERT INTO xapian_dirs (path, dir_docid, mctime) VALUES (?, ?,?);");
 
   for (Xapian::TermIterator
          ti = xdb.allterms_begin(notmuch_directory_prefix),
@@ -262,11 +262,11 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
     }
   }
 
-  fmtexec (sqldb, "INSERT INTO deleted_dirs (docid, path)"
-	   " SELECT docid, path from old_xapian_dirs"
-	   " EXCEPT SELECT docid, path from xapian_dirs;");
+  fmtexec (sqldb, "INSERT INTO deleted_dirs (dir_docid, path)"
+	   " SELECT dir_docid, path from old_xapian_dirs"
+	   " EXCEPT SELECT dir_docid, path from xapian_dirs;");
   fmtexec (sqldb, "DELETE FROM xapian_files"
-	   " WHERE dir_docid IN (SELECT docid FROM deleted_dirs);");
+	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs);");
 }
 
 static void
@@ -274,8 +274,8 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
 {
   sqlstmt_t
     dirscan (sqldb, "\
-SELECT path, docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
- USING (path, docid) WHERE ifnull (n.mctime != o.mctime, 1);"),
+SELECT path, dir_docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
+ USING (path, dir_docid) WHERE ifnull (n.mctime != o.mctime, 1);"),
     filescan (sqldb, "SELECT file_id, name, docid FROM xapian_files"
 	      " WHERE dir_docid = ? ORDER BY name;"),
     add_file (sqldb, "INSERT INTO xapian_files (name, docid, dir_docid)"
