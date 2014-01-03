@@ -9,6 +9,8 @@
 
 using namespace std;
 
+bool opt_fullscan;
+
 #define DBVERS "muchsync 0"
 
 const char schema_def[] =
@@ -27,7 +29,7 @@ CREATE TABLE message_ids (
   message_id TEXT UNIQUE NOT NULL,
   docid INTEGER PRIMARY KEY);
 CREATE TABLE xapian_files (
-  file_id INTEGER PRIMARY KEY,
+  file_id INTEGER PRIMARY KEY AUTOINCREMENT,
   dir_docid INTEGER,
   name TEXT NOT NULL,
   docid INTEGER,
@@ -181,11 +183,12 @@ main (int argc, char **argv)
   printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
 
   try {
-    xapian_scan (db, ws, argv[2]);
-    //scan_xapian (db, ws, argv[2]);
+    double start_scan_time { time_stamp() };
 
-    //scan_notmuch (db, argv[2]);
-    //scan_maildir (db, ws, argv[2]);
+    xapian_scan (db, ws, argv[2]);
+    //hash_files (db, ws, argv[2]);
+
+    setconfig (db, "last_scan", start_scan_time);
     fmtexec(db, "COMMIT;");
   }
   catch (std::runtime_error e) {

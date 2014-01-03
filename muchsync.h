@@ -194,6 +194,7 @@ int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
 void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 
 /* muchsync.cc */
+extern bool opt_fullscan;
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
@@ -221,3 +222,6 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 void xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path);
 string term_from_tag (const string &tag);
 string tag_from_term (const string &term);
+
+/* filehash.cc */
+void hash_files (sqlite3 *sqldb, writestamp ws, const string &path);

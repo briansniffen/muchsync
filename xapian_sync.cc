@@ -51,13 +51,14 @@ CREATE TEMP TRIGGER file_insert AFTER INSERT ON main.xapian_files
   BEGIN INSERT INTO new_files (file_id) VALUES (new.file_id); END;
 
 CREATE TABLE IF NOT EXISTS deleted_files (
+  file_id INTEGER PRIMARY KEY,
   dir_docid INTEGER,
   name TEXT NOT NULL,
   docid INTEGER,
   UNIQUE (dir_docid, name));
 CREATE TEMP TRIGGER file_delete AFTER DELETE ON main.xapian_files
-  BEGIN INSERT INTO deleted_files (name, dir_docid, docid)
-        VALUES (old.name, old.dir_docid, old.docid); END;
+  BEGIN INSERT INTO deleted_files (file_id, name, dir_docid, docid)
+        VALUES (old.file_id, old.name, old.dir_docid, old.docid); END;
 )";
 
 const char xapian_dirs_schema[] =
@@ -266,6 +267,8 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
 	   " SELECT dir_docid, path from old_xapian_dirs"
 	   " EXCEPT SELECT dir_docid, path from xapian_dirs;");
   fmtexec (sqldb, "DELETE FROM xapian_files"
+	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs); "
+	   "UPDATE deleted_files SET dir_docid = NULL"
 	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs);");
 }
 
@@ -273,9 +276,16 @@ static void
 xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
 {
   sqlstmt_t
+    /*
+      Sadly, this optimization is effective but not quite kosher.
+      Consider the case that muchsync is run after directories are
+      changed but before "notmuch new" has been run.
+
     dirscan (sqldb, "\
 SELECT path, dir_docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
  USING (path, dir_docid) WHERE ifnull (n.mctime != o.mctime, 1);"),
+    */
+    dirscan (sqldb, "SELECT path, dir_docid FROM xapian_dirs;"),
     filescan (sqldb, "SELECT file_id, name, docid FROM xapian_files"
 	      " WHERE dir_docid = ? ORDER BY name;"),
     add_file (sqldb, "INSERT INTO xapian_files (name, docid, dir_docid)"
@@ -303,6 +313,13 @@ SELECT path, dir_docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
 	if (!tip)
 	  del_file.reset().param(sp->value(0)).step();
 	else {
+	  if (sp && !opt_fullscan) {
+	    /* This is an arguably safe optimization--it breaks only
+	       if a filename is assigned a new docid (e.g., file
+	       disappears then reappears).  Should maybe be
+	       overridable by a command-line argument.  */
+	    return;
+	  }
 	  string dirent { (*ti).substr(dirtermprefix.length()) };
 	  Xapian::PostingIterator pi = xdb.postlist_begin (**tip),
 	    pe = xdb.postlist_end (**tip);
@@ -326,6 +343,9 @@ SELECT path, dir_docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
 	}
       });
   }
+  fmtexec (sqldb,
+	   "UPDATE deleted_files SET docid = NULL"
+	   " WHERE docid IN (SELECT docid FROM deleted_docids);");
 }
 
 void
