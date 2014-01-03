@@ -1,6 +1,8 @@
 #include <cstring>
 #include <functional>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -17,22 +19,6 @@ constexpr int NOTMUCH_VALUE_MESSAGE_ID = 1;
 const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
-
-const char xapian_schema[] =
-R"(CREATE TABLE IF NOT EXISTS tags (
-  tag TEXT NOT NULL,
-  docid INTEGER NOT NULL,
-  UNIQUE (docid, tag),
-  UNIQUE (tag, docid));
-CREATE TABLE IF NOT EXISTS message_ids (
-  message_id TEXT UNIQUE NOT NULL,
-  docid INTEGER PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS xapian_files (
-  file_id INTEGER PRIMARY KEY,
-  dir_docid INTEGER,
-  name TEXT NOT NULL,
-  docid INTEGER,
-  UNIQUE (dir_docid, name));)";
 
 const char xapian_triggers[] =
 R"(CREATE TABLE IF NOT EXISTS modified_docids (
@@ -106,6 +92,68 @@ sync_table (sqlstmt_t &s, T &t, T &te,
     update (NULL, &t);
     ++t;
   }
+}
+
+string
+tag_from_term (const string &term)
+{
+  assert (!strncmp (term.c_str(), notmuch_tag_prefix.c_str(),
+		    notmuch_tag_prefix.length()));
+
+  ostringstream tagbuf;
+  tagbuf.fill('0');
+  tagbuf.setf(ios::hex, ios::basefield);
+
+  char c;
+  for (const char *p = term.c_str() + 1; (c = *p); p++)
+    if (isalnum (c) || (c >= '+' && c <= '.')
+	|| c == '_' || c == '@' || c == '=')
+      tagbuf << c;
+    else
+      tagbuf << '%' << setw(2) << int (uint8_t (c));
+
+  return tagbuf.str ();
+}
+
+inline int
+hexdigit (char c)
+{
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  else if (c >= 'a' && c <= 'f')
+    return c - 'a' + 10;
+  else
+    throw runtime_error ("illegal hexdigit " + string (1, c));
+}
+
+string
+term_from_tag (const string &tag)
+{
+  ostringstream tagbuf;
+  tagbuf << notmuch_tag_prefix;
+  int escape_pos = 0, escape_val;
+  char c;
+  for (const char *p = tag.c_str() + 1; (c = *p); p++) {
+    switch (escape_pos) {
+    case 0:
+      if (c == '%')
+	escape_pos = 1;
+      else
+	tagbuf << c;
+      break;
+    case 1:
+      escape_val = hexdigit(c) << 4;
+      escape_pos = 2;
+      break;
+    case 2:
+      escape_pos = 0;
+      tagbuf << char (escape_val | hexdigit(c));
+      break;
+    }
+  }
+  if (escape_pos)
+    throw runtime_error ("term_from_tag: incomplete escape");
+  return tagbuf.str();
 }
 
 static void
@@ -291,7 +339,6 @@ xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
   Xapian::Database xdb (path + "/.notmuch/xapian");
 
   print_time ("configuring database");
-  fmtexec (sqldb, xapian_schema);
   fmtexec (sqldb, xapian_triggers);
   fmtexec (sqldb, "DELETE FROM modified_docids; "
 	   "DELETE FROM deleted_docids; "

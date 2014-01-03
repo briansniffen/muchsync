@@ -198,6 +198,7 @@ void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
+void print_time (string msg);
 
 /*
  * Example: getconfig(db, "key", &sqlstmt_t::integer)
@@ -216,13 +217,7 @@ setconfig (sqlite3 *db, const string &key, const T &value)
   sqlstmt_t(db, query).param(key, value).step();
 }
 
-/* notmuch.cc */
-void print_time (string msg);
-string term_from_tag (const string &tag);
-string tag_from_term (const string &term);
-string message_tags (notmuch_message_t *message);
-void scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path);
-//void scan_notmuch (sqlite3 *db, const string &path);
-
 /* xapian_sync.cc */
 void xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path);
+string term_from_tag (const string &tag);
+string tag_from_term (const string &term);

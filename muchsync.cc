@@ -18,33 +18,40 @@ R"(CREATE TABLE configuration (
 CREATE TABLE sync_vector (
   replica INTEGER PRIMARY KEY,
   version INTEGER);
-)";
-#if 0
-R"(CREATE TABLE messages (
-  docid INTEGER UNIQUE,
+CREATE TABLE tags (
+  tag TEXT NOT NULL,
+  docid INTEGER NOT NULL,
+  UNIQUE (docid, tag),
+  UNIQUE (tag, docid));
+CREATE TABLE message_ids (
   message_id TEXT UNIQUE NOT NULL,
-  tags TEXT,
-  replica INTEGER,
-  version INTEGER);
-CREATE TABLE hashes (
-  hash TEXT PRIMARY KEY,
-  message_id TEXT NOT NULL,
-  docid INTEGER,
-  replica INTEGER,
-  version INTEGER,
-  create_replica INEGER,
-  create_version INTEGER);
-CREATE TABLE files (
-  docid INTEGER,
+  docid INTEGER PRIMARY KEY);
+CREATE TABLE xapian_files (
+  file_id INTEGER PRIMARY KEY,
   dir_docid INTEGER,
-  path TEXT PRIMARY KEY,
-  inode INT,
-  mtime REAL,
-  size INT,
-  hash TEXT,
-  replica INTEGER,
-  version INTEGER);)";
-#endif
+  name TEXT NOT NULL,
+  docid INTEGER,
+  UNIQUE (dir_docid, name));)";
+
+static double
+time_stamp ()
+{
+  timespec ts;
+  clock_gettime (CLOCK_REALTIME, &ts);
+  return ts_to_double (ts);
+}
+
+static double start_time_stamp {time_stamp()};
+static double last_time_stamp {start_time_stamp};
+
+void
+print_time (string msg)
+{
+  double now = time_stamp();
+  cout << msg << "... " << now - start_time_stamp
+       << " (+" << now - last_time_stamp << ")\n";
+  last_time_stamp = now;
+}
 
 sqlite3 *
 dbcreate (const char *path)

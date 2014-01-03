@@ -22,93 +22,38 @@ const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 
+#if 0
+R"(CREATE TABLE messages (
+  docid INTEGER UNIQUE,
+  message_id TEXT UNIQUE NOT NULL,
+  tags TEXT,
+  replica INTEGER,
+  version INTEGER);
+CREATE TABLE hashes (
+  hash TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL,
+  docid INTEGER,
+  replica INTEGER,
+  version INTEGER,
+  create_replica INEGER,
+  create_version INTEGER);
+CREATE TABLE files (
+  docid INTEGER,
+  dir_docid INTEGER,
+  path TEXT PRIMARY KEY,
+  inode INT,
+  mtime REAL,
+  size INT,
+  hash TEXT,
+  replica INTEGER,
+  version INTEGER);)";
+#endif
+
 const char directories_def[] =
   R"(CREATE TABLE IF NOT EXISTS directories (
   docid INTEGER PRIMARY KEY,
   path TEXT UNIQUE,
   mctime REAL);)";
-
-static double
-time_stamp ()
-{
-  timespec ts;
-  clock_gettime (CLOCK_REALTIME, &ts);
-  return ts_to_double (ts);
-}
-
-static double start_time_stamp {time_stamp()};
-static double last_time_stamp {start_time_stamp};
-
-void
-print_time (string msg)
-{
-  double now = time_stamp();
-  cout << msg << "... " << now - start_time_stamp
-       << " (+" << now - last_time_stamp << ")\n";
-  last_time_stamp = now;
-}
-
-string
-tag_from_term (const string &term)
-{
-  assert (!strncmp (term.c_str(), notmuch_tag_prefix.c_str(),
-		    notmuch_tag_prefix.length()));
-
-  ostringstream tagbuf;
-  tagbuf.fill('0');
-  tagbuf.setf(ios::hex, ios::basefield);
-
-  char c;
-  for (const char *p = term.c_str() + 1; (c = *p); p++)
-    if (isalnum (c) || (c >= '+' && c <= '.')
-	|| c == '_' || c == '@' || c == '=')
-      tagbuf << c;
-    else
-      tagbuf << '%' << setw(2) << int (uint8_t (c));
-
-  return tagbuf.str ();
-}
-
-inline int
-hexdigit (char c)
-{
-  if (c >= '0' && c <= '9')
-    return c - '0';
-  else if (c >= 'a' && c <= 'f')
-    return c - 'a' + 10;
-  else
-    throw runtime_error ("illegal hexdigit " + string (1, c));
-}
-
-string
-term_from_tag (const string &tag)
-{
-  ostringstream tagbuf;
-  tagbuf << notmuch_tag_prefix;
-  int escape_pos = 0, escape_val;
-  char c;
-  for (const char *p = tag.c_str() + 1; (c = *p); p++) {
-    switch (escape_pos) {
-    case 0:
-      if (c == '%')
-	escape_pos = 1;
-      else
-	tagbuf << c;
-      break;
-    case 1:
-      escape_val = hexdigit(c) << 4;
-      escape_pos = 2;
-      break;
-    case 2:
-      escape_pos = 0;
-      tagbuf << char (escape_val | hexdigit(c));
-      break;
-    }
-  }
-  if (escape_pos)
-    throw runtime_error ("term_from_tag: incomplete escape");
-  return tagbuf.str();
-}
 
 string
 message_tags (notmuch_message_t *message)
