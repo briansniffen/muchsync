@@ -186,7 +186,7 @@ main (int argc, char **argv)
     double start_scan_time { time_stamp() };
 
     xapian_scan (db, ws, argv[2]);
-    //hash_files (db, ws, argv[2]);
+    hash_files (db, ws, argv[2]);
 
     setconfig (db, "last_scan", start_scan_time);
     fmtexec(db, "COMMIT;");

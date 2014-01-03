@@ -44,8 +44,6 @@ hexdump (const string &s)
 static string
 get_sha (int dfd, const char *direntry, struct stat *sbp)
 {
-  print_time (string ("hashing ") + direntry);
-
   int fd = openat(dfd, direntry, O_RDONLY);
   if (fd < 0)
     throw runtime_error (string() + direntry + ": " + strerror (errno));
@@ -64,9 +62,6 @@ get_sha (int dfd, const char *direntry, struct stat *sbp)
     throw runtime_error (string() + direntry + ": " + strerror (errno));
   unsigned char resbuf[SHA_DIGEST_LENGTH];
   SHA1_Final (resbuf, &ctx);
-
-  print_time ("done");
-
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
 
@@ -84,15 +79,11 @@ hash_files (sqlite3 *sqldb, writestamp ws, const string &path)
 R"(SELECT file_id, path || '/' || name, docid, message_id
  FROM xapian_files NATURAL JOIN xapian_dirs NATURAL JOIN message_ids
  WHERE file_id NOT IN (SELECT file_id FROM file_hashes);)"),
-    find_rename (sqldb,
-R"(SELECT hash_id, message_id
- FROM file_hashes NATURAL JOIN hashes
- NATURAL JOIN message_ids NATURAL JOIN xapian_files
- WHERE inode = ? & mtime = ? & size = ?;)"),
-    create_hash (sqldb,
-		 "INSERT INTO hashes (hash, size, message_id) VALUES (?,?,?);"),
-    create_filehash (sqldb, "INSERT INTO file_hashes "
-		     "(file_id, hash_id, mtime, inode) VALUES (?,?,?,?);");
+    find_hash (sqldb, "SELECT hash_id FROM hashes WHERE hash = ?;"),
+    create_hash (sqldb, "INSERT INTO hashes"
+		 " (hash, size, message_id) VALUES (?,?,?);"),
+    create_filehash (sqldb, "INSERT INTO file_hashes"
+		     " (file_id, hash_id, mtime, inode) VALUES (?,?,?,?);");
  
 
   print_time ("hashing new files");
@@ -100,10 +91,28 @@ R"(SELECT hash_id, message_id
   while (need_hash.step().row()) {
     struct stat sb;
     const char *pathname = need_hash.c_str(1);
-    if (fstatat (rootfd, pathname, &sb, 0)) {
-      perror (pathname);
-      continue;
+    string hashval;
+    i64 hash_id;
+
+    try { hashval = get_sha (rootfd, pathname, &sb); }
+    catch (runtime_error e) { cerr << e.what() << '\n'; continue; }
+
+    if (find_hash.reset().param(hashval).step().row()) {
+      hash_id = find_hash.integer(0);
     }
+    else {
+      create_hash.reset()
+	.param(hashval, i64(sb.st_size), need_hash.value(3))
+	.step();
+      hash_id = sqlite3_last_insert_rowid (sqldb);
+    }
+
+    create_filehash.reset()
+      .param(need_hash.value(0), hash_id,
+	     ts_to_double(sb.st_mtim), i64(sb.st_ino))
+      .step();
+
+#if 0
     find_rename.reset().param(i64(sb.st_ino), ts_to_double(sb.st_mtim),
 			      i64(sb.st_size)).step();
     i64 hash_id;
@@ -123,14 +132,13 @@ R"(SELECT hash_id, message_id
     create_filehash.reset().param(need_hash.value(0),hash_id,
 				  ts_to_double(sb.st_mtim),
 				  i64(sb.st_ino)).step();
+#endif
   }
 
   print_time ("cleaning up");
 
   fmtexec (sqldb, "DELETE FROM file_hashes WHERE file_id IN"
-	   " (SELECT file_id FROM deleted_files); "
-	   "UPDATE hashes SET docid = NULL WHERE docid IN"
-	   " (SELECT docid FROM deleted_docids);");
+	   " (SELECT file_id FROM deleted_files); ");
 
   print_time ("done");
 }
