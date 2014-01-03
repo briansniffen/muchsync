@@ -1,3 +1,5 @@
+// -*- C++ -*-
+
 #include <cassert>
 #include <memory>
 #include <string>
@@ -215,6 +217,12 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 }
 
 /* notmuch.cc */
+void print_time (string msg);
+string term_from_tag (const string &tag);
+string tag_from_term (const string &term);
 string message_tags (notmuch_message_t *message);
 void scan_xapian (sqlite3 *sqldb, writestamp ws, const string &path);
 //void scan_notmuch (sqlite3 *db, const string &path);
+
+/* xapian_sync.cc */
+void xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path);
