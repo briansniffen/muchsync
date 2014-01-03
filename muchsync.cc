@@ -18,7 +18,9 @@ R"(CREATE TABLE configuration (
 CREATE TABLE sync_vector (
   replica INTEGER PRIMARY KEY,
   version INTEGER);
-CREATE TABLE messages (
+)";
+#if 0
+R"(CREATE TABLE messages (
   docid INTEGER UNIQUE,
   message_id TEXT UNIQUE NOT NULL,
   tags TEXT,
@@ -42,6 +44,7 @@ CREATE TABLE files (
   hash TEXT,
   replica INTEGER,
   version INTEGER);)";
+#endif
 
 sqlite3 *
 dbcreate (const char *path)
