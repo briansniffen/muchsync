@@ -12,14 +12,18 @@
 
 using namespace std;
 
-const char maildir_def[] = R"(CREATE TABLE IF NOT EXISTS maildir (
-  filename TEXT PRIMARY KEY,
+const char maildir_def[] = R"(
+CREATE TABLE IF NOT EXISTS maildir_files (
+  dir_path TEXT NOT NULL,
+  name TEXT NOT NULL,
   ctime REAL,
   mtime REAL,
   size INTEGER,
   hash TEXT,
+  inode INTEGER,
   replica INTEGER,
-  version INTEGER
+  version INTEGER,
+  PRIMARY KEY (dir_path, name)
 );)";
 
 constexpr bool

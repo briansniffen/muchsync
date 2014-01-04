@@ -223,5 +223,14 @@ void xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path);
 string term_from_tag (const string &tag);
 string tag_from_term (const string &term);
 
-/* filehash.cc */
-void hash_files (sqlite3 *sqldb, writestamp ws, const string &path);
+/* Maildirs place messages in directories called "new" and "dir" */
+inline bool
+dir_contains_messages (const string &dir)
+{
+  if (dir.length() >= 4) {
+    string end (dir.substr (dir.length() - 4));
+    return end == "/cur" || end == "/new";
+  }
+  return dir == "cur" || dir == "new";
+}
+void scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir);

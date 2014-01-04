@@ -44,7 +44,7 @@ CREATE TEMP TRIGGER message_id_delete AFTER DELETE ON main.message_ids
 
 CREATE TABLE IF NOT EXISTS deleted_dirs (
   dir_docid INTEGER PRIMARY KEY,
-  path TEXT UNIQUE); 
+  dir_path TEXT UNIQUE); 
 
 CREATE TABLE IF NOT EXISTS new_files (
   file_id INTEGER PRIMARY KEY);
@@ -64,9 +64,8 @@ CREATE TEMP TRIGGER file_delete AFTER DELETE ON main.xapian_files
 
 const char xapian_dirs_schema[] =
   R"(CREATE TABLE IF NOT EXISTS xapian_dirs (
-  path TEXT UNIQUE NOT NULL,
-  dir_docid INTEGER PRIMARY KEY,
-  mctime REAL);)";
+  dir_path TEXT UNIQUE NOT NULL,
+  dir_docid INTEGER PRIMARY KEY);)";
 
 template<typename T> void
 sync_table (sqlstmt_t &s, T &t, T &te,
@@ -239,48 +238,32 @@ xapian_get_unique_posting (const Xapian::Database &xdb, const string &term)
 }
 
 static void
-xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
+xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
 {
   save_old_table (sqldb, "xapian_dirs", xapian_dirs_schema);
   sqlstmt_t insert (sqldb,
-      "INSERT INTO xapian_dirs (path, dir_docid, mctime) VALUES (?, ?,?);");
+      "INSERT INTO xapian_dirs (dir_path, dir_docid) VALUES (?, ?);");
 
   for (Xapian::TermIterator
          ti = xdb.allterms_begin(notmuch_directory_prefix),
          te = xdb.allterms_end(notmuch_directory_prefix);
        ti != te; ti++) {
     string dir = (*ti).substr(notmuch_directory_prefix.length());
-    if (dir.length() >= 4) {
-      string end (dir.substr (dir.length() - 4));
-      if (end != "/cur" && end != "/new")
-        continue;
-    }
-    else if (dir != "cur" && dir != "new")
+    if (!dir_contains_messages(dir))
       continue;
-    insert.reset()
-      .bind_text(1, dir)
-      .bind_int(2, xapian_get_unique_posting(xdb, *ti));
-    struct stat sb;
-    if (fstatat (rootfd, dir.c_str(), &sb, 0)) {
-      cerr << dir << ": " << strerror (errno) << '\n';
-      insert.bind_null(3);
-    }
-    else {
-      insert.bind_real(3, max (ts_to_double(sb.st_mtim),
-			       ts_to_double(sb.st_ctim)));
-    }
-    insert.step();
+    insert.reset().param(dir, i64(xapian_get_unique_posting(xdb, *ti))).step();
   }
 
-  fmtexec (sqldb, "INSERT INTO deleted_dirs (dir_docid, path)"
-	   " SELECT dir_docid, path from old_xapian_dirs"
-	   " EXCEPT SELECT dir_docid, path from xapian_dirs;");
+  fmtexec (sqldb, "INSERT INTO deleted_dirs (dir_docid, dir_path)"
+	   " SELECT dir_docid, dir_path from old_xapian_dirs"
+	   " EXCEPT SELECT dir_docid, dir_path from xapian_dirs;");
   fmtexec (sqldb, "DELETE FROM xapian_files"
 	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs); "
 	   "UPDATE deleted_files SET dir_docid = NULL"
 	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs);");
 }
 
+#if 0
 static string
 hexdump (const string &s)
 {
@@ -314,43 +297,35 @@ get_sha (int dfd, const char *direntry, struct stat *sbp)
   SHA1_Final (resbuf, &ctx);
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
+#endif
 
 static void
-xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
+xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
 {
   sqlstmt_t
-    dirscan (sqldb, "SELECT path, dir_docid FROM xapian_dirs;"),
-    filescan (sqldb, "SELECT file_id, name, docid, mtime, size, hash"
+    dirscan (sqldb, "SELECT dir_path, dir_docid FROM xapian_dirs;"),
+    filescan (sqldb, "SELECT file_id, name, docid"
 	      " FROM xapian_files WHERE dir_docid = ? ORDER BY name;"),
     add_file (sqldb, "INSERT INTO xapian_files"
-	      " (name, docid, mtime, size, inode, hash, dir_docid)"
-	      " VALUES (?, ?, ?, ?, ?, ?, ?);"),
-    del_file (sqldb, "DELETE FROM xapian_files WHERE file_id = ?;"),
-    upd_file (sqldb, "UPDATE xapian_files SET mtime = ?, inode = ?"
-		 " WHERE file_id = ?;");
+	      " (name, docid, dir_docid)"
+	      " VALUES (?, ?, ?);"),
+    del_file (sqldb, "DELETE FROM xapian_files WHERE file_id = ?;");
 
   while (dirscan.step().row()) {
     string dir = dirscan.str(0);
-
-    int dfd = openat (rootfd, dir.c_str(), O_RDONLY);
-    if (dfd < 0) {
-      perror (dir.c_str());
-      continue;
-    }
-    cleanup _c (close, dfd);
 
     cout << "  " << dir << '\n';
     i64 dir_docid = dirscan.integer(1);
     string dirtermprefix = (notmuch_file_direntry_prefix
 			    + to_string (dir_docid) + ":");
     filescan.reset().bind_int(1, dir_docid);
-    add_file.reset().bind_int(7, dir_docid);
+    add_file.reset().bind_int(3, dir_docid);
 
     auto cmp = [&dirtermprefix]
       (sqlstmt_t &s, Xapian::TermIterator &ti) -> int {
       return s.str(1).compare((*ti).substr(dirtermprefix.length()));
     };
-    auto merge = [&dirtermprefix,&add_file,&del_file,&xdb,dfd,&dir,&upd_file]
+    auto merge = [&dirtermprefix,&add_file,&del_file,&xdb]
       (sqlstmt_t *sp, Xapian::TermIterator *tip) {
       if (!tip) {
 	del_file.reset().param(sp->value(0)).step();
@@ -365,33 +340,11 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
 	del_file.reset().param(sp->value(0)).step();
 	sp = nullptr;
       }
+      if (sp)
+	return;
 
       string dirent { (**tip).substr(dirtermprefix.length()) };
-      struct stat sb;
-      string hashval;
-      if (sp) {
-	if (fstatat (dfd, dirent.c_str(), &sb, 0)) {
-	  perror ((dir + dirent).c_str());
-	  return;
-	}
-	if (ts_to_double(sb.st_mtim) == sp->real(3)
-	    && sb.st_size == sp->integer(4))
-	  return;
-	string hashval = get_sha (dfd, dirent.c_str(), &sb);
-	if (hashval == sp->str(5)) {
-	  upd_file.reset().param(ts_to_double(sb.st_mtim), i64(sb.st_ino),
-				 sp->value(0)).step ();
-	  return;
-	}
-	del_file.reset().param(sp->value(0)).step();
-	sp = nullptr;
-      }
-      if (!hashval.size())
-	hashval = get_sha (dfd, dirent.c_str(), &sb);
-      add_file.reset();
-      add_file.param(dirent, docid, ts_to_double(sb.st_mtim),
-		     i64(sb.st_size), i64(sb.st_ino), hashval);
-      add_file.step();
+      add_file.reset().param(dirent, docid).step();
     };
 
     Xapian::TermIterator ti = xdb.allterms_begin(dirtermprefix),
@@ -406,11 +359,6 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
 void
 xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
 {
-  int rootfd = open (path.c_str(), O_RDONLY);
-  if (rootfd < 0)
-    throw runtime_error (path + ": " + strerror (errno));
-  cleanup _c (close, rootfd);
-
   Xapian::Database xdb (path + "/.notmuch/xapian");
 
   print_time ("configuring database");
@@ -426,8 +374,8 @@ xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
   print_time ("scanning tags");
   xapian_scan_tags (sqldb, xdb);
   print_time ("scanning directories");
-  xapian_scan_directories (sqldb, xdb, rootfd);
+  xapian_scan_directories (sqldb, xdb);
   print_time ("scanning filenames in modified directories");
-  xapian_scan_filenames (sqldb, xdb, rootfd);
+  xapian_scan_filenames (sqldb, xdb);
   print_time ("done tags");
 }

@@ -33,10 +33,6 @@ CREATE TABLE xapian_files (
   dir_docid INTEGER,
   name TEXT NOT NULL,
   docid INTEGER,
-  mtime REAL,
-  size INTEGER,
-  inode INTEGER,
-  hash TEXT NOT NULL,
   UNIQUE (dir_docid, name));)";
 
 static double
@@ -189,8 +185,8 @@ main (int argc, char **argv)
   try {
     double start_scan_time { time_stamp() };
 
+    //scan_maildir (db, ws, argv[2]);
     xapian_scan (db, ws, argv[2]);
-    //hash_files (db, ws, argv[2]);
 
     setconfig (db, "last_scan", start_scan_time);
     fmtexec(db, "COMMIT;");
