@@ -69,7 +69,7 @@ class sqlstmt_t {
     ensure_row();
     return sqlite3_column_type (stmt_, iCol) == SQLITE_NULL;
   }
-  i64 integer(int iCol) {
+  sqlite3_int64 integer(int iCol) {
     ensure_row();
     return sqlite3_column_int64 (stmt_, iCol);
   }
@@ -95,7 +95,7 @@ class sqlstmt_t {
   sqlstmt_t &bind_null(int i) {
     return set_status (sqlite3_bind_null(stmt_, i));
   }
-  sqlstmt_t &bind_int(int i, i64 v) {
+  sqlstmt_t &bind_int(int i, sqlite3_int64 v) {
     return set_status (sqlite3_bind_int64(stmt_, i, v));
   }
   sqlstmt_t &bind_real(int i, double v) {
@@ -121,7 +121,7 @@ class sqlstmt_t {
 
   sqlstmt_t &_param(int) { return *this; }
   template<typename... Rest>
-    sqlstmt_t &_param(int i, i64 v, Rest... rest) {
+    sqlstmt_t &_param(int i, sqlite3_int64 v, Rest... rest) {
     return this->bind_int(i, v)._param(i+1, rest...);
   }
   template<typename... Rest>

@@ -25,8 +25,7 @@ CREATE TABLE IF NOT EXISTS maildir_dirs (
 );
 CREATE TABLE IF NOT EXISTS maildir_files (
   dir_path TEXT NOT NULL,
-  name TEXT NOT NULL,
-  ctime REAL,
+  name TEXT NOT NULL COLLATE BINARY,
   mtime REAL,
   inode INTEGER,
   size INTEGER,
@@ -122,79 +121,10 @@ get_msgid (const string &file, string &msgid)
 }
 #endif
 
-#if 0
-inline void
-check_message (sqlstmt_t &lookup, sqlstmt_t &insert, int skip, FTSENT *f)
-{
-  string filename (f->fts_accpath + skip);
-
-  double ctime (ts_to_double(f->fts_statp->st_ctim)),
-    mtime (ts_to_double(f->fts_statp->st_mtim));
-  i64 size = f->fts_statp->st_size;
-  string hash;
-
-  lookup.reset().param(filename).step();
-
-  if (lookup.done() || lookup.null(3) || size != lookup.integer(2)
-      || mtime != lookup.real(1)) {
-    ifstream msg (f->fts_accpath);
-    hash = get_sha (msg);
-    if (msg.fail()) {
-      cerr << "Warning: Cannot read " << filename << '\n';
-      return;
-    }
-  }
-  else if (ctime == lookup.real(0))
-    return;
-  else
-    hash = lookup.str(3);
-
-  insert.reset().param(filename, ctime, mtime, size, hash).step();
-  // cout << filename << "..." << hash << '\n';
-}
-
-static void
-traverse_maildir (const string &dir, double oldest,
-		  sqlstmt_t &lookup, sqlstmt_t &insert)
-{
-  int dirlen = dir.length();
-  char *paths[] {const_cast<char *> (dir.c_str()), nullptr};
-  unique_ptr<FTS, decltype (&fts_close)>
-    ftsp {fts_open (paths, FTS_LOGICAL, nullptr), fts_close};
-  if (!ftsp)
-    throw runtime_error (dir + ": " + strerror (errno));
-  bool in_msg_dir = false;
-  while (FTSENT *f = fts_read (ftsp.get())) {
-    if (in_msg_dir) {
-      if (f->fts_info == FTS_D)
-	fts_set (ftsp.get(), f, FTS_SKIP);
-      else if (f->fts_info == FTS_DP) {
-	assert (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new"));
-	in_msg_dir = false;
-      }
-      else if (f->fts_name[0] != '.'
-	       && changed_since (f->fts_statp, oldest))
-	check_message (lookup, insert, dirlen, f);
-    }
-    else if (f->fts_info == FTS_D) {
-      if (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new")) {
-	if (changed_since (f->fts_statp, oldest))
-	  in_msg_dir = true;
-	else
-	  fts_set (ftsp.get(), f, FTS_SKIP);
-      }
-      else if (f->fts_statp->st_nlink <= 2)
-	fts_set (ftsp.get(), f, FTS_SKIP);
-    }
-  }
-}
-#endif
-
-
 void
 find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 {
-  int dirlen = maildir.length() + 1;
+  int dirlen = maildir.length();
   char *paths[] {const_cast<char *> (maildir.c_str()), nullptr};
 
   sqlstmt_t
@@ -249,6 +179,133 @@ find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
   }
 }
 
+static int
+compare_fts_name (const FTSENT **a, const FTSENT **b)
+{
+  return strcmp ((*a)->fts_name, (*b)->fts_name);
+}
+
+static void
+scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
+		sqlstmt_t &scan, sqlstmt_t &del_file, sqlstmt_t &add_file,
+		sqlstmt_t &upd_file, int dfd)
+{
+  string path = maildir.size() ? maildir + "/" + subdir : subdir;
+  char *paths[] {const_cast<char *> (path.c_str()), nullptr};
+  unique_ptr<FTS, decltype (&fts_close)>
+    ftsp {fts_open (paths, FTS_LOGICAL, &compare_fts_name), fts_close};
+  if (!ftsp)
+    throw runtime_error (path + ": " + strerror (errno));
+  errno = 0;
+  FTSENT *f = fts_read (ftsp.get());
+  if (f)
+    f = fts_children (ftsp.get(), opt_fullscan ? 0 : FTS_NAMEONLY);
+  if (errno)
+    throw runtime_error (path + ": " + strerror (f->fts_errno));
+
+  cout << "  " << subdir << '\n';
+
+  scan.step();
+  while (scan.row() && f) {
+    if (f->fts_info != FTS_F && f->fts_info != FTS_NSOK) {
+      f = f->fts_link;
+      continue;
+    }
+    int cmp = strcmp (scan.c_str(0), f->fts_name);
+    if (cmp < 0) {
+      del_file.reset().param(scan.value(5)).step();
+      scan.step();
+      continue;
+    }
+    if (!opt_fullscan && cmp == 0) {
+      scan.step();
+      f = f->fts_link;
+      continue;
+    }
+    struct stat sbuf;
+    if (f->fts_info == FTS_NSOK && fstatat (dfd, f->fts_name, &sbuf, 0)) {
+      if (errno == ENOENT) {
+	f = f->fts_link;
+	continue;
+      }
+      throw runtime_error (subdir + '/' + f->fts_name + ": "
+			   + strerror (errno));
+    }
+    struct stat &sb = *(f->fts_info == FTS_NSOK ? &sbuf : f->fts_statp);
+    if (!S_ISREG (sb.st_mode)) {
+      f = f->fts_link;
+      continue;
+    }
+    double mtim = ts_to_double(sb.st_mtim);
+    if (cmp > 0) {
+      cout << "hashing new file " << subdir << '/' << f->fts_name << "\n";
+      string hashval = get_sha (dfd, f->fts_name, nullptr);
+      add_file.reset()
+	.param(f->fts_name, mtim, i64(sb.st_ino), i64(sb.st_size), hashval)
+	.step();
+      f = f->fts_link;
+      continue;
+    }
+    if (mtim != scan.real(1) || sb.st_size != scan.integer(3)
+	|| i64(sb.st_ino) != scan.integer(2)) {
+      cout << "hashing old file " << subdir << '/' << f->fts_name << "\n";
+      string hashval = get_sha (dfd, f->fts_name, nullptr);
+      if (sb.st_size != scan.integer(4) || hashval != scan.str(4)) {
+	del_file.reset().param(scan.value(5)).step();
+	add_file.reset()
+	  .param(f->fts_name, mtim, i64(sb.st_ino), i64(sb.st_size), hashval)
+	  .step();
+      }
+      else {
+	cout << "hash did not change\n";
+	upd_file.reset().param(mtim, i64(sb.st_ino), scan.value(5)).step();
+      }
+    }
+    scan.step();
+    f = f->fts_link;
+  }
+  for (; scan.row(); scan.step())
+    del_file.reset().param(scan.value(5)).step();
+  for (; f; f = f->fts_link) {
+    if (f->fts_info != FTS_F)
+      continue;
+    const struct stat &sb = *f->fts_statp;
+    double mtim = ts_to_double(sb.st_mtim);
+    string hashval = get_sha (dfd, f->fts_name, nullptr);
+    add_file.reset()
+      .param(f->fts_name, mtim, i64(sb.st_ino), i64(sb.st_size), hashval)
+      .step();
+  }
+}
+
+static void
+scan_files (sqlite3 *sqldb, const string &maildir, int rootfd)
+{
+  sqlstmt_t
+    scandirs (sqldb, "SELECT dir_path FROM %s ORDER BY dir_path;",
+	      opt_fullscan ? "maildir_dirs" : "modified_directories"),
+    scanfiles (sqldb, "SELECT name, mtime, inode, size, hash, rowid"
+	       " FROM maildir_files WHERE dir_path = ? ORDER BY name;"),
+    del_file (sqldb, "DELETE FROM maildir_files WHERE rowid = ?;"),
+    add_file (sqldb, "INSERT INTO maildir_files"
+	      " (name, mtime, inode, size, hash, dir_path)"
+	      " VALUES (?, ?, ?, ?, ?, ?);"),
+    upd_file (sqldb, "UPDATE maildir_files"
+	      " SET mtime = ?, inode = ? WHERE rowid = ?;");
+
+  while (scandirs.step().row()) {
+    string dir {scandirs.str(0)};
+    int dfd = openat(rootfd, dir.c_str(), O_RDONLY);
+    if (dfd < 0)
+      throw runtime_error (dir + ": " + strerror (errno));
+    cleanup _c (close, dfd);
+    scanfiles.reset().bind_text(1, dir);
+    add_file.reset().bind_text(6, dir);
+    scan_directory (sqldb, maildir, dir,
+		    scanfiles, del_file, add_file, upd_file, dfd);
+  }
+}
+
 void
 scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir)
 {
@@ -259,9 +316,15 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir)
 
   fmtexec (sqldb, maildir_schema);
   fmtexec (sqldb, "DELETE FROM modified_directories;");
+  print_time ("finding new subdirectories of maildir");
   find_new_directories (sqldb, maildir, rootfd);
+  print_time ("finding modified directories in maildir");
   find_modified_directories (sqldb, maildir, rootfd);
+  print_time (opt_fullscan ? "scanning files in all directories"
+	      : "scanning files in modified directories");
+  scan_files (sqldb, maildir, rootfd);
 
+  //scan_directory (sqldb, maildir, "");
 
   // traverse_maildir (maildir, oldtime, lookup, insert);
 }

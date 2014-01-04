@@ -9,7 +9,7 @@
 
 using namespace std;
 
-bool opt_fullscan = true;
+bool opt_fullscan = false;
 
 #define DBVERS "muchsync 0"
 
@@ -152,19 +152,34 @@ show_sync_vector (const versvector &vv)
   return sb.str();
 }
 
+[[noreturn]] void
+usage ()
+{
+  fprintf (stderr, "usage: muchsync [-F] db maildir\n");
+  exit (1);
+}
+
 int
 main (int argc, char **argv)
 {
-  if (argc != 3) {
-    fprintf (stderr, "usage error\n");
-    exit (1);
-  }
+  int opt;
+  while ((opt = getopt(argc, argv, "F")) != -1)
+    switch (opt) {
+    case 'F':
+      opt_fullscan = true;
+      break;
+    default:
+      usage ();
+    }
+  
+  if (optind + 2 != argc)
+    usage ();
 
-  sqlite3 *db = dbopen (argv[1]);
+  sqlite3 *db = dbopen (argv[optind]);
   if (!db)
     exit (1);
   cleanup _c (sqlite3_close_v2, db);
-
+  string maildir{argv[optind+1]};
 
   i64 self = getconfig<i64>(db, "self");
   fmtexec (db, "BEGIN IMMEDIATE;");
@@ -186,8 +201,8 @@ main (int argc, char **argv)
   try {
     double start_scan_time { time_stamp() };
 
-    scan_maildir (db, ws, argv[2]);
-    xapian_scan (db, ws, argv[2]);
+    scan_maildir (db, ws, maildir);
+    xapian_scan (db, ws, maildir);
 
     setconfig (db, "last_scan", start_scan_time);
     fmtexec(db, "COMMIT;");

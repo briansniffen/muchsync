@@ -272,7 +272,7 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
   while (dirscan.step().row()) {
     string dir = dirscan.str(0);
 
-    cout << "  " << dir << '\n';
+    // cout << "  " << dir << '\n';
     i64 dir_docid = dirscan.integer(1);
     string dirtermprefix = (notmuch_file_direntry_prefix
 			    + to_string (dir_docid) + ":");
@@ -331,9 +331,9 @@ xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
   xapian_scan_message_ids (sqldb, xdb);
   print_time ("scanning tags");
   xapian_scan_tags (sqldb, xdb);
-  print_time ("scanning directories");
+  print_time ("scanning directories in xapian");
   xapian_scan_directories (sqldb, xdb);
-  print_time ("scanning filenames in modified directories");
+  print_time ("scanning filenames in xapian");
   xapian_scan_filenames (sqldb, xdb);
   print_time ("done tags");
 }
