@@ -320,11 +320,14 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
 {
   sqlstmt_t
     dirscan (sqldb, "SELECT path, dir_docid FROM xapian_dirs;"),
-    filescan (sqldb, "SELECT file_id, name, docid FROM xapian_files"
-	      " WHERE dir_docid = ? ORDER BY name;"),
-    add_file (sqldb, "INSERT INTO xapian_files (name, docid, dir_docid)"
-	      " VALUES (?, ?, ?);"),
-    del_file (sqldb, "DELETE FROM xapian_files WHERE file_id = ?;");
+    filescan (sqldb, "SELECT file_id, name, docid, mtime, size, hash"
+	      " FROM xapian_files WHERE dir_docid = ? ORDER BY name;"),
+    add_file (sqldb, "INSERT INTO xapian_files"
+	      " (name, docid, mtime, size, inode, hash, dir_docid)"
+	      " VALUES (?, ?, ?, ?, ?, ?, ?);"),
+    del_file (sqldb, "DELETE FROM xapian_files WHERE file_id = ?;"),
+    upd_file (sqldb, "UPDATE xapian_files SET mtime = ?, inode = ?"
+		 " WHERE file_id = ?;");
 
   while (dirscan.step().row()) {
     string dir = dirscan.str(0);
@@ -341,29 +344,54 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
     string dirtermprefix = (notmuch_file_direntry_prefix
 			    + to_string (dir_docid) + ":");
     filescan.reset().bind_int(1, dir_docid);
-    add_file.reset().bind_int(3, dir_docid);
+    add_file.reset().bind_int(7, dir_docid);
 
     auto cmp = [&dirtermprefix]
       (sqlstmt_t &s, Xapian::TermIterator &ti) -> int {
       return s.str(1).compare((*ti).substr(dirtermprefix.length()));
     };
-    auto merge = [&dirtermprefix,&add_file,&del_file,&xdb]
+    auto merge = [&dirtermprefix,&add_file,&del_file,&xdb,dfd,&dir,&upd_file]
       (sqlstmt_t *sp, Xapian::TermIterator *tip) {
       if (!tip) {
 	del_file.reset().param(sp->value(0)).step();
 	return;
       }
+
       if (sp && !opt_fullscan)
 	return;
+
       i64 docid = xapian_get_unique_posting (xdb, **tip);
-      if (sp) {
-	if (sp->integer(2) != docid)
-	  del_file.reset().param(sp->value(0)).step();
-	else
-	  return;
+      if (sp && sp->integer(2) != docid) {
+	del_file.reset().param(sp->value(0)).step();
+	sp = nullptr;
       }
+
       string dirent { (**tip).substr(dirtermprefix.length()) };
-      add_file.reset().bind_text(1, dirent).bind_int(2, docid).step(); 
+      struct stat sb;
+      string hashval;
+      if (sp) {
+	if (fstatat (dfd, dirent.c_str(), &sb, 0)) {
+	  perror ((dir + dirent).c_str());
+	  return;
+	}
+	if (ts_to_double(sb.st_mtim) == sp->real(3)
+	    && sb.st_size == sp->integer(4))
+	  return;
+	string hashval = get_sha (dfd, dirent.c_str(), &sb);
+	if (hashval == sp->str(5)) {
+	  upd_file.reset().param(ts_to_double(sb.st_mtim), i64(sb.st_ino),
+				 sp->value(0)).step ();
+	  return;
+	}
+	del_file.reset().param(sp->value(0)).step();
+	sp = nullptr;
+      }
+      if (!hashval.size())
+	hashval = get_sha (dfd, dirent.c_str(), &sb);
+      add_file.reset();
+      add_file.param(dirent, docid, ts_to_double(sb.st_mtim),
+		     i64(sb.st_size), i64(sb.st_ino), hashval);
+      add_file.step();
     };
 
     Xapian::TermIterator ti = xdb.allterms_begin(dirtermprefix),

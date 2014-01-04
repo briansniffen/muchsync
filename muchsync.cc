@@ -9,7 +9,7 @@
 
 using namespace std;
 
-bool opt_fullscan;
+bool opt_fullscan = true;
 
 #define DBVERS "muchsync 0"
 
@@ -33,6 +33,10 @@ CREATE TABLE xapian_files (
   dir_docid INTEGER,
   name TEXT NOT NULL,
   docid INTEGER,
+  mtime REAL,
+  size INTEGER,
+  inode INTEGER,
+  hash TEXT NOT NULL,
   UNIQUE (dir_docid, name));)";
 
 static double
