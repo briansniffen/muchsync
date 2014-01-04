@@ -16,7 +16,7 @@
 
 using namespace std;
 
-const char maildir_def[] = R"(
+const char maildir_schema[] = R"(
 CREATE TABLE IF NOT EXISTS maildir_dirs (
   dir_path TEXT PRIMARY KEY,
   ctime REAL,
@@ -190,42 +190,63 @@ traverse_maildir (const string &dir, double oldest,
 }
 #endif
 
+
 void
-find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
+find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 {
-  int dirlen = maildir.length();
+  int dirlen = maildir.length() + 1;
   char *paths[] {const_cast<char *> (maildir.c_str()), nullptr};
 
-  /*
+  sqlstmt_t
+    exists (sqldb, "SELECT 1 FROM maildir_dirs WHERE dir_path = ?;"),
+    create (sqldb, "INSERT INTO maildir_dirs (dir_path, inode) VALUES (?, 0);");
+
   unique_ptr<FTS, decltype (&fts_close)>
     ftsp {fts_open (paths, FTS_LOGICAL, nullptr), fts_close};
   if (!ftsp)
-    throw runtime_error (dir + ": " + strerror (errno));
-  bool in_msg_dir = false;
+    throw runtime_error (maildir + ": " + strerror (errno));
   while (FTSENT *f = fts_read (ftsp.get())) {
-    if (in_msg_dir) {
-      if (f->fts_info == FTS_D)
-	fts_set (ftsp.get(), f, FTS_SKIP);
-      else if (f->fts_info == FTS_DP) {
-	assert (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new"));
-	in_msg_dir = false;
+    if (f->fts_info == FTS_D) {
+      if (dir_contains_messages (f->fts_name)) {
+	exists.reset().param(f->fts_path + dirlen).step();
+	if (!exists.row())
+	  create.reset().param(f->fts_path + dirlen).step();
       }
-      else if (f->fts_name[0] != '.'
-	       && changed_since (f->fts_statp, oldest))
-	check_message (lookup, insert, dirlen, f);
-    }
-    else if (f->fts_info == FTS_D) {
-      if (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new")) {
-	if (changed_since (f->fts_statp, oldest))
-	  in_msg_dir = true;
-	else
-	  fts_set (ftsp.get(), f, FTS_SKIP);
-      }
-      else if (f->fts_statp->st_nlink <= 2)
+      if (f->fts_statp->st_nlink <= 2)
 	fts_set (ftsp.get(), f, FTS_SKIP);
     }
   }
-  */
+}
+
+void
+find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
+{
+  sqlstmt_t
+    scan (sqldb, "SELECT dir_path, ctime, mtime, inode FROM maildir_dirs;"),
+    deldir (sqldb, "DELETE FROM maildir_dirs WHERE dir_path = ?;"),
+    delfiles (sqldb, "DELETE FROM maildir_files WHERE dir_path = ?;"),
+    upddir (sqldb, "UPDATE maildir_dirs "
+	    "SET ctime = ?, mtime = ?, inode = ? WHERE dir_path = ?;");
+
+  fmtexec (sqldb, "CREATE TEMP TRIGGER dir_update_trigger "
+	   "AFTER UPDATE ON main.maildir_dirs BEGIN "
+	   "INSERT INTO modified_directories (dir_path) VALUES (new.dir_path);"
+	   "END;");
+
+  while (scan.step().row()) {
+    struct stat sb;
+    if (fstatat (rootfd, scan.c_str(0), &sb, 0)) {
+      if (errno != ENOENT)
+	throw runtime_error (scan.str(0) + ": " + strerror (errno));
+      deldir.reset().param(scan.value(0)).step();
+      delfiles.reset().param(scan.value(0)).step();
+      continue;
+    }
+    double ctim = ts_to_double(sb.st_ctim), mtim = ts_to_double(sb.st_mtim);
+    if (i64(sb.st_ino) != scan.integer(3)
+	|| ctim != scan.real(1) || mtim != scan.real(2))
+      upddir.reset().param(ctim, mtim, i64(sb.st_ino), scan.value(0)).step();
+  }
 }
 
 void
@@ -236,10 +257,10 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir)
     throw runtime_error (maildir + ": " + strerror (errno));
   cleanup _c (close, rootfd);
 
+  fmtexec (sqldb, maildir_schema);
   fmtexec (sqldb, "DELETE FROM modified_directories;");
+  find_new_directories (sqldb, maildir, rootfd);
   find_modified_directories (sqldb, maildir, rootfd);
-
-  fmtexec (sqldb, maildir_def);
 
 
   // traverse_maildir (maildir, oldtime, lookup, insert);
