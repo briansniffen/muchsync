@@ -78,6 +78,7 @@ dbcreate (const char *path)
     fmtexec (pDb, schema_def);
     setconfig (pDb, "DBVERS", DBVERS);
     setconfig (pDb, "self", self);
+    setconfig (pDb, "last_scan", 0.0);
     fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
 	     " VALUES (%lld, 0);", self);
     fmtexec (pDb, "COMMIT;");
@@ -166,7 +167,7 @@ main (int argc, char **argv)
 
 
   i64 self = getconfig<i64>(db, "self");
-  fmtexec (db, "BEGIN;");
+  fmtexec (db, "BEGIN IMMEDIATE;");
   fmtexec (db, "UPDATE sync_vector"
 	   " SET version = version + 1 WHERE replica = %lld;",
 	   self);
@@ -185,7 +186,7 @@ main (int argc, char **argv)
   try {
     double start_scan_time { time_stamp() };
 
-    //scan_maildir (db, ws, argv[2]);
+    scan_maildir (db, ws, argv[2]);
     xapian_scan (db, ws, argv[2]);
 
     setconfig (db, "last_scan", start_scan_time);

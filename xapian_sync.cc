@@ -4,12 +4,6 @@
 #include <iostream>
 #include <sstream>
 
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-#include <openssl/sha.h>
 #include <xapian.h>
 
 #include "muchsync.h"
@@ -132,7 +126,7 @@ term_from_tag (const string &tag)
 {
   ostringstream tagbuf;
   tagbuf << notmuch_tag_prefix;
-  int escape_pos = 0, escape_val;
+  int escape_pos = 0, escape_val = 0;
   char c;
   for (const char *p = tag.c_str() + 1; (c = *p); p++) {
     switch (escape_pos) {
@@ -262,42 +256,6 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
 	   "UPDATE deleted_files SET dir_docid = NULL"
 	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs);");
 }
-
-#if 0
-static string
-hexdump (const string &s)
-{
-  ostringstream os;
-  os << hex << setw (2) << setfill ('0');
-  for (auto c : s)
-    os << (int (c) & 0xff);
-  return os.str ();
-}
-
-static string
-get_sha (int dfd, const char *direntry, struct stat *sbp)
-{
-  int fd = openat(dfd, direntry, O_RDONLY);
-  if (fd < 0)
-    throw runtime_error (string() + direntry + ": " + strerror (errno));
-  cleanup _c (close, fd);
-  if (sbp && fstat (fd, sbp))
-    throw runtime_error (string() + direntry + ": " + strerror (errno));
-
-  SHA_CTX ctx;
-  SHA1_Init (&ctx);
-
-  char buf[16384];
-  int n;
-  while ((n = read (fd, buf, sizeof (buf))) > 0)
-    SHA1_Update (&ctx, buf, n);
-  if (n < 0)
-    throw runtime_error (string() + direntry + ": " + strerror (errno));
-  unsigned char resbuf[SHA_DIGEST_LENGTH];
-  SHA1_Final (resbuf, &ctx);
-  return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
-}
-#endif
 
 static void
 xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)

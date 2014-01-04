@@ -95,7 +95,6 @@ fmtstmt (sqlite3 *db, const char *fmt, ...)
   char *query;
   const char *tail;
   sqlite3_stmt *stmtp;
-  int err;
   va_list ap;
 
   va_start (ap, fmt);

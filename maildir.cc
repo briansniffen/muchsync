@@ -4,8 +4,12 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <errno.h>
+#include <fcntl.h>
 #include <fts.h>
+#include <unistd.h>
 #include <sys/stat.h>
+
 #include <openssl/sha.h>
 
 #include "muchsync.h"
@@ -13,26 +17,62 @@
 using namespace std;
 
 const char maildir_def[] = R"(
+CREATE TABLE IF NOT EXISTS maildir_dirs (
+  dir_path TEXT PRIMARY KEY,
+  ctime REAL,
+  mtime REAL,
+  inode INTEGER
+);
 CREATE TABLE IF NOT EXISTS maildir_files (
   dir_path TEXT NOT NULL,
   name TEXT NOT NULL,
   ctime REAL,
   mtime REAL,
+  inode INTEGER,
   size INTEGER,
   hash TEXT,
-  inode INTEGER,
   replica INTEGER,
   version INTEGER,
-  PRIMARY KEY (dir_path, name)
-);)";
+  PRIMARY KEY (dir_path, name));
+CREATE TABLE IF NOT EXISTS modified_directories (
+  dir_path TEXT PRIMARY KEY);
+)";
 
-constexpr bool
-changed_since (const struct stat *sb, double time)
+static string
+hexdump (const string &s)
 {
-  return ts_to_double (sb->st_mtim) >= time
-    || ts_to_double (sb->st_ctim) >= time;
+  ostringstream os;
+  os << hex << setw (2) << setfill ('0');
+  for (auto c : s)
+    os << (int (c) & 0xff);
+  return os.str ();
 }
 
+string
+get_sha (int dfd, const char *direntry, struct stat *sbp)
+{
+  int fd = openat(dfd, direntry, O_RDONLY);
+  if (fd < 0)
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+  cleanup _c (close, fd);
+  if (sbp && fstat (fd, sbp))
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+
+  SHA_CTX ctx;
+  SHA1_Init (&ctx);
+
+  char buf[16384];
+  int n;
+  while ((n = read (fd, buf, sizeof (buf))) > 0)
+    SHA1_Update (&ctx, buf, n);
+  if (n < 0)
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+  unsigned char resbuf[SHA_DIGEST_LENGTH];
+  SHA1_Final (resbuf, &ctx);
+  return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
+}
+
+#if 0
 bool
 get_header (istream &in, string &name, string &value)
 {
@@ -50,35 +90,6 @@ get_header (istream &in, string &name, string &value)
     value += line;
   }
   return true;
-}
-
-string
-hexdump (const string &s)
-{
-  ostringstream os;
-  os << hex << setw (2) << setfill ('0');
-  for (auto c : s)
-    os << (int (c) & 0xff);
-  return os.str ();
-}
-
-string
-get_sha (ifstream &msg)
-{
-  msg.seekg (0, ios_base::beg);
-  SHA_CTX ctx;
-  SHA1_Init (&ctx);
-  while (msg) {
-    char buf[8192];
-    streamsize n = msg.readsome (buf, sizeof (buf));
-    if (n <= 0)
-      break;
-    SHA1_Update (&ctx, buf, n);
-  }
-  unsigned char resbuf[SHA256_DIGEST_LENGTH];
-  SHA1_Final (resbuf, &ctx);
-  string res { reinterpret_cast<const char *> (resbuf), sizeof (resbuf) };
-  return msg.fail() ? "" : hexdump (res);
 }
 
 bool
@@ -109,7 +120,9 @@ get_msgid (const string &file, string &msgid)
   ifstream msg (file);
   return get_msgid (msg, msgid);
 }
+#endif
 
+#if 0
 inline void
 check_message (sqlstmt_t &lookup, sqlstmt_t &insert, int skip, FTSENT *f)
 {
@@ -175,38 +188,59 @@ traverse_maildir (const string &dir, double oldest,
     }
   }
 }
+#endif
+
+void
+find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
+{
+  int dirlen = maildir.length();
+  char *paths[] {const_cast<char *> (maildir.c_str()), nullptr};
+
+  /*
+  unique_ptr<FTS, decltype (&fts_close)>
+    ftsp {fts_open (paths, FTS_LOGICAL, nullptr), fts_close};
+  if (!ftsp)
+    throw runtime_error (dir + ": " + strerror (errno));
+  bool in_msg_dir = false;
+  while (FTSENT *f = fts_read (ftsp.get())) {
+    if (in_msg_dir) {
+      if (f->fts_info == FTS_D)
+	fts_set (ftsp.get(), f, FTS_SKIP);
+      else if (f->fts_info == FTS_DP) {
+	assert (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new"));
+	in_msg_dir = false;
+      }
+      else if (f->fts_name[0] != '.'
+	       && changed_since (f->fts_statp, oldest))
+	check_message (lookup, insert, dirlen, f);
+    }
+    else if (f->fts_info == FTS_D) {
+      if (!strcmp (f->fts_name, "cur") || !strcmp (f->fts_name, "new")) {
+	if (changed_since (f->fts_statp, oldest))
+	  in_msg_dir = true;
+	else
+	  fts_set (ftsp.get(), f, FTS_SKIP);
+      }
+      else if (f->fts_statp->st_nlink <= 2)
+	fts_set (ftsp.get(), f, FTS_SKIP);
+    }
+  }
+  */
+}
 
 void
 scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir)
 {
+  int rootfd = open (maildir.c_str(), O_RDONLY);
+  if (rootfd < 0)
+    throw runtime_error (maildir + ": " + strerror (errno));
+  cleanup _c (close, rootfd);
+
+  fmtexec (sqldb, "DELETE FROM modified_directories;");
+  find_modified_directories (sqldb, maildir, rootfd);
+
   fmtexec (sqldb, maildir_def);
 
-  double newtime, oldtime;
-  {
-    timespec ts;
-    if (clock_gettime (CLOCK_REALTIME, &ts)) {
-      perror ("clock_gettime");
-      throw runtime_error (string ("clock_gettime: ") + strerror (errno));
-    }
-    newtime = ts_to_double (ts);
 
-    try { oldtime = getconfig<double> (sqldb, "timestamp"); }
-    catch (sqldone_t) { oldtime = 0; }
-  }
-  if (oldtime > newtime) {
-    cerr << "Warning: ignoring database timestamp in the future\n";
-    oldtime = 0;
-  }
-
-  sqlstmt_t
-    lookup(sqldb, "SELECT ctime, mtime, size, hash FROM maildir"
-	   " WHERE filename = ?;"),
-    insert(sqldb, "INSERT OR REPLACE INTO"
-	   " maildir (filename, ctime, mtime, size, hash,"
-	   " replica, version)"
-	   " VALUES (?, ?, ?, ?, ?, %lld, %lld);", ws.first, ws.second);
-
-  traverse_maildir (maildir, oldtime, lookup, insert);
-
-  setconfig (sqldb, "timestamp", newtime);
+  // traverse_maildir (maildir, oldtime, lookup, insert);
 }
