@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <openssl/sha.h>
 #include <xapian.h>
 
 #include "muchsync.h"
@@ -209,7 +210,7 @@ INSERT INTO message_ids (message_id, docid) VALUES (?, ?);"),
      [] (sqlstmt_t &s, Xapian::ValueIterator &vi) -> int {
        return s.integer(1) - vi.get_docid();
      },
-     [&] (sqlstmt_t *sp, Xapian::ValueIterator *vip) {
+     [&add_message,&del_message] (sqlstmt_t *sp, Xapian::ValueIterator *vip) {
        if (!sp)
 	 add_message.reset().param(**vip, i64(vip->get_docid())).step();
        else if (!vip)
@@ -222,6 +223,19 @@ INSERT INTO message_ids (message_id, docid) VALUES (?, ?);"),
 	 add_message.reset().param(**vip, i64(vip->get_docid())).step();
        }
      });
+}
+
+static Xapian::docid
+xapian_get_unique_posting (const Xapian::Database &xdb, const string &term)
+{
+  Xapian::PostingIterator pi = xdb.postlist_begin (term),
+    pe = xdb.postlist_end (term);
+  if (pi == pe)
+    throw range_error (string() + "xapian term " + term + " has no postings");
+  i64 ret = *pi;
+  if (++pi != pe)
+    cerr << "warning: xapian term " << term << " has multiple postings\n";
+  return ret;
 }
 
 static void
@@ -243,24 +257,19 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
     }
     else if (dir != "cur" && dir != "new")
       continue;
-    Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
-      pe = xdb.postlist_end (*ti);
-    if (pi == pe)
-      cerr << "warning: directory term " << *ti << " has no postings\n";
-    else {
-      insert.reset();
-      struct stat sb;
-      if (fstatat (rootfd, dir.c_str(), &sb, 0)) {
-	cerr << dir << ": " << strerror (errno) << '\n';
-	insert.bind_null(3);
-      }
-      else
-	insert.bind_real(3, max (ts_to_double(sb.st_mtim),
-				 ts_to_double(sb.st_ctim)));
-      insert.param(dir, i64(*pi)).step();
-      if (++pi != pe)
-        cerr << "warning: directory term " << *ti << " has multiple postings\n";
+    insert.reset()
+      .bind_text(1, dir)
+      .bind_int(2, xapian_get_unique_posting(xdb, *ti));
+    struct stat sb;
+    if (fstatat (rootfd, dir.c_str(), &sb, 0)) {
+      cerr << dir << ": " << strerror (errno) << '\n';
+      insert.bind_null(3);
     }
+    else {
+      insert.bind_real(3, max (ts_to_double(sb.st_mtim),
+			       ts_to_double(sb.st_ctim)));
+    }
+    insert.step();
   }
 
   fmtexec (sqldb, "INSERT INTO deleted_dirs (dir_docid, path)"
@@ -272,19 +281,44 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
 	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs);");
 }
 
+static string
+hexdump (const string &s)
+{
+  ostringstream os;
+  os << hex << setw (2) << setfill ('0');
+  for (auto c : s)
+    os << (int (c) & 0xff);
+  return os.str ();
+}
+
+static string
+get_sha (int dfd, const char *direntry, struct stat *sbp)
+{
+  int fd = openat(dfd, direntry, O_RDONLY);
+  if (fd < 0)
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+  cleanup _c (close, fd);
+  if (sbp && fstat (fd, sbp))
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+
+  SHA_CTX ctx;
+  SHA1_Init (&ctx);
+
+  char buf[16384];
+  int n;
+  while ((n = read (fd, buf, sizeof (buf))) > 0)
+    SHA1_Update (&ctx, buf, n);
+  if (n < 0)
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+  unsigned char resbuf[SHA_DIGEST_LENGTH];
+  SHA1_Final (resbuf, &ctx);
+  return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
+}
+
 static void
-xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
+xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb, int rootfd)
 {
   sqlstmt_t
-    /*
-      Sadly, this optimization is effective but not quite kosher.
-      Consider the case that muchsync is run after directories are
-      changed but before "notmuch new" has been run.
-
-    dirscan (sqldb, "\
-SELECT path, dir_docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
- USING (path, dir_docid) WHERE ifnull (n.mctime != o.mctime, 1);"),
-    */
     dirscan (sqldb, "SELECT path, dir_docid FROM xapian_dirs;"),
     filescan (sqldb, "SELECT file_id, name, docid FROM xapian_files"
 	      " WHERE dir_docid = ? ORDER BY name;"),
@@ -294,6 +328,14 @@ SELECT path, dir_docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
 
   while (dirscan.step().row()) {
     string dir = dirscan.str(0);
+
+    int dfd = openat (rootfd, dir.c_str(), O_RDONLY);
+    if (dfd < 0) {
+      perror (dir.c_str());
+      continue;
+    }
+    cleanup _c (close, dfd);
+
     cout << "  " << dir << '\n';
     i64 dir_docid = dirscan.integer(1);
     string dirtermprefix = (notmuch_file_direntry_prefix
@@ -301,47 +343,32 @@ SELECT path, dir_docid FROM xapian_dirs n LEFT OUTER JOIN old_xapian_dirs o\
     filescan.reset().bind_int(1, dir_docid);
     add_file.reset().bind_int(3, dir_docid);
 
-    Xapian::TermIterator
-      ti = xdb.allterms_begin(dirtermprefix),
-      te = xdb.allterms_end(dirtermprefix);
-
-    sync_table<Xapian::TermIterator>
-      (filescan, ti, te,
-       [&dirtermprefix] (sqlstmt_t &s, Xapian::TermIterator &ti) -> int {
-	return s.str(1).compare((*ti).substr(dirtermprefix.length()));
-       }, [&] (sqlstmt_t *sp, Xapian::TermIterator *tip) {
-	if (!tip)
+    auto cmp = [&dirtermprefix]
+      (sqlstmt_t &s, Xapian::TermIterator &ti) -> int {
+      return s.str(1).compare((*ti).substr(dirtermprefix.length()));
+    };
+    auto merge = [&dirtermprefix,&add_file,&del_file,&xdb]
+      (sqlstmt_t *sp, Xapian::TermIterator *tip) {
+      if (!tip) {
+	del_file.reset().param(sp->value(0)).step();
+	return;
+      }
+      if (sp && !opt_fullscan)
+	return;
+      i64 docid = xapian_get_unique_posting (xdb, **tip);
+      if (sp) {
+	if (sp->integer(2) != docid)
 	  del_file.reset().param(sp->value(0)).step();
-	else {
-	  if (sp && !opt_fullscan) {
-	    /* This is an arguably safe optimization--it breaks only
-	       if a filename is assigned a new docid (e.g., file
-	       disappears then reappears).  Should maybe be
-	       overridable by a command-line argument.  */
-	    return;
-	  }
-	  string dirent { (*ti).substr(dirtermprefix.length()) };
-	  Xapian::PostingIterator pi = xdb.postlist_begin (**tip),
-	    pe = xdb.postlist_end (**tip);
-	  if (pi == pe)
-	    cerr << "warning: file direntry term " << **tip
-		 << " has no postings\n";
-	  else {
-	    if (!sp)
-	      add_file.reset().bind_text(1, dirent).bind_int(2, *pi).step(); 
-	    else if (sp->integer(2) != *pi) {
-	      // This should be really unusual
-	      cerr << "warning: docid changed for "
-		   << dir << '/' << dirent << '\n';
-	      del_file.reset().param(sp->value(0)).step();
-	      add_file.reset().bind_text(1, dirent).bind_int(2, *pi).step(); 
-	    }
-	    if (++pi != pe)
-	      cerr << "warning: file direntry term " << *ti
-		   << " has multiple postings\n";
-	  }
-	}
-      });
+	else
+	  return;
+      }
+      string dirent { (**tip).substr(dirtermprefix.length()) };
+      add_file.reset().bind_text(1, dirent).bind_int(2, docid).step(); 
+    };
+
+    Xapian::TermIterator ti = xdb.allterms_begin(dirtermprefix),
+      te = xdb.allterms_end(dirtermprefix);
+    sync_table<Xapian::TermIterator> (filescan, ti, te, cmp, merge);
   }
   fmtexec (sqldb,
 	   "UPDATE deleted_files SET docid = NULL"
@@ -373,6 +400,6 @@ xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
   print_time ("scanning directories");
   xapian_scan_directories (sqldb, xdb, rootfd);
   print_time ("scanning filenames in modified directories");
-  xapian_scan_filenames (sqldb, xdb);
+  xapian_scan_filenames (sqldb, xdb, rootfd);
   print_time ("done tags");
 }
