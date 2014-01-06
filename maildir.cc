@@ -124,7 +124,7 @@ get_msgid (const string &file, string &msgid)
 void
 find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 {
-  int dirlen = maildir.length();
+  int dirlen = maildir.length() + 1; // remove maildir and slash
   char *paths[] {const_cast<char *> (maildir.c_str()), nullptr};
 
   sqlstmt_t
@@ -267,9 +267,18 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
   for (; scan.row(); scan.step())
     del_file.reset().param(scan.value(5)).step();
   for (; f; f = f->fts_link) {
-    if (f->fts_info != FTS_F)
+    if (f->fts_info != FTS_F && f->fts_info != FTS_NSOK)
       continue;
-    const struct stat &sb = *f->fts_statp;
+    struct stat sbuf;
+    if (f->fts_info == FTS_NSOK && fstatat (dfd, f->fts_name, &sbuf, 0)) {
+      if (errno == ENOENT)
+	continue;
+      throw runtime_error (subdir + '/' + f->fts_name + ": "
+			   + strerror (errno));
+    }
+    struct stat &sb = *(f->fts_info == FTS_NSOK ? &sbuf : f->fts_statp);
+    if (!S_ISREG (sb.st_mode))
+      continue;
     double mtim = ts_to_double(sb.st_mtim);
     string hashval = get_sha (dfd, f->fts_name, nullptr);
     add_file.reset()
@@ -307,8 +316,11 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd)
 }
 
 void
-scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir)
+scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
 {
+  while (maildir.size() && maildir.back() == '/')
+    maildir.resize (maildir.size() - 1);
+
   int rootfd = open (maildir.c_str(), O_RDONLY);
   if (rootfd < 0)
     throw runtime_error (maildir + ": " + strerror (errno));

@@ -233,4 +233,4 @@ dir_contains_messages (const string &dir)
   }
   return dir == "cur" || dir == "new";
 }
-void scan_maildir (sqlite3 *sqldb, writestamp ws, const string &maildir);
+void scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir);
