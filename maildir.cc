@@ -344,10 +344,15 @@ static void
 sync_maildir_ws (sqlite3 *sqldb, writestamp ws)
 {
   const char
-    oldcounts[] = ("SELECT hash_id, dir_id, link_count FROM maildir_links"
-		   " ORDER BY hash_id, didr_id"),
+    oldcounts[] = ("SELECT hash_id, dir_id, link_count, rowid"
+		   " FROM maildir_links ORDER BY hash_id, didr_id"),
     newcounts[] = ("SELECT hash_id, dir_id, count(*) FROM maildir_files"
 		   " GROUP BY hash_id, dir_id ORDER BY hash_id");
+
+  fmtexec (sqldb, "DROP TABLE IF EXISTS deleted_files; "
+	   "CREATE TABLE deleted_files AS "
+	   "SELECT DISTINCT hash_id FROM maildir_links"
+	   " EXCEPT SELECT hash_id FROM maildir_files;");
 }
 
 void
