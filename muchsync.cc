@@ -9,7 +9,8 @@
 
 using namespace std;
 
-bool opt_fullscan = false;
+bool opt_fullscan;
+int opt_verbose;
 
 #define DBVERS "muchsync 0"
 
@@ -33,7 +34,37 @@ CREATE TABLE xapian_files (
   dir_docid INTEGER,
   name TEXT NOT NULL,
   docid INTEGER,
-  UNIQUE (dir_docid, name));)";
+  UNIQUE (dir_docid, name));
+
+CREATE TABLE maildir_dirs (
+  dir_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dir_path TEXT UNIQUE NOT NULL,
+  ctime REAL,
+  mtime REAL,
+  inode INTEGER);
+CREATE TABLE maildir_files (
+  dir_id INTEGER NOT NULL,
+  name TEXT NOT NULL COLLATE BINARY,
+  mtime REAL,
+  inode INTEGER,
+  size INTEGER,
+  hash_id INTEGER NOT NULL,
+  replica INTEGER,
+  version INTEGER,
+  PRIMARY KEY (dir_id, name));
+CREATE TABLE maildir_hashes (
+  hash_id INTEGER PRIMARY KEY,
+  hash TEXT UNIQUE NOT NULL);
+-- poor man's foreign key
+CREATE TRIGGER dir_delete_trigger AFTER DELETE ON maildir_dirs
+  BEGIN DELETE FROM maildir_files WHERE dir_id = old.dir_id;
+  END;
+)";
+
+const char xapian_dirs_def[] =
+R"(CREATE TABLE xapian_dirs (
+  dir_path TEXT UNIQUE NOT NULL,
+  dir_docid INTEGER PRIMARY KEY);)";
 
 static double
 time_stamp ()
@@ -76,6 +107,7 @@ dbcreate (const char *path)
   try {
     fmtexec (pDb, "BEGIN;");
     fmtexec (pDb, schema_def);
+    fmtexec (pDb, xapian_dirs_def);
     setconfig (pDb, "DBVERS", DBVERS);
     setconfig (pDb, "self", self);
     setconfig (pDb, "last_scan", 0.0);
@@ -162,11 +194,21 @@ usage ()
 int
 main (int argc, char **argv)
 {
+  bool opt_maildir_only = false, opt_xapian_only = false;
   int opt;
-  while ((opt = getopt(argc, argv, "F")) != -1)
+  while ((opt = getopt(argc, argv, "Fmvx")) != -1)
     switch (opt) {
     case 'F':
       opt_fullscan = true;
+      break;
+    case 'm':
+      opt_maildir_only = true;
+      break;
+    case 'v':
+      opt_verbose++;
+      break;
+    case 'x':
+      opt_xapian_only = true;
       break;
     default:
       usage ();
@@ -198,20 +240,24 @@ main (int argc, char **argv)
   printf ("version = %lld\n", vers);
   printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
 
-  try {
+  //try {
     double start_scan_time { time_stamp() };
 
-    scan_maildir (db, ws, maildir);
-    xapian_scan (db, ws, maildir);
+    if (!opt_xapian_only)
+      scan_maildir (db, ws, maildir);
+    if (!opt_maildir_only)
+      xapian_scan (db, ws, maildir);
 
     setconfig (db, "last_scan", start_scan_time);
     fmtexec(db, "COMMIT;");
+#if 0
   }
   catch (std::runtime_error e) {
     fprintf (stderr, "%s\n", e.what ());
     fmtexec(db, "COMMIT;"); // XXX - see what happened
     exit (1);
   }
+#endif
 
   return 0;
 }

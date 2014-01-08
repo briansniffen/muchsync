@@ -56,11 +56,6 @@ CREATE TEMP TRIGGER file_delete AFTER DELETE ON main.xapian_files
         VALUES (old.file_id, old.name, old.dir_docid, old.docid); END;
 )";
 
-const char xapian_dirs_schema[] =
-  R"(CREATE TABLE IF NOT EXISTS xapian_dirs (
-  dir_path TEXT UNIQUE NOT NULL,
-  dir_docid INTEGER PRIMARY KEY);)";
-
 template<typename T> void
 sync_table (sqlstmt_t &s, T &t, T &te,
 	    function<int(sqlstmt_t &s, T &t)> cmpfn,
@@ -162,7 +157,8 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
   for (Xapian::TermIterator ti = xdb.allterms_begin(notmuch_tag_prefix),
 	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
     string tag = tag_from_term (*ti);
-    cout << "  " << tag << "\n";
+    if (opt_verbose)
+      cout << "  " << tag << "\n";
     scan.reset().bind_text(1, tag);
     add_tag.reset().bind_text(2, tag);
     del_tag.reset().bind_text(2, tag);
@@ -234,7 +230,9 @@ xapian_get_unique_posting (const Xapian::Database &xdb, const string &term)
 static void
 xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
 {
-  save_old_table (sqldb, "xapian_dirs", xapian_dirs_schema);
+  fmtexec (sqldb, "DROP TABLE IF EXISTS old_xapian_dirs; "
+	   "ALTER TABLE xapian_dirs RENAME TO old_xapian_dirs; "
+	   "%s", xapian_dirs_def);
   sqlstmt_t insert (sqldb,
       "INSERT INTO xapian_dirs (dir_path, dir_docid) VALUES (?, ?);");
 

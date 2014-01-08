@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
@@ -16,46 +17,44 @@
 
 using namespace std;
 
-const char maildir_schema[] = R"(
-CREATE TABLE IF NOT EXISTS maildir_dirs (
-  dir_path TEXT PRIMARY KEY,
-  ctime REAL,
-  mtime REAL,
-  inode INTEGER
-);
-CREATE TABLE IF NOT EXISTS maildir_files (
-  dir_path TEXT NOT NULL,
-  name TEXT NOT NULL COLLATE BINARY,
-  mtime REAL,
-  inode INTEGER,
-  size INTEGER,
-  hash TEXT,
-  replica INTEGER,
-  version INTEGER,
-  PRIMARY KEY (dir_path, name));
-CREATE TABLE IF NOT EXISTS modified_directories (
-  dir_path TEXT PRIMARY KEY);
+const char maildir_triggers[] = R"(
+CREATE TABLE IF NOT EXISTS maildir_modified_dirs (
+  dir_id INTEGER PRIMARY KEY,
+  dir_path TEXT UNIQUE NOT NULL);
+DELETE FROM maildir_modified_dirs;
+CREATE TEMP TRIGGER dir_update_trigger AFTER UPDATE ON main.maildir_dirs
+  BEGIN INSERT INTO maildir_modified_dirs (dir_id, dir_path)
+        VALUES (new.dir_id, new.dir_path);
+  END;
+CREATE TEMP TRIGGER dir_delete_trigger AFTER DELETE ON main.maildir_dirs
+  BEGIN DELETE FROM maildir_files WHERE dir_id = old.dir_id;
+  END;
 )";
 
 static string
 hexdump (const string &s)
 {
   ostringstream os;
-  os << hex << setw (2) << setfill ('0');
+  os << hex << setfill ('0');
   for (auto c : s)
-    os << (int (c) & 0xff);
-  return os.str ();
+    os << setw(2) << (int (c) & 0xff);
+  string ret = os.str();
+  if (ret.size() != 2 * s.size()) {
+    cerr << ret.size() << " != 2 * " << s.size () << "\n";
+    cerr << "s[0] == " << hex << unsigned (s[0]) << ", s.back() = "
+	 << unsigned (s.back()) << "\n";
+    terminate();
+  }
+  return ret;
 }
 
 string
-get_sha (int dfd, const char *direntry, struct stat *sbp)
+get_sha (int dfd, const char *direntry)
 {
   int fd = openat(dfd, direntry, O_RDONLY);
   if (fd < 0)
     throw runtime_error (string() + direntry + ": " + strerror (errno));
   cleanup _c (close, fd);
-  if (sbp && fstat (fd, sbp))
-    throw runtime_error (string() + direntry + ": " + strerror (errno));
 
   SHA_CTX ctx;
   SHA1_Init (&ctx);
@@ -129,7 +128,7 @@ find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 
   sqlstmt_t
     exists (sqldb, "SELECT 1 FROM maildir_dirs WHERE dir_path = ?;"),
-    create (sqldb, "INSERT INTO maildir_dirs (dir_path, inode) VALUES (?, 0);");
+    create (sqldb, "INSERT INTO maildir_dirs (dir_path) VALUES (?);");
 
   unique_ptr<FTS, decltype (&fts_close)>
     ftsp {fts_open (paths, FTS_LOGICAL, nullptr), fts_close};
@@ -137,10 +136,15 @@ find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
     throw runtime_error (maildir + ": " + strerror (errno));
   while (FTSENT *f = fts_read (ftsp.get())) {
     if (f->fts_info == FTS_D) {
+      string dirpath (f->fts_path + dirlen);
+      if (dirpath == ".notmuch") {
+	fts_set (ftsp.get(), f, FTS_SKIP);
+	continue;
+      }
       if (dir_contains_messages (f->fts_name)) {
-	exists.reset().param(f->fts_path + dirlen).step();
+	exists.reset().param(dirpath).step();
 	if (!exists.row())
-	  create.reset().param(f->fts_path + dirlen).step();
+	  create.reset().param(dirpath).step();
       }
       if (f->fts_statp->st_nlink <= 2)
 	fts_set (ftsp.get(), f, FTS_SKIP);
@@ -151,30 +155,27 @@ find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 void
 find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 {
-  sqlstmt_t
-    scan (sqldb, "SELECT dir_path, ctime, mtime, inode FROM maildir_dirs;"),
-    deldir (sqldb, "DELETE FROM maildir_dirs WHERE dir_path = ?;"),
-    delfiles (sqldb, "DELETE FROM maildir_files WHERE dir_path = ?;"),
-    upddir (sqldb, "UPDATE maildir_dirs "
-	    "SET ctime = ?, mtime = ?, inode = ? WHERE dir_path = ?;");
+  unordered_map<string, i64> modified;
 
-  fmtexec (sqldb, "CREATE TEMP TRIGGER dir_update_trigger "
-	   "AFTER UPDATE ON main.maildir_dirs BEGIN "
-	   "INSERT INTO modified_directories (dir_path) VALUES (new.dir_path);"
-	   "END;");
+  sqlstmt_t
+    scan (sqldb, "SELECT dir_id, dir_path, ctime, mtime, inode"
+	  " FROM maildir_dirs;"),
+    deldir (sqldb, "DELETE FROM maildir_dirs WHERE dir_id = ?;"),
+    upddir (sqldb, "UPDATE maildir_dirs "
+	    "SET ctime = ?, mtime = ?, inode = ? WHERE dir_id = ?;");
 
   while (scan.step().row()) {
     struct stat sb;
-    if (fstatat (rootfd, scan.c_str(0), &sb, 0)) {
-      if (errno != ENOENT)
-	throw runtime_error (scan.str(0) + ": " + strerror (errno));
+    int res = fstatat (rootfd, scan.c_str(1), &sb, 0);
+    if ((res && errno == ENOENT) || (!res && !S_ISDIR(sb.st_mode))) {
       deldir.reset().param(scan.value(0)).step();
-      delfiles.reset().param(scan.value(0)).step();
       continue;
     }
+    if (res)
+      throw runtime_error (scan.str(1) + ": " + strerror (errno));
     double ctim = ts_to_double(sb.st_ctim), mtim = ts_to_double(sb.st_mtim);
-    if (i64(sb.st_ino) != scan.integer(3)
-	|| ctim != scan.real(1) || mtim != scan.real(2))
+    if (scan.null(4) || i64(sb.st_ino) != scan.integer(4)
+	|| ctim != scan.real(2) || mtim != scan.real(3))
       upddir.reset().param(ctim, mtim, i64(sb.st_ino), scan.value(0)).step();
   }
 }
@@ -185,11 +186,33 @@ compare_fts_name (const FTSENT **a, const FTSENT **b)
   return strcmp ((*a)->fts_name, (*b)->fts_name);
 }
 
+static const struct stat *
+ftsent_stat (int dfd, const FTSENT *f, struct stat *sbp)
+{
+  if (f->fts_info != FTS_NSOK)
+    return f->fts_statp;
+  if (!fstatat (dfd, f->fts_name, sbp, 0))
+    return sbp;
+  throw runtime_error (string (f->fts_path) + ": " + strerror (errno));
+}
+
+/* true if we need to re-hash */
+static bool
+check_file (sqlstmt_t &scan, const struct stat *sbp)
+{
+  return !S_ISREG(sbp->st_mode)
+    || ts_to_double(sbp->st_mtim) != scan.real(1)
+    || i64(sbp->st_ino) != scan.integer(2)
+    || i64(sbp->st_size) != scan.integer(3);
+}
+
 static void
 scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
 		sqlstmt_t &scan, sqlstmt_t &del_file, sqlstmt_t &add_file,
-		sqlstmt_t &upd_file, int dfd)
+		sqlstmt_t &upd_file, int dfd,
+		function<i64(const string &)> gethash)
 {
+  struct stat sbuf;		// Just storage in case !opt_fullscan
   string path = maildir.size() ? maildir + "/" + subdir : subdir;
   char *paths[] {const_cast<char *> (path.c_str()), nullptr};
   unique_ptr<FTS, decltype (&fts_close)>
@@ -203,7 +226,8 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
   if (errno)
     throw runtime_error (path + ": " + strerror (f->fts_errno));
 
-  cout << "  " << subdir << '\n';
+  if (opt_verbose)
+    cout << "  " << subdir << '\n';
 
   scan.step();
   while (scan.row() && f) {
@@ -217,73 +241,53 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
       scan.step();
       continue;
     }
-    if (!opt_fullscan && cmp == 0) {
+    else if (cmp == 0 && (!opt_fullscan || !check_file (scan, f->fts_statp))) {
       scan.step();
       f = f->fts_link;
       continue;
     }
-    struct stat sbuf;
-    if (f->fts_info == FTS_NSOK && fstatat (dfd, f->fts_name, &sbuf, 0)) {
-      if (errno == ENOENT) {
+    /* At this point we either have a new file or the metadata has
+     * changed suspiciously.  Either way, assuming it's still a
+     * regular file, we must compute a full hash of its contents. */
+    const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
+    if (!S_ISREG (sbp->st_mode)) {
+      del_file.reset().param(scan.value(5)).step();
+      scan.step();
+      f = f->fts_link;
+    }
+    if (opt_verbose > 1)
+      cout << "    " << f->fts_name << "\n";
+    i64 hashid = gethash (get_sha (dfd, f->fts_name));
+    if (cmp == 0) {
+      /* metadata changed suspiciously */
+      if (hashid == scan.integer(4)) {
+	/* file unchanged; update metadata so we don't re-hash next time */
+	upd_file.reset().param(ts_to_double(sbp->st_mtim),i64(sbp->st_ino),
+			       i64(sbp->st_size),scan.value(5)).step();
+	scan.step();
 	f = f->fts_link;
 	continue;
       }
-      throw runtime_error (subdir + '/' + f->fts_name + ": "
-			   + strerror (errno));
+      cerr << "warning: " << subdir + "/" + f->fts_name << " was modified\n";
+      /* file changed; delete old entry and consider it a new file */
+      del_file.reset().param(scan.value(5)).step();
     }
-    struct stat &sb = *(f->fts_info == FTS_NSOK ? &sbuf : f->fts_statp);
-    if (!S_ISREG (sb.st_mode)) {
-      f = f->fts_link;
-      continue;
-    }
-    double mtim = ts_to_double(sb.st_mtim);
-    if (cmp > 0) {
-      cout << "hashing new file " << subdir << '/' << f->fts_name << "\n";
-      string hashval = get_sha (dfd, f->fts_name, nullptr);
-      add_file.reset()
-	.param(f->fts_name, mtim, i64(sb.st_ino), i64(sb.st_size), hashval)
-	.step();
-      f = f->fts_link;
-      continue;
-    }
-    if (mtim != scan.real(1) || sb.st_size != scan.integer(3)
-	|| i64(sb.st_ino) != scan.integer(2)) {
-      cout << "hashing old file " << subdir << '/' << f->fts_name << "\n";
-      string hashval = get_sha (dfd, f->fts_name, nullptr);
-      if (sb.st_size != scan.integer(4) || hashval != scan.str(4)) {
-	del_file.reset().param(scan.value(5)).step();
-	add_file.reset()
-	  .param(f->fts_name, mtim, i64(sb.st_ino), i64(sb.st_size), hashval)
-	  .step();
-      }
-      else {
-	cout << "hash did not change\n";
-	upd_file.reset().param(mtim, i64(sb.st_ino), scan.value(5)).step();
-      }
-    }
+    add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),
+			   i64(sbp->st_ino), i64(sbp->st_size), hashid).step();
     scan.step();
     f = f->fts_link;
   }
   for (; scan.row(); scan.step())
     del_file.reset().param(scan.value(5)).step();
   for (; f; f = f->fts_link) {
-    if (f->fts_info != FTS_F && f->fts_info != FTS_NSOK)
+    const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
+    if (!S_ISREG (sbp->st_mode))
       continue;
-    struct stat sbuf;
-    if (f->fts_info == FTS_NSOK && fstatat (dfd, f->fts_name, &sbuf, 0)) {
-      if (errno == ENOENT)
-	continue;
-      throw runtime_error (subdir + '/' + f->fts_name + ": "
-			   + strerror (errno));
-    }
-    struct stat &sb = *(f->fts_info == FTS_NSOK ? &sbuf : f->fts_statp);
-    if (!S_ISREG (sb.st_mode))
-      continue;
-    double mtim = ts_to_double(sb.st_mtim);
-    string hashval = get_sha (dfd, f->fts_name, nullptr);
-    add_file.reset()
-      .param(f->fts_name, mtim, i64(sb.st_ino), i64(sb.st_size), hashval)
-      .step();
+    if (opt_verbose > 1)
+      cout << "    " << f->fts_name << "\n";
+    i64 hashid = gethash (get_sha (dfd, f->fts_name));
+    add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),
+			   i64(sbp->st_ino), i64(sbp->st_size), hashid).step();
   }
 }
 
@@ -291,27 +295,35 @@ static void
 scan_files (sqlite3 *sqldb, const string &maildir, int rootfd)
 {
   sqlstmt_t
-    scandirs (sqldb, "SELECT dir_path FROM %s ORDER BY dir_path;",
-	      opt_fullscan ? "maildir_dirs" : "modified_directories"),
-    scanfiles (sqldb, "SELECT name, mtime, inode, size, hash, rowid"
-	       " FROM maildir_files WHERE dir_path = ? ORDER BY name;"),
+    scandirs (sqldb, "SELECT dir_id, dir_path FROM %s ORDER BY dir_path;",
+	      opt_fullscan ? "maildir_dirs" : "maildir_modified_dirs"),
+    scanfiles (sqldb, "SELECT name, mtime, inode, size, hash_id, rowid"
+	       " FROM maildir_files WHERE dir_id = ? ORDER BY name;"),
     del_file (sqldb, "DELETE FROM maildir_files WHERE rowid = ?;"),
     add_file (sqldb, "INSERT INTO maildir_files"
-	      " (name, mtime, inode, size, hash, dir_path)"
+	      " (name, mtime, inode, size, hash_id, dir_id)"
 	      " VALUES (?, ?, ?, ?, ?, ?);"),
     upd_file (sqldb, "UPDATE maildir_files"
-	      " SET mtime = ?, inode = ? WHERE rowid = ?;");
+	      " SET mtime = ?, inode = ?, size = ? WHERE rowid = ?;"),
+    get_hash (sqldb, "SELECT hash_id FROM maildir_hashes WHERE hash = ?;"),
+    add_hash (sqldb, "INSERT INTO maildir_hashes (hash) VALUES (?);");
 
   while (scandirs.step().row()) {
-    string dir {scandirs.str(0)};
+    string dir {scandirs.str(1)};
     int dfd = openat(rootfd, dir.c_str(), O_RDONLY);
     if (dfd < 0)
       throw runtime_error (dir + ": " + strerror (errno));
     cleanup _c (close, dfd);
-    scanfiles.reset().bind_text(1, dir);
-    add_file.reset().bind_text(6, dir);
+    scanfiles.reset().bind_value(1, scandirs.value(0));
+    add_file.reset().bind_value(6, scandirs.value(0));
     scan_directory (sqldb, maildir, dir,
-		    scanfiles, del_file, add_file, upd_file, dfd);
+		    scanfiles, del_file, add_file, upd_file, dfd,
+		    [sqldb,&get_hash,&add_hash] (const string &h) -> i64 {
+		      if (get_hash.reset().param(h).step().row())
+			return get_hash.integer(0);
+		      add_hash.reset().param(h).step().row();
+		      return sqlite3_last_insert_rowid (sqldb);
+		    });
   }
 }
 
@@ -326,8 +338,7 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
     throw runtime_error (maildir + ": " + strerror (errno));
   cleanup _c (close, rootfd);
 
-  fmtexec (sqldb, maildir_schema);
-  fmtexec (sqldb, "DELETE FROM modified_directories;");
+  fmtexec (sqldb, maildir_triggers);
   print_time ("finding new subdirectories of maildir");
   find_new_directories (sqldb, maildir, rootfd);
   print_time ("finding modified directories in maildir");
