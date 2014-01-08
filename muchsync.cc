@@ -14,14 +14,16 @@ int opt_verbose;
 
 #define DBVERS "muchsync 0"
 
-const char schema_def[] =
-R"(CREATE TABLE configuration (
+const char schema_def[] = R"(
+-- General table
+CREATE TABLE configuration (
   key TEXT PRIMARY KEY NOT NULL,
   value TEXT);
 CREATE TABLE sync_vector (
   replica INTEGER PRIMARY KEY,
   version INTEGER);
 
+-- Shadow copy of the Xapian database to detect changes
 CREATE TABLE tags (
   tag TEXT NOT NULL,
   docid INTEGER NOT NULL,
@@ -39,6 +41,7 @@ CREATE TABLE xapian_files (
   docid INTEGER,
   UNIQUE (dir_docid, name));
 
+-- State from last scan of maildir, to detect changes
 CREATE TABLE maildir_dirs (
   dir_id INTEGER PRIMARY KEY AUTOINCREMENT,
   dir_path TEXT UNIQUE NOT NULL,
@@ -53,7 +56,8 @@ CREATE TABLE maildir_files (
   size INTEGER,
   hash_id INTEGER NOT NULL,
   PRIMARY KEY (dir_id, name));
-CREATE INDEX dir_hash_index ON maildir_files (dir_id, hash_id);
+CREATE INDEX maildir_dir_hash_index ON maildir_files (dir_id, hash_id);
+CREATE INDEX maildir_hash_dir_index ON maildir_files (hash_id, dir_id);
 -- poor man's foreign key
 CREATE TRIGGER dir_delete_trigger AFTER DELETE ON maildir_dirs
   BEGIN DELETE FROM maildir_files WHERE dir_id = old.dir_id;
@@ -63,6 +67,11 @@ CREATE TABLE maildir_hashes (
   hash TEXT UNIQUE NOT NULL,
   replica INTEGER,
   version INTEGER);
+CREATE TABLE maildir_links (
+  hash_id TEXT UNIQUE NOT NULL,
+  dir_id INTEGER UNIQUE NOT NULL,
+  link_count INTEGER,
+  PRIMARY KEY (hash_id, dir_id));
 )";
 
 const char xapian_dirs_def[] =

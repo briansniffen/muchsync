@@ -27,27 +27,17 @@ CREATE TEMP TRIGGER dir_update_trigger AFTER UPDATE ON main.maildir_dirs
         VALUES (new.dir_id, new.dir_path);
   END;
 
-CREATE TABLE IF NOT EXISTS modified_maildir_links (
-  hash_id INTEGER NOT NULL,
-  dir_id INTEGER NOT NULL,
-  delta INTEGER NOT NULL,
-  PRIMARY KEY (hash_id, dir_id));
-DELETE FROM modified_maildir_links;
 /*
-CREATE TRIGGER IF NOT EXISTS modified_maildir_links_plus
+CREATE TEMP TABLE modified_maildir_hashes (
+  hash_id INTEGER PRIMARY KEY);
+CREATE TEMP TRIGGER modified_maildir_links_plus
   AFTER INSERT ON main.maildir_files
-  BEGIN UPDATE modified_maildir_links SET delta = delta + 1
-               WHERE hash_id = new.hash_id & dir_id = new.dir_id;
-        INSERT INTO modified_maildir_links (hash_id, dir_id, delta)
-               SELECT new.hash_id, new.dir_id, 1 WHERE changes() = 0;
-  END;
-CREATE TRIGGER IF NOT EXISTS modified_maildir_links_minus
+  WHEN new.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
+  BEGIN INSERT INTO modified_maildir_hashes VALUES (new.hash_id); END;
+CREATE TEMP TRIGGER modified_maildir_links_minus
   AFTER DELETE ON main.maildir_files
-  BEGIN UPDATE modified_maildir_links SET delta = delta - 1
-               WHERE hash_id = old.hash_id & dir_id = old.dir_id;
-        INSERT INTO modified_maildir_links (hash_id, dir_id, delta)
-               SELECT old.hash_id, old.dir_id, -1 WHERE changes() = 0;
-  END;
+  WHEN old.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
+  BEGIN INSERT INTO modified_maildir_hashes VALUES (old.hash_id); END;
 */
 )";
 
@@ -350,6 +340,16 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
   }
 }
 
+static void
+sync_maildir_ws (sqlite3 *sqldb, writestamp ws)
+{
+  const char
+    oldcounts[] = ("SELECT hash_id, dir_id, link_count FROM maildir_links"
+		   " ORDER BY hash_id, didr_id"),
+    newcounts[] = ("SELECT hash_id, dir_id, count(*) FROM maildir_files"
+		   " GROUP BY hash_id, dir_id ORDER BY hash_id");
+}
+
 void
 scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
 {
@@ -370,12 +370,8 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
 	      : "scanning files in modified directories");
   scan_files (sqldb, maildir, rootfd, ws);
   print_time ("updating version stamps");
-#if 0
-  fmtexec (sqldb, "UPDATE maildir_hashes SET replica = %lld, version = %lld"
-	   " WHERE hash_id IN"
-	   " (SELECT hash_id FROM modified_maildir_links WHERE delte != 0);",
-	   ws.first, ws.second);
-#endif
+  sync_maildir_ws (sqldb, ws);
+  print_time ("done");
 
   //scan_directory (sqldb, maildir, "");
 
