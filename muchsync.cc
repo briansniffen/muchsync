@@ -21,6 +21,7 @@ R"(CREATE TABLE configuration (
 CREATE TABLE sync_vector (
   replica INTEGER PRIMARY KEY,
   version INTEGER);
+
 CREATE TABLE tags (
   tag TEXT NOT NULL,
   docid INTEGER NOT NULL,
@@ -28,7 +29,9 @@ CREATE TABLE tags (
   UNIQUE (tag, docid));
 CREATE TABLE message_ids (
   message_id TEXT UNIQUE NOT NULL,
-  docid INTEGER PRIMARY KEY);
+  docid INTEGER PRIMARY KEY,
+  replica INTEGER,
+  version INTEGER);
 CREATE TABLE xapian_files (
   file_id INTEGER PRIMARY KEY AUTOINCREMENT,
   dir_docid INTEGER,
@@ -49,16 +52,17 @@ CREATE TABLE maildir_files (
   inode INTEGER,
   size INTEGER,
   hash_id INTEGER NOT NULL,
-  replica INTEGER,
-  version INTEGER,
   PRIMARY KEY (dir_id, name));
-CREATE TABLE maildir_hashes (
-  hash_id INTEGER PRIMARY KEY,
-  hash TEXT UNIQUE NOT NULL);
+CREATE INDEX dir_hash_index ON maildir_files (dir_id, hash_id);
 -- poor man's foreign key
 CREATE TRIGGER dir_delete_trigger AFTER DELETE ON maildir_dirs
   BEGIN DELETE FROM maildir_files WHERE dir_id = old.dir_id;
   END;
+CREATE TABLE maildir_hashes (
+  hash_id INTEGER PRIMARY KEY,
+  hash TEXT UNIQUE NOT NULL,
+  replica INTEGER,
+  version INTEGER);
 )";
 
 const char xapian_dirs_def[] =
@@ -240,7 +244,7 @@ main (int argc, char **argv)
   printf ("version = %lld\n", vers);
   printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
 
-  //try {
+  try {
     double start_scan_time { time_stamp() };
 
     if (!opt_xapian_only)
@@ -250,14 +254,12 @@ main (int argc, char **argv)
 
     setconfig (db, "last_scan", start_scan_time);
     fmtexec(db, "COMMIT;");
-#if 0
   }
   catch (std::runtime_error e) {
     fprintf (stderr, "%s\n", e.what ());
     fmtexec(db, "COMMIT;"); // XXX - see what happened
     exit (1);
   }
-#endif
 
   return 0;
 }

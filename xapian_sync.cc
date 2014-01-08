@@ -18,6 +18,7 @@ const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 const char xapian_triggers[] =
 R"(CREATE TABLE IF NOT EXISTS modified_docids (
   docid INTEGER PRIMARY KEY);
+DELETE FROM modified_docids;
 CREATE TEMP TRIGGER tag_delete AFTER DELETE ON main.tags
   WHEN old.docid NOT IN (SELECT * FROM modified_docids)
   BEGIN INSERT INTO modified_docids (docid) VALUES (old.docid); END;
@@ -28,32 +29,9 @@ CREATE TEMP TRIGGER message_id_insert AFTER INSERT ON main.message_ids
   WHEN new.docid NOT IN (SELECT * FROM modified_docids)
   BEGIN INSERT INTO modified_docids (docid) VALUES (new.docid); END;
 
-CREATE TABLE IF NOT EXISTS deleted_docids (
-  docid INTEGER PRIMARY KEY,
-  message_id TEXT UNIQUE);
-CREATE TEMP TRIGGER message_id_delete AFTER DELETE ON main.message_ids
-  BEGIN INSERT INTO deleted_docids (docid, message_id)
-        VALUES (old.docid, old.message_id);
-  END;
-
-CREATE TABLE IF NOT EXISTS deleted_dirs (
+CREATE TEMP TABLE deleted_xapian_dirs (
   dir_docid INTEGER PRIMARY KEY,
   dir_path TEXT UNIQUE); 
-
-CREATE TABLE IF NOT EXISTS new_files (
-  file_id INTEGER PRIMARY KEY);
-CREATE TEMP TRIGGER file_insert AFTER INSERT ON main.xapian_files
-  BEGIN INSERT INTO new_files (file_id) VALUES (new.file_id); END;
-
-CREATE TABLE IF NOT EXISTS deleted_files (
-  file_id INTEGER PRIMARY KEY,
-  dir_docid INTEGER,
-  name TEXT NOT NULL,
-  docid INTEGER,
-  UNIQUE (dir_docid, name));
-CREATE TEMP TRIGGER file_delete AFTER DELETE ON main.xapian_files
-  BEGIN INSERT INTO deleted_files (file_id, name, dir_docid, docid)
-        VALUES (old.file_id, old.name, old.dir_docid, old.docid); END;
 )";
 
 template<typename T> void
@@ -246,13 +224,11 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
     insert.reset().param(dir, i64(xapian_get_unique_posting(xdb, *ti))).step();
   }
 
-  fmtexec (sqldb, "INSERT INTO deleted_dirs (dir_docid, dir_path)"
+  fmtexec (sqldb, "INSERT INTO deleted_xapian_dirs (dir_docid, dir_path)"
 	   " SELECT dir_docid, dir_path from old_xapian_dirs"
 	   " EXCEPT SELECT dir_docid, dir_path from xapian_dirs;");
   fmtexec (sqldb, "DELETE FROM xapian_files"
-	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs); "
-	   "UPDATE deleted_files SET dir_docid = NULL"
-	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_dirs);");
+	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_xapian_dirs);");
 }
 
 static void
@@ -270,7 +246,6 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
   while (dirscan.step().row()) {
     string dir = dirscan.str(0);
 
-    // cout << "  " << dir << '\n';
     i64 dir_docid = dirscan.integer(1);
     string dirtermprefix = (notmuch_file_direntry_prefix
 			    + to_string (dir_docid) + ":");
@@ -292,13 +267,11 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
 	return;
 
       i64 docid = xapian_get_unique_posting (xdb, **tip);
-      if (sp && sp->integer(2) != docid) {
+      if (sp) {
+	if (sp->integer(2) == docid)
+	  return;
 	del_file.reset().param(sp->value(0)).step();
-	sp = nullptr;
       }
-      if (sp)
-	return;
-
       string dirent { (**tip).substr(dirtermprefix.length()) };
       add_file.reset().param(dirent, docid).step();
     };
@@ -307,28 +280,22 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
       te = xdb.allterms_end(dirtermprefix);
     sync_table<Xapian::TermIterator> (filescan, ti, te, cmp, merge);
   }
-  fmtexec (sqldb,
-	   "UPDATE deleted_files SET docid = NULL"
-	   " WHERE docid IN (SELECT docid FROM deleted_docids);");
 }
 
 void
 xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
 {
+  print_time ("opening Xapian");
   Xapian::Database xdb (path + "/.notmuch/xapian");
-
-  print_time ("configuring database");
   fmtexec (sqldb, xapian_triggers);
-  fmtexec (sqldb, "DELETE FROM modified_docids; "
-	   "DELETE FROM deleted_docids; "
-	   "DELETE FROM deleted_dirs; "
-	   "DELETE FROM new_files; "
-	   "DELETE FROM deleted_files; ");
-
   print_time ("scanning message IDs");
   xapian_scan_message_ids (sqldb, xdb);
   print_time ("scanning tags");
   xapian_scan_tags (sqldb, xdb);
+  print_time ("updating version stamps");
+  fmtexec (sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
+	   " WHERE docid IN (SELECT docid FROM modified_docids);",
+	   ws.first, ws.second);
   print_time ("scanning directories in xapian");
   xapian_scan_directories (sqldb, xdb);
   print_time ("scanning filenames in xapian");

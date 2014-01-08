@@ -18,17 +18,37 @@
 using namespace std;
 
 const char maildir_triggers[] = R"(
-CREATE TABLE IF NOT EXISTS maildir_modified_dirs (
+CREATE TEMP TABLE modified_maildir_dirs (
   dir_id INTEGER PRIMARY KEY,
   dir_path TEXT UNIQUE NOT NULL);
-DELETE FROM maildir_modified_dirs;
+DELETE FROM temp.modified_maildir_dirs;
 CREATE TEMP TRIGGER dir_update_trigger AFTER UPDATE ON main.maildir_dirs
-  BEGIN INSERT INTO maildir_modified_dirs (dir_id, dir_path)
+  BEGIN INSERT INTO modified_maildir_dirs (dir_id, dir_path)
         VALUES (new.dir_id, new.dir_path);
   END;
-CREATE TEMP TRIGGER dir_delete_trigger AFTER DELETE ON main.maildir_dirs
-  BEGIN DELETE FROM maildir_files WHERE dir_id = old.dir_id;
+
+CREATE TABLE IF NOT EXISTS modified_maildir_links (
+  hash_id INTEGER NOT NULL,
+  dir_id INTEGER NOT NULL,
+  delta INTEGER NOT NULL,
+  PRIMARY KEY (hash_id, dir_id));
+DELETE FROM modified_maildir_links;
+/*
+CREATE TRIGGER IF NOT EXISTS modified_maildir_links_plus
+  AFTER INSERT ON main.maildir_files
+  BEGIN UPDATE modified_maildir_links SET delta = delta + 1
+               WHERE hash_id = new.hash_id & dir_id = new.dir_id;
+        INSERT INTO modified_maildir_links (hash_id, dir_id, delta)
+               SELECT new.hash_id, new.dir_id, 1 WHERE changes() = 0;
   END;
+CREATE TRIGGER IF NOT EXISTS modified_maildir_links_minus
+  AFTER DELETE ON main.maildir_files
+  BEGIN UPDATE modified_maildir_links SET delta = delta - 1
+               WHERE hash_id = old.hash_id & dir_id = old.dir_id;
+        INSERT INTO modified_maildir_links (hash_id, dir_id, delta)
+               SELECT old.hash_id, old.dir_id, -1 WHERE changes() = 0;
+  END;
+*/
 )";
 
 static string
@@ -292,11 +312,11 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
 }
 
 static void
-scan_files (sqlite3 *sqldb, const string &maildir, int rootfd)
+scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
 {
   sqlstmt_t
     scandirs (sqldb, "SELECT dir_id, dir_path FROM %s ORDER BY dir_path;",
-	      opt_fullscan ? "maildir_dirs" : "maildir_modified_dirs"),
+	      opt_fullscan ? "maildir_dirs" : "modified_maildir_dirs"),
     scanfiles (sqldb, "SELECT name, mtime, inode, size, hash_id, rowid"
 	       " FROM maildir_files WHERE dir_id = ? ORDER BY name;"),
     del_file (sqldb, "DELETE FROM maildir_files WHERE rowid = ?;"),
@@ -305,8 +325,17 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd)
 	      " VALUES (?, ?, ?, ?, ?, ?);"),
     upd_file (sqldb, "UPDATE maildir_files"
 	      " SET mtime = ?, inode = ?, size = ? WHERE rowid = ?;"),
-    get_hash (sqldb, "SELECT hash_id FROM maildir_hashes WHERE hash = ?;"),
-    add_hash (sqldb, "INSERT INTO maildir_hashes (hash) VALUES (?);");
+    get_hash (sqldb, "SELECT hash_id, replica, version"
+	      " FROM maildir_hashes WHERE hash = ?;"),
+    add_hash (sqldb, "INSERT INTO maildir_hashes (hash, replica, version)"
+	      " VALUES (?, %lld, %lld);", ws.first, ws.second);
+
+  auto gethash = [sqldb,ws,&get_hash,&add_hash] (const string &h) -> i64 {
+    if (get_hash.reset().param(h).step().row())
+      return get_hash.integer(0);
+    add_hash.reset().param(h).step().row();
+    return sqlite3_last_insert_rowid (sqldb);
+  };
 
   while (scandirs.step().row()) {
     string dir {scandirs.str(1)};
@@ -317,13 +346,7 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd)
     scanfiles.reset().bind_value(1, scandirs.value(0));
     add_file.reset().bind_value(6, scandirs.value(0));
     scan_directory (sqldb, maildir, dir,
-		    scanfiles, del_file, add_file, upd_file, dfd,
-		    [sqldb,&get_hash,&add_hash] (const string &h) -> i64 {
-		      if (get_hash.reset().param(h).step().row())
-			return get_hash.integer(0);
-		      add_hash.reset().param(h).step().row();
-		      return sqlite3_last_insert_rowid (sqldb);
-		    });
+		    scanfiles, del_file, add_file, upd_file, dfd, gethash);
   }
 }
 
@@ -345,7 +368,14 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
   find_modified_directories (sqldb, maildir, rootfd);
   print_time (opt_fullscan ? "scanning files in all directories"
 	      : "scanning files in modified directories");
-  scan_files (sqldb, maildir, rootfd);
+  scan_files (sqldb, maildir, rootfd, ws);
+  print_time ("updating version stamps");
+#if 0
+  fmtexec (sqldb, "UPDATE maildir_hashes SET replica = %lld, version = %lld"
+	   " WHERE hash_id IN"
+	   " (SELECT hash_id FROM modified_maildir_links WHERE delte != 0);",
+	   ws.first, ws.second);
+#endif
 
   //scan_directory (sqldb, maildir, "");
 
