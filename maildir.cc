@@ -26,19 +26,6 @@ CREATE TEMP TRIGGER dir_update_trigger AFTER UPDATE ON main.maildir_dirs
   BEGIN INSERT INTO modified_maildir_dirs (dir_id, dir_path)
         VALUES (new.dir_id, new.dir_path);
   END;
-
-/*
-CREATE TEMP TABLE modified_maildir_hashes (
-  hash_id INTEGER PRIMARY KEY);
-CREATE TEMP TRIGGER modified_maildir_links_plus
-  AFTER INSERT ON main.maildir_files
-  WHEN new.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
-  BEGIN INSERT INTO modified_maildir_hashes VALUES (new.hash_id); END;
-CREATE TEMP TRIGGER modified_maildir_links_minus
-  AFTER DELETE ON main.maildir_files
-  WHEN old.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
-  BEGIN INSERT INTO modified_maildir_hashes VALUES (old.hash_id); END;
-*/
 )";
 
 static string
