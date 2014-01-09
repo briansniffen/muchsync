@@ -343,32 +343,55 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
 static void
 sync_maildir_ws (sqlite3 *sqldb, writestamp ws)
 {
-  fmtexec (sqldb, R"(
-CREATE TEMP TRIGGER maildir_links_update AFTER UPDATE ON main.maildir_links
-  BEGIN UPDATE maildir_hashes SET replica = %lld, version = %lld
-         WHERE hash_id = new.hash_id & replica != %lld & version != %lld;
-  END;
-)", ws.first, ws.second, ws.first, ws.second);
-  fmtexec (sqldb, R"(
-CREATE TEMP TRIGGER maildir_links_add AFTER INSERT ON main.maildir_links
-  BEGIN UPDATE maildir_hashes SET replica = %lld, version = %lld
-         WHERE hash_id = new.hash_id & replica != %lld & version != %lld;
-  END;
-)", ws.first, ws.second, ws.first, ws.second);
-  fmtexec (sqldb, R"(
-CREATE TEMP TRIGGER maildir_links_del AFTER DELETE ON main.maildir_links
-  BEGIN UPDATE maildir_hashes SET replica = %lld, version = %lld
-         WHERE hash_id = old.hash_id & replica != %lld & version != %lld;
-  END;
-)", ws.first, ws.second, ws.first, ws.second);
+  // Sadly, sqlite has no full outer join.  Hence we manually scan
+  // both oldcount and newcount to bring newcount up to date.
+  sqlstmt_t
+    newcount (sqldb, "SELECT hash_id, dir_id, count(*) FROM maildir_files"
+	      " GROUP BY hash_id, dir_id ORDER BY hash_id, dir_id;"),
+    oldcount (sqldb, "SELECT hash_id, dir_id, link_count, rowid"
+	      " FROM maildir_links ORDER BY hash_id, dir_id;"),
+    updcount (sqldb, "UPDATE maildir_links SET link_count = ?"
+	      " WHERE rowid = ?;"),
+    updhash (sqldb, "UPDATE maildir_hashes SET replica = %lld, version = %lld"
+	     " WHERE hash_id = ?;",
+	     ws.first, ws.second, ws.first, ws.second),
+    addlink (sqldb, "INSERT INTO maildir_links (hash_id, dir_id, link_count)"
+	     " VALUES (?, ?, ?);"),
+    dellink (sqldb, "DELETE FROM maildir_links WHERE rowid = ?;");
 
-  fmtexec (sqldb, R"(
-DELETE FROM maildir_links WHERE NOT EXISTS
-  (SELECT 1 FROM maildir_files
-   WHERE maildir_files.hash_id = maildir_links.dir_id
-         & maildir_files.dir_id = maildir_links.dir_id);
-)");
-
+  newcount.step();
+  oldcount.step();
+  while (newcount.row() || oldcount.row()) {
+    i64 d;  // < 0 only oldcount valid, > 0 only newcount valid
+    if (!newcount.row())
+      d = -1;
+    else if (!oldcount.row())
+      d = 1;
+    else if (!(d = oldcount.integer(0) - newcount.integer(0)))
+      d = oldcount.integer(1) - newcount.integer(1);
+    if (d == 0) {
+      i64 cnt = newcount.integer(2);
+      if (cnt != oldcount.integer(2)) {
+	updhash.reset().param(newcount.value(0)).step();
+	updcount.reset().param(cnt, oldcount.value(3)).step();
+      }
+      oldcount.step();
+      newcount.step();
+    }
+    else if (d < 0) {
+      // file deleted and (hash_id, dir_id) not present newcount
+      updhash.reset().param(oldcount.value(0)).step();
+      dellink.reset().param(oldcount.value(3)).step();
+      oldcount.step();
+    }
+    else {
+      // file added and (hash_id, dir_id) not present in oldcount
+      updhash.reset().param(newcount.value(0)).step();
+      addlink.reset().param(newcount.value(0), newcount.value(1),
+			    newcount.value(2)).step();
+      newcount.step();
+    }
+  }
 }
 
 void
@@ -392,7 +415,7 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
   scan_files (sqldb, maildir, rootfd, ws);
   print_time ("updating version stamps");
   sync_maildir_ws (sqldb, ws);
-  print_time ("done");
+  print_time ("updated maildir state");
 
   //scan_directory (sqldb, maildir, "");
 

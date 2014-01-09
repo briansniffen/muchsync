@@ -68,8 +68,8 @@ CREATE TABLE maildir_hashes (
   replica INTEGER,
   version INTEGER);
 CREATE TABLE maildir_links (
-  hash_id TEXT UNIQUE NOT NULL,
-  dir_id INTEGER UNIQUE NOT NULL,
+  hash_id INTEGER NOT NULL,
+  dir_id INTEGER NOT NULL,
   link_count INTEGER,
   PRIMARY KEY (hash_id, dir_id));
 )";

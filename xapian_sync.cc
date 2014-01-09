@@ -300,5 +300,5 @@ xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
   xapian_scan_directories (sqldb, xdb);
   print_time ("scanning filenames in xapian");
   xapian_scan_filenames (sqldb, xdb);
-  print_time ("done tags");
+  print_time ("closing Xapian");
 }
