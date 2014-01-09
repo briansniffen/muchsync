@@ -343,16 +343,32 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
 static void
 sync_maildir_ws (sqlite3 *sqldb, writestamp ws)
 {
-  const char
-    oldcounts[] = ("SELECT hash_id, dir_id, link_count, rowid"
-		   " FROM maildir_links ORDER BY hash_id, didr_id"),
-    newcounts[] = ("SELECT hash_id, dir_id, count(*) FROM maildir_files"
-		   " GROUP BY hash_id, dir_id ORDER BY hash_id");
+  fmtexec (sqldb, R"(
+CREATE TEMP TRIGGER maildir_links_update AFTER UPDATE ON main.maildir_links
+  BEGIN UPDATE maildir_hashes SET replica = %lld, version = %lld
+         WHERE hash_id = new.hash_id & replica != %lld & version != %lld;
+  END;
+)", ws.first, ws.second, ws.first, ws.second);
+  fmtexec (sqldb, R"(
+CREATE TEMP TRIGGER maildir_links_add AFTER INSERT ON main.maildir_links
+  BEGIN UPDATE maildir_hashes SET replica = %lld, version = %lld
+         WHERE hash_id = new.hash_id & replica != %lld & version != %lld;
+  END;
+)", ws.first, ws.second, ws.first, ws.second);
+  fmtexec (sqldb, R"(
+CREATE TEMP TRIGGER maildir_links_del AFTER DELETE ON main.maildir_links
+  BEGIN UPDATE maildir_hashes SET replica = %lld, version = %lld
+         WHERE hash_id = old.hash_id & replica != %lld & version != %lld;
+  END;
+)", ws.first, ws.second, ws.first, ws.second);
 
-  fmtexec (sqldb, "DROP TABLE IF EXISTS deleted_files; "
-	   "CREATE TABLE deleted_files AS "
-	   "SELECT DISTINCT hash_id FROM maildir_links"
-	   " EXCEPT SELECT hash_id FROM maildir_files;");
+  fmtexec (sqldb, R"(
+DELETE FROM maildir_links WHERE NOT EXISTS
+  (SELECT 1 FROM maildir_files
+   WHERE maildir_files.hash_id = maildir_links.dir_id
+         & maildir_files.dir_id = maildir_links.dir_id);
+)");
+
 }
 
 void
