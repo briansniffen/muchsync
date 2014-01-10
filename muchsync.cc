@@ -11,6 +11,8 @@ using namespace std;
 
 bool opt_fullscan;
 int opt_verbose;
+bool opt_maildir_only, opt_xapian_only;
+
 
 #define DBVERS "muchsync 0"
 
@@ -190,11 +192,77 @@ show_sync_vector (const versvector &vv)
     if (first)
       first = false;
     else
-      sb << ", ";
+      sb << ",";
     sb << 'R' << ws.first << '=' << ws.second;
   }
   sb << '>';
   return sb.str();
+}
+
+bool
+read_sync_vector (const string &s, versvector &vv)
+{
+  istringstream sb{s};
+  char c;
+  sb >> c;
+  if (c != '<')
+    return false;
+
+  vv.clear();
+
+  for (;;) {
+    sb >> c;
+    if (c != 'R')
+      return false;
+    i64 r, v;
+    char e;
+    sb >> r >> c >> v >> e;
+    if (sb.fail() || c != '=')
+      return false;
+    vv.emplace(r, v);
+    if (e == '>')
+      return true;
+    if (e != ',')
+      return false;
+  } 
+}
+
+void
+sync_local_data (sqlite3 *sqldb, const string &maildir)
+{
+  fmtexec (sqldb, "SAVEPOINT localsync;");
+
+  try {
+    i64 self = getconfig<i64>(sqldb, "self");
+    fmtexec (sqldb, "UPDATE sync_vector"
+	     " SET version = version + 1 WHERE replica = %lld;",
+	     self);
+    if (sqlite3_changes (sqldb) != 1)
+      throw runtime_error ("My replica id (" + to_string (self) 
+			   + ") not in sync vector");
+    versvector vv = get_sync_vector (sqldb);
+    i64 vers = vv.at(self);
+    writestamp ws { self, vers };
+
+    printf ("self = %lld\n", self);
+    printf ("version = %lld\n", vers);
+    printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
+
+    double start_scan_time { time_stamp() };
+      
+    if (!opt_xapian_only)
+      scan_maildir (sqldb, ws, maildir);
+    if (!opt_maildir_only)
+      xapian_scan (sqldb, ws, maildir);
+
+    if (!opt_xapian_only && !opt_maildir_only)
+      setconfig (sqldb, "last_scan", start_scan_time);
+  }
+  catch (...) {
+    fmtexec (sqldb, "ROLLBACK TO localsync;");
+    throw;
+  }
+  fmtexec (sqldb, "RELEASE localsync;");
 }
 
 [[noreturn]] void
@@ -207,7 +275,6 @@ usage ()
 int
 main (int argc, char **argv)
 {
-  bool opt_maildir_only = false, opt_xapian_only = false;
   int opt;
   while ((opt = getopt(argc, argv, "Fmvx")) != -1)
     switch (opt) {
@@ -236,37 +303,11 @@ main (int argc, char **argv)
   cleanup _c (sqlite3_close_v2, db);
   string maildir{argv[optind+1]};
 
-  i64 self = getconfig<i64>(db, "self");
-  fmtexec (db, "BEGIN IMMEDIATE;");
-  fmtexec (db, "UPDATE sync_vector"
-	   " SET version = version + 1 WHERE replica = %lld;",
-	   self);
-  if (sqlite3_changes (db) != 1) {
-    cerr << "My replica id (" << self << ") not in sync vector\n";
-    return 1;
-  }
-  versvector vv = get_sync_vector (db);
-  i64 vers = vv.at(self);
-  writestamp ws { self, vers };
-
-  printf ("self = %lld\n", self);
-  printf ("version = %lld\n", vers);
-  printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
-
   try {
-    double start_scan_time { time_stamp() };
-
-    if (!opt_xapian_only)
-      scan_maildir (db, ws, maildir);
-    if (!opt_maildir_only)
-      xapian_scan (db, ws, maildir);
-
-    setconfig (db, "last_scan", start_scan_time);
-    fmtexec(db, "COMMIT;");
+    sync_local_data (db, maildir);
   }
-  catch (std::runtime_error e) {
+  catch (const exception &e) {
     fprintf (stderr, "%s\n", e.what ());
-    fmtexec(db, "COMMIT;"); // XXX - see what happened
     exit (1);
   }
 

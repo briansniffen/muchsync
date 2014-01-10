@@ -202,6 +202,9 @@ using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
 void print_time (string msg);
+string show_sync_vector (const versvector &vv);
+bool read_sync_vector (const string &s, versvector &vv);
+
 
 /*
  * Example: getconfig(db, "key", &sqlstmt_t::integer)
