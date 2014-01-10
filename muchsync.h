@@ -9,6 +9,8 @@
 
 using std::string;
 
+extern const char dbvers[];
+
 constexpr double
 ts_to_double (const timespec &ts)
 {
@@ -193,15 +195,21 @@ sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
 int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
 void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 
+/* protocol.cc */
+void muchsync_server (sqlite3 *db, const string &maildir);
+
 /* muchsync.cc */
 extern const char xapian_dirs_def[];
 extern bool opt_fullscan;
+extern bool opt_maildir_only, opt_xapian_only;
 extern int opt_verbose;
+extern string opt_ssh;
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
 void print_time (string msg);
+versvector get_sync_vector (sqlite3 *db);
 string show_sync_vector (const versvector &vv);
 bool read_sync_vector (const string &s, versvector &vv);
 

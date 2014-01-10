@@ -230,7 +230,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
   if (errno)
     throw runtime_error (path + ": " + strerror (f->fts_errno));
 
-  if (opt_verbose)
+  if (opt_verbose > 1)
     cout << "  " << subdir << '\n';
 
   scan.step();
@@ -259,7 +259,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
       scan.step();
       f = f->fts_link;
     }
-    if (opt_verbose > 1)
+    if (opt_verbose > 2)
       cout << "    " << f->fts_name << "\n";
     i64 hashid = gethash (get_sha (dfd, f->fts_name));
     if (cmp == 0) {
@@ -287,7 +287,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
     const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
     if (!S_ISREG (sbp->st_mode))
       continue;
-    if (opt_verbose > 1)
+    if (opt_verbose > 2)
       cout << "    " << f->fts_name << "\n";
     i64 hashid = gethash (get_sha (dfd, f->fts_name));
     add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),

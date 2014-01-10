@@ -1,4 +1,5 @@
 
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <stdio.h>
@@ -9,12 +10,13 @@
 
 using namespace std;
 
+const char dbvers[] = "muchsync 0";
+
 bool opt_fullscan;
 int opt_verbose;
 bool opt_maildir_only, opt_xapian_only;
+string opt_ssh = "ssh -Taxq";
 
-
-#define DBVERS "muchsync 0"
 
 const char schema_def[] = R"(
 -- General table
@@ -96,8 +98,10 @@ void
 print_time (string msg)
 {
   double now = time_stamp();
-  cout << msg << "... " << now - start_time_stamp
-       << " (+" << now - last_time_stamp << ")\n";
+  if (opt_verbose > 0) {
+    cout << msg << "... " << now - start_time_stamp
+	 << " (+" << now - last_time_stamp << ")\n";
+  }
   last_time_stamp = now;
 }
 
@@ -123,7 +127,7 @@ dbcreate (const char *path)
     fmtexec (pDb, "BEGIN;");
     fmtexec (pDb, schema_def);
     fmtexec (pDb, xapian_dirs_def);
-    setconfig (pDb, "DBVERS", DBVERS);
+    setconfig (pDb, "dbvers", dbvers);
     setconfig (pDb, "self", self);
     setconfig (pDb, "last_scan", 0.0);
     fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
@@ -151,8 +155,8 @@ dbopen (const char *path)
   fmtexec (pDb, "PRAGMA secure_delete = 0;");
 
   try {
-    if (getconfig<string> (pDb, "DBVERS") != DBVERS) {
-      cerr << path << ": invalid database version (" << DBVERS << ")\n";
+    if (getconfig<string> (pDb, "dbvers") != dbvers) {
+      cerr << path << ": invalid database version\n";
       sqlite3_close_v2 (pDb);
       return NULL;
     }
@@ -232,7 +236,7 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
 {
   fmtexec (sqldb, "SAVEPOINT localsync;");
 
-  //  try {
+  try {
     i64 self = getconfig<i64>(sqldb, "self");
     fmtexec (sqldb, "UPDATE sync_vector"
 	     " SET version = version + 1 WHERE replica = %lld;", self);
@@ -243,10 +247,6 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
     i64 vers = vv.at(self);
     writestamp ws { self, vers };
 
-    printf ("self = %lld\n", self);
-    printf ("version = %lld\n", vers);
-    printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
-
     double start_scan_time { time_stamp() };
 
     if (!opt_xapian_only)
@@ -256,13 +256,11 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
 
     if (!opt_xapian_only && !opt_maildir_only)
       setconfig (sqldb, "last_scan", start_scan_time);
-#if 0
   }
   catch (...) {
     fmtexec (sqldb, "ROLLBACK TO localsync;");
     throw;
   }
-#endif
   fmtexec (sqldb, "RELEASE localsync;");
 }
 
@@ -273,17 +271,48 @@ usage ()
   exit (1);
 }
 
+static void
+server (int argc, char **argv)
+{
+  if (argc < 3)
+    usage ();
+  string maildir = argv[2];
+  string dbpath = argc >= 4 ? argv[3] : maildir + "/.notmuch/muchsync.db";
+
+  sqlite3 *db = dbopen (dbpath.c_str());
+  if (!db)
+    exit (1);
+  cleanup _c (sqlite3_close_v2, db);
+
+  try {
+    sync_local_data (db, maildir);
+    muchsync_server (db, maildir);
+  }
+  catch (const exception &e) {
+    cerr << e.what() << '\n';
+    exit (1);
+  }
+}
+
 int
 main (int argc, char **argv)
 {
+  if (argc >= 2 && !strcmp (argv[1], "--server")) {
+    server (argc, argv);
+    exit (0);
+  }
+
   int opt;
-  while ((opt = getopt(argc, argv, "Fmvx")) != -1)
+  while ((opt = getopt(argc, argv, "Fms:vx")) != -1)
     switch (opt) {
     case 'F':
       opt_fullscan = true;
       break;
     case 'm':
       opt_maildir_only = true;
+      break;
+    case 's':
+      opt_ssh = optarg;
       break;
     case 'v':
       opt_verbose++;

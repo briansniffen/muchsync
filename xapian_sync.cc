@@ -135,7 +135,7 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
   for (Xapian::TermIterator ti = xdb.allterms_begin(notmuch_tag_prefix),
 	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
     string tag = tag_from_term (*ti);
-    if (opt_verbose)
+    if (opt_verbose > 1)
       cout << "  " << tag << "\n";
     scan.reset().bind_text(1, tag);
     add_tag.reset().bind_text(2, tag);
