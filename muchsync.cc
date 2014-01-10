@@ -73,7 +73,9 @@ CREATE TABLE maildir_hashes (
   hash_id INTEGER PRIMARY KEY,
   hash TEXT UNIQUE NOT NULL,
   replica INTEGER,
-  version INTEGER);
+  version INTEGER,
+  message_id TEXT);
+CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
 CREATE TABLE maildir_links (
   hash_id INTEGER NOT NULL,
   dir_id INTEGER NOT NULL,

@@ -18,13 +18,6 @@
 using namespace std;
 
 const char maildir_triggers[] = R"(
-CREATE TEMP TABLE modified_maildir_dirs (
-  dir_id INTEGER PRIMARY KEY,
-  dir_path TEXT UNIQUE NOT NULL);
-CREATE TEMP TRIGGER dir_update_trigger AFTER UPDATE ON main.maildir_dirs
-  BEGIN INSERT INTO modified_maildir_dirs (dir_id, dir_path)
-        VALUES (new.dir_id, new.dir_path);
-  END;
 CREATE TEMP TABLE modified_maildir_hashes (
   hash_id INTEGER PRIMARY KEY);
 CREATE TEMP TRIGGER maildir_files_add AFTER UPDATE ON main.maildir_files
@@ -33,11 +26,6 @@ CREATE TEMP TRIGGER maildir_files_add AFTER UPDATE ON main.maildir_files
 CREATE TEMP TRIGGER maildir_files_del AFTER DELETE ON main.maildir_files
   BEGIN INSERT INTO modified_maildir_hashes (hash_id) VALUES (old.hash_id);
   END;
-)";
-
-const char maildir_cleanup[] = R"(
-DROP TRIGGER dir_update_trigger;
-DROP TABLE modified_maildir_dirs;
 )";
 
 static string
@@ -164,14 +152,15 @@ find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 void
 find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
 {
-  unordered_map<string, i64> modified;
-
+  sqlexec (sqldb, "CREATE TEMP TABLE modified_maildir_dirs ("
+	   "dir_id INTEGER PRIMARY KEY);");
   sqlstmt_t
     scan (sqldb, "SELECT dir_id, dir_path, ctime, mtime, inode"
 	  " FROM maildir_dirs;"),
     deldir (sqldb, "DELETE FROM maildir_dirs WHERE dir_id = ?;"),
     upddir (sqldb, "UPDATE maildir_dirs "
-	    "SET ctime = ?, mtime = ?, inode = ? WHERE dir_id = ?;");
+	    "SET ctime = ?, mtime = ?, inode = ? WHERE dir_id = ?;"),
+    moddir (sqldb, "INSERT INTO modified_maildir_dirs (dir_id) VALUES (?)");
 
   while (scan.step().row()) {
     struct stat sb;
@@ -184,8 +173,10 @@ find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
       throw runtime_error (scan.str(1) + ": " + strerror (errno));
     double ctim = ts_to_double(sb.st_ctim), mtim = ts_to_double(sb.st_mtim);
     if (scan.null(4) || i64(sb.st_ino) != scan.integer(4)
-	|| ctim != scan.real(2) || mtim != scan.real(3))
+	|| ctim != scan.real(2) || mtim != scan.real(3)) {
       upddir.reset().param(ctim, mtim, i64(sb.st_ino), scan.value(0)).step();
+      moddir.reset().param(scan.value(0)).step();
+    }
   }
 }
 
@@ -219,7 +210,7 @@ static void
 scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
 		sqlstmt_t &scan, sqlstmt_t &del_file, sqlstmt_t &add_file,
 		sqlstmt_t &upd_file, int dfd,
-		function<i64(const string &)> gethash)
+		function<i64(const char *)> gethash)
 {
   struct stat sbuf;		// Just storage in case !opt_fullscan
   string path = maildir.size() ? maildir + "/" + subdir : subdir;
@@ -266,7 +257,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
     }
     if (opt_verbose > 2)
       cout << "    " << f->fts_name << "\n";
-    i64 hashid = gethash (get_sha (dfd, f->fts_name));
+    i64 hashid = gethash (f->fts_name);
     if (cmp == 0) {
       /* metadata changed suspiciously */
       if (hashid == scan.integer(4)) {
@@ -294,7 +285,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
       continue;
     if (opt_verbose > 2)
       cout << "    " << f->fts_name << "\n";
-    i64 hashid = gethash (get_sha (dfd, f->fts_name));
+    i64 hashid = gethash (f->fts_name);
     add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),
 			   i64(sbp->st_ino), i64(sbp->st_size), hashid).step();
   }
@@ -305,7 +296,8 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
 {
   sqlstmt_t
     scandirs (sqldb, "SELECT dir_id, dir_path FROM %s ORDER BY dir_path;",
-	      opt_fullscan ? "maildir_dirs" : "modified_maildir_dirs"),
+	      opt_fullscan ? "maildir_dirs"
+	      : "maildir_dirs NATURAL JOIN modified_maildir_dirs"),
     scanfiles (sqldb, "SELECT name, mtime, inode, size, hash_id, rowid"
 	       " FROM maildir_files WHERE dir_id = ? ORDER BY name;"),
     del_file (sqldb, "DELETE FROM maildir_files WHERE rowid = ?;"),
@@ -314,21 +306,24 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
 	      " VALUES (?, ?, ?, ?, ?, ?);"),
     upd_file (sqldb, "UPDATE maildir_files"
 	      " SET mtime = ?, inode = ?, size = ? WHERE rowid = ?;"),
-    get_hash (sqldb, "SELECT hash_id, replica, version"
+    get_hash (sqldb, "SELECT hash_id, replica, version, message_id"
 	      " FROM maildir_hashes WHERE hash = ?;"),
-    add_hash (sqldb, "INSERT INTO maildir_hashes (hash, replica, version)"
-	      " VALUES (?, %lld, %lld);", ws.first, ws.second);
+    add_hash (sqldb, "INSERT INTO maildir_hashes "
+	      "(hash, replica, version) VALUES (?, %lld, %lld);",
+	      ws.first, ws.second);
 
-  auto gethash = [sqldb,ws,&get_hash,&add_hash] (const string &h) -> i64 {
+  int dfd;
+  auto gethash = [sqldb,ws,&get_hash,&add_hash,&dfd] (const char *path) -> i64 {
+    string h = get_sha (dfd, path);
     if (get_hash.reset().param(h).step().row())
       return get_hash.integer(0);
-    add_hash.reset().param(h).step().row();
+    add_hash.reset().bind_text(1, h).step();
     return sqlite3_last_insert_rowid (sqldb);
   };
 
   while (scandirs.step().row()) {
     string dir {scandirs.str(1)};
-    int dfd = openat(rootfd, dir.c_str(), O_RDONLY);
+    dfd = openat(rootfd, dir.c_str(), O_RDONLY);
     if (dfd < 0)
       throw runtime_error (dir + ": " + strerror (errno));
     cleanup _c (close, dfd);
@@ -417,10 +412,26 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
   print_time (opt_fullscan ? "scanning files in all directories"
 	      : "scanning files in modified directories");
   scan_files (sqldb, maildir, rootfd, ws);
+  print_time ("updating message ids");
+  if (opt_fullscan)
+    sqlexec (sqldb, R"(
+UPDATE maildir_hashes SET message_id =
+ifnull ((SELECT message_id FROM maildir_files JOIN maildir_dirs USING (dir_id)
+   JOIN xapian_files USING (dir_docid, name) JOIN message_ids USING (docid)
+   WHERE maildir_files.hash_id = maildir_hashes.hash_id),
+  maildir_hashes.message_id);
+)");
+  else
+    sqlexec (sqldb, R"(
+UPDATE maildir_hashes SET message_id =
+  (SELECT message_id FROM maildir_files JOIN maildir_dirs USING (dir_id)
+   JOIN xapian_files USING (dir_docid, name) JOIN message_ids USING (docid)
+   WHERE maildir_files.hash_id = maildir_hashes.hash_id)
+  WHERE message_id IS NULL;
+)");
   print_time ("updating version stamps");
   sync_maildir_ws (sqldb, ws);
-  print_time ("cleaning up temporary tables");
-  sqlexec (sqldb, maildir_cleanup);
+  print_time ("done");
 
   //scan_directory (sqldb, maildir, "");
 
