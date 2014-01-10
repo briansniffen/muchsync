@@ -11,10 +11,12 @@
 using namespace std;
 
 const char dbvers[] = "muchsync 0";
+static const char muchsync_defpath[] = "/.notmuch/muchsync.db";
+
 
 bool opt_fullscan;
 int opt_verbose;
-bool opt_maildir_only, opt_xapian_only;
+bool opt_no_maildir, opt_no_xapian;
 string opt_ssh = "ssh -Taxq";
 
 
@@ -51,7 +53,8 @@ CREATE TABLE maildir_dirs (
   dir_path TEXT UNIQUE NOT NULL,
   ctime REAL,
   mtime REAL,
-  inode INTEGER);
+  inode INTEGER,
+  dir_docid INTEGER);
 CREATE TABLE maildir_files (
   dir_id INTEGER NOT NULL,
   name TEXT NOT NULL COLLATE BINARY,
@@ -247,15 +250,10 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
     i64 vers = vv.at(self);
     writestamp ws { self, vers };
 
-    double start_scan_time { time_stamp() };
-
-    if (!opt_xapian_only)
-      scan_maildir (sqldb, ws, maildir);
-    if (!opt_maildir_only)
+    if (!opt_no_xapian)
       xapian_scan (sqldb, ws, maildir);
-
-    if (!opt_xapian_only && !opt_maildir_only)
-      setconfig (sqldb, "last_scan", start_scan_time);
+    if (!opt_no_maildir)
+      scan_maildir (sqldb, ws, maildir);
   }
   catch (...) {
     sqlexec (sqldb, "ROLLBACK TO localsync;");
@@ -277,7 +275,7 @@ server (int argc, char **argv)
   if (argc < 3)
     usage ();
   string maildir = argv[2];
-  string dbpath = argc >= 4 ? argv[3] : maildir + "/.notmuch/muchsync.db";
+  string dbpath = argc >= 4 ? argv[3] : maildir + muchsync_defpath;
 
   sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
@@ -286,7 +284,9 @@ server (int argc, char **argv)
 
   try {
     sync_local_data (db, maildir);
+    sqlexec (db, "BEGIN;");
     muchsync_server (db, maildir);
+    sqlexec (db, "COMMIT;");
   }
   catch (const exception &e) {
     cerr << e.what() << '\n';
@@ -309,7 +309,7 @@ main (int argc, char **argv)
       opt_fullscan = true;
       break;
     case 'm':
-      opt_maildir_only = true;
+      opt_no_maildir = true;
       break;
     case 's':
       opt_ssh = optarg;
@@ -318,20 +318,25 @@ main (int argc, char **argv)
       opt_verbose++;
       break;
     case 'x':
-      opt_xapian_only = true;
+      opt_no_xapian = true;
       break;
     default:
       usage ();
     }
 
-  if (optind + 2 != argc)
+  if (optind >= argc)
+    usage();
+  string maildir = argv[optind];
+  string dbpath = maildir + muchsync_defpath;
+  if (optind + 2 <= argc)
+    dbpath = argv[optind+1];
+  if (optind + 2 < argc)
     usage ();
 
-  sqlite3 *db = dbopen (argv[optind]);
+  sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
     exit (1);
   cleanup _c (sqlite3_close_v2, db);
-  string maildir{argv[optind+1]};
 
 #if 1
   sync_local_data (db, maildir);

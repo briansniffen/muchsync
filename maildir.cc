@@ -35,6 +35,11 @@ CREATE TEMP TRIGGER maildir_files_del AFTER DELETE ON main.maildir_files
   END;
 )";
 
+const char maildir_cleanup[] = R"(
+DROP TRIGGER dir_update_trigger;
+DROP TABLE modified_maildir_dirs;
+)";
+
 static string
 hexdump (const string &s)
 {
@@ -406,12 +411,16 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
   find_new_directories (sqldb, maildir, rootfd);
   print_time ("finding modified directories in maildir");
   find_modified_directories (sqldb, maildir, rootfd);
+  sqlexec (sqldb, "UPDATE maildir_dirs SET dir_docid = "
+	   "(SELECT xapian_dirs.dir_docid FROM xapian_dirs WHERE"
+	   " xapian_dirs.dir_path = maildir_dirs.dir_path);");
   print_time (opt_fullscan ? "scanning files in all directories"
 	      : "scanning files in modified directories");
   scan_files (sqldb, maildir, rootfd, ws);
   print_time ("updating version stamps");
   sync_maildir_ws (sqldb, ws);
-  print_time ("updated maildir state");
+  print_time ("cleaning up temporary tables");
+  sqlexec (sqldb, maildir_cleanup);
 
   //scan_directory (sqldb, maildir, "");
 

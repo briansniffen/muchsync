@@ -23,8 +23,18 @@ connect_to (const string &destination)
 }
 
 static void
-cmd_sync (sqlite3 *db, const versvector &vv)
+cmd_sync (sqlite3 *sqldb, const versvector &vv)
 {
+  sqlexec (sqldb, "DROP TABLE IF EXISTS peer_vector;"
+	   "CREATE TEMP TABLE peer_vector (replica INTEGER PRIMARY KEY,"
+	   " known_version INTEGER);");
+  sqlstmt_t pvadd (sqldb, "INSERT INTO peer_vector (replica, known_version)"
+		   " VALUES (?, ?);");
+  for (writestamp ws : vv)
+    pvadd.reset().param(ws.first, ws.second).step();
+
+
+
   cout << "200 You asked for " << show_sync_vector(vv) << '\n';
 }
 
