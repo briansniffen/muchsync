@@ -33,7 +33,29 @@ cmd_sync (sqlite3 *sqldb, const versvector &vv)
   for (writestamp ws : vv)
     pvadd.reset().param(ws.first, ws.second).step();
 
+  sqlstmt_t changed (sqldb, R"(
+SELECT h.hash_id, docid, cattags, catdirs
+FROM 
+    (maildir_hashes h LEFT OUTER JOIN peer_vector pvh USING (replica))
+      LEFT OUTER JOIN
+    (message_ids x LEFT OUTER JOIN peer_vector pvx USING (replica))
+        USING (message_id)
+      LEFT OUTER JOIN
+    (SELECT docid, group_concat(tag) cattags FROM tags GROUP BY docid)
+        USING (docid)
+      LEFT OUTER JOIN
+    (SELECT hash_id, group_concat(link_count || ':' || dir_path) catdirs
+     FROM maildir_links NATURAL JOIN maildir_dirs GROUP BY hash_id)
+        USING(hash_id)
+  WHERE h.version > ifnull(pvh.known_version,-1)
+        | x.version > ifnull(pvx.known_version,-1)
+;)");
 
+  for (changed.step(); changed.row(); changed.step()) {
+    cout << "200-" << changed.integer(0) << ' ' << changed.integer(1)
+	 << ' ' << changed.str(2)
+	 << ' ' << changed.str(3) << '\n';
+  }
 
   cout << "200 You asked for " << show_sync_vector(vv) << '\n';
 }

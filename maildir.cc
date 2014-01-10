@@ -20,10 +20,12 @@ using namespace std;
 const char maildir_triggers[] = R"(
 CREATE TEMP TABLE modified_maildir_hashes (
   hash_id INTEGER PRIMARY KEY);
-CREATE TEMP TRIGGER maildir_files_add AFTER UPDATE ON main.maildir_files
+CREATE TEMP TRIGGER maildir_files_add AFTER INSERT ON main.maildir_files
+  WHEN new.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
   BEGIN INSERT INTO modified_maildir_hashes (hash_id) VALUES (new.hash_id);
   END;
 CREATE TEMP TRIGGER maildir_files_del AFTER DELETE ON main.maildir_files
+  WHEN old.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
   BEGIN INSERT INTO modified_maildir_hashes (hash_id) VALUES (old.hash_id);
   END;
 )";
