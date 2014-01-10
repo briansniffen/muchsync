@@ -124,15 +124,15 @@ dbcreate (const char *path)
   }
 
   try {
-    fmtexec (pDb, "BEGIN;");
-    fmtexec (pDb, schema_def);
-    fmtexec (pDb, xapian_dirs_def);
+    sqlexec (pDb, "BEGIN;");
+    sqlexec (pDb, schema_def);
+    sqlexec (pDb, xapian_dirs_def);
     setconfig (pDb, "dbvers", dbvers);
     setconfig (pDb, "self", self);
     setconfig (pDb, "last_scan", 0.0);
-    fmtexec (pDb, "INSERT INTO sync_vector (replica, version)"
+    sqlexec (pDb, "INSERT INTO sync_vector (replica, version)"
 	     " VALUES (%lld, 0);", self);
-    fmtexec (pDb, "COMMIT;");
+    sqlexec (pDb, "COMMIT;");
   } catch (sqlerr_t exc) {
     sqlite3_close_v2 (pDb);
     cerr << exc.what () << '\n';
@@ -152,7 +152,7 @@ dbopen (const char *path)
   if (!pDb)
     return NULL;
 
-  fmtexec (pDb, "PRAGMA secure_delete = 0;");
+  sqlexec (pDb, "PRAGMA secure_delete = 0;");
 
   try {
     if (getconfig<string> (pDb, "dbvers") != dbvers) {
@@ -234,11 +234,11 @@ read_sync_vector (const string &s, versvector &vv)
 void
 sync_local_data (sqlite3 *sqldb, const string &maildir)
 {
-  fmtexec (sqldb, "SAVEPOINT localsync;");
+  sqlexec (sqldb, "SAVEPOINT localsync;");
 
   try {
     i64 self = getconfig<i64>(sqldb, "self");
-    fmtexec (sqldb, "UPDATE sync_vector"
+    sqlexec (sqldb, "UPDATE sync_vector"
 	     " SET version = version + 1 WHERE replica = %lld;", self);
     if (sqlite3_changes (sqldb) != 1)
       throw runtime_error ("My replica id (" + to_string (self)
@@ -258,10 +258,10 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
       setconfig (sqldb, "last_scan", start_scan_time);
   }
   catch (...) {
-    fmtexec (sqldb, "ROLLBACK TO localsync;");
+    sqlexec (sqldb, "ROLLBACK TO localsync;");
     throw;
   }
-  fmtexec (sqldb, "RELEASE localsync;");
+  sqlexec (sqldb, "RELEASE localsync;");
 }
 
 [[noreturn]] void

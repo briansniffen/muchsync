@@ -401,7 +401,7 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
     throw runtime_error (maildir + ": " + strerror (errno));
   cleanup _c (close, rootfd);
 
-  fmtexec (sqldb, maildir_triggers);
+  sqlexec (sqldb, maildir_triggers);
   print_time ("finding new subdirectories of maildir");
   find_new_directories (sqldb, maildir, rootfd);
   print_time ("finding modified directories in maildir");

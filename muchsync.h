@@ -190,7 +190,7 @@ sqlstmt_t::column (int iCol)
 }
 
 void dbthrow (sqlite3 *db, const char *query);
-void fmtexec (sqlite3 *db, const char *fmt, ...);
+void sqlexec (sqlite3 *db, const char *fmt, ...);
 sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
 int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
 void save_old_table (sqlite3 *sqldb, const string &table, const char *create);

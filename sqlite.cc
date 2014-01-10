@@ -74,7 +74,7 @@ sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
 }
 
 void
-fmtexec (sqlite3 *db, const char *fmt, ...)
+sqlexec (sqlite3 *db, const char *fmt, ...)
 {
   char *query;
   va_list ap;
@@ -82,7 +82,7 @@ fmtexec (sqlite3 *db, const char *fmt, ...)
   query = sqlite3_vmprintf (fmt, ap);
   va_end (ap);
   if (!query)
-    throw sqlerr_t ("sqlite3_vmprintf: out of memory in fmtexec");
+    throw sqlerr_t ("sqlite3_vmprintf: out of memory in sqlexec");
   int err = sqlite3_exec (db, query, NULL, NULL, NULL);
   if (err != SQLITE_OK && err != SQLITE_DONE && err != SQLITE_ROW)
     dbthrow (db, query);
@@ -119,9 +119,9 @@ fmtstmt (sqlite3 *db, const char *fmt, ...)
 void
 save_old_table (sqlite3 *sqldb, const string &table, const char *create)
 {
-  fmtexec (sqldb, "%s", create);
-  fmtexec (sqldb, "DROP TABLE IF EXISTS \"old_%s\";"
+  sqlexec (sqldb, "%s", create);
+  sqlexec (sqldb, "DROP TABLE IF EXISTS \"old_%s\";"
 		  "ALTER TABLE \"%s\" RENAME TO \"old_%s\";",
 	   table.c_str(), table.c_str(), table.c_str());
-  fmtexec (sqldb, "%s", create);
+  sqlexec (sqldb, "%s", create);
 }

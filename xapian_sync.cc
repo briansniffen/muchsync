@@ -208,7 +208,7 @@ xapian_get_unique_posting (const Xapian::Database &xdb, const string &term)
 static void
 xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
 {
-  fmtexec (sqldb, "DROP TABLE IF EXISTS old_xapian_dirs; "
+  sqlexec (sqldb, "DROP TABLE IF EXISTS old_xapian_dirs; "
 	   "ALTER TABLE xapian_dirs RENAME TO old_xapian_dirs; "
 	   "%s", xapian_dirs_def);
   sqlstmt_t insert (sqldb,
@@ -224,10 +224,10 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
     insert.reset().param(dir, i64(xapian_get_unique_posting(xdb, *ti))).step();
   }
 
-  fmtexec (sqldb, "INSERT INTO deleted_xapian_dirs (dir_docid, dir_path)"
+  sqlexec (sqldb, "INSERT INTO deleted_xapian_dirs (dir_docid, dir_path)"
 	   " SELECT dir_docid, dir_path from old_xapian_dirs"
 	   " EXCEPT SELECT dir_docid, dir_path from xapian_dirs;");
-  fmtexec (sqldb, "DELETE FROM xapian_files"
+  sqlexec (sqldb, "DELETE FROM xapian_files"
 	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_xapian_dirs);");
 }
 
@@ -287,13 +287,13 @@ xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
 {
   print_time ("opening Xapian");
   Xapian::Database xdb (path + "/.notmuch/xapian");
-  fmtexec (sqldb, xapian_triggers);
+  sqlexec (sqldb, xapian_triggers);
   print_time ("scanning message IDs");
   xapian_scan_message_ids (sqldb, xdb);
   print_time ("scanning tags");
   xapian_scan_tags (sqldb, xdb);
   print_time ("updating version stamps");
-  fmtexec (sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
+  sqlexec (sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
 	   " WHERE docid IN (SELECT docid FROM modified_docids);",
 	   ws.first, ws.second);
   print_time ("scanning directories in xapian");
