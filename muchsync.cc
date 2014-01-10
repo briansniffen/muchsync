@@ -224,7 +224,7 @@ read_sync_vector (const string &s, versvector &vv)
       return true;
     if (e != ',')
       return false;
-  } 
+  }
 }
 
 void
@@ -232,13 +232,12 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
 {
   fmtexec (sqldb, "SAVEPOINT localsync;");
 
-  try {
+  //  try {
     i64 self = getconfig<i64>(sqldb, "self");
     fmtexec (sqldb, "UPDATE sync_vector"
-	     " SET version = version + 1 WHERE replica = %lld;",
-	     self);
+	     " SET version = version + 1 WHERE replica = %lld;", self);
     if (sqlite3_changes (sqldb) != 1)
-      throw runtime_error ("My replica id (" + to_string (self) 
+      throw runtime_error ("My replica id (" + to_string (self)
 			   + ") not in sync vector");
     versvector vv = get_sync_vector (sqldb);
     i64 vers = vv.at(self);
@@ -249,7 +248,7 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
     printf ("sync_vector = %s\n", show_sync_vector(vv).c_str());
 
     double start_scan_time { time_stamp() };
-      
+
     if (!opt_xapian_only)
       scan_maildir (sqldb, ws, maildir);
     if (!opt_maildir_only)
@@ -257,11 +256,13 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
 
     if (!opt_xapian_only && !opt_maildir_only)
       setconfig (sqldb, "last_scan", start_scan_time);
+#if 0
   }
   catch (...) {
     fmtexec (sqldb, "ROLLBACK TO localsync;");
     throw;
   }
+#endif
   fmtexec (sqldb, "RELEASE localsync;");
 }
 
@@ -293,7 +294,7 @@ main (int argc, char **argv)
     default:
       usage ();
     }
-  
+
   if (optind + 2 != argc)
     usage ();
 
@@ -303,6 +304,9 @@ main (int argc, char **argv)
   cleanup _c (sqlite3_close_v2, db);
   string maildir{argv[optind+1]};
 
+#if 1
+  sync_local_data (db, maildir);
+#else
   try {
     sync_local_data (db, maildir);
   }
@@ -310,6 +314,7 @@ main (int argc, char **argv)
     fprintf (stderr, "%s\n", e.what ());
     exit (1);
   }
+#endif
 
   return 0;
 }

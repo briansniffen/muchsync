@@ -21,10 +21,17 @@ const char maildir_triggers[] = R"(
 CREATE TEMP TABLE modified_maildir_dirs (
   dir_id INTEGER PRIMARY KEY,
   dir_path TEXT UNIQUE NOT NULL);
-DELETE FROM temp.modified_maildir_dirs;
 CREATE TEMP TRIGGER dir_update_trigger AFTER UPDATE ON main.maildir_dirs
   BEGIN INSERT INTO modified_maildir_dirs (dir_id, dir_path)
         VALUES (new.dir_id, new.dir_path);
+  END;
+CREATE TEMP TABLE modified_maildir_hashes (
+  hash_id INTEGER PRIMARY KEY);
+CREATE TEMP TRIGGER maildir_files_add AFTER UPDATE ON main.maildir_files
+  BEGIN INSERT INTO modified_maildir_hashes (hash_id) VALUES (new.hash_id);
+  END;
+CREATE TEMP TRIGGER maildir_files_del AFTER DELETE ON main.maildir_files
+  BEGIN INSERT INTO modified_maildir_hashes (hash_id) VALUES (old.hash_id);
   END;
 )";
 
@@ -333,10 +340,12 @@ sync_maildir_ws (sqlite3 *sqldb, writestamp ws)
   // Sadly, sqlite has no full outer join.  Hence we manually scan
   // both oldcount and newcount to bring newcount up to date.
   sqlstmt_t
-    newcount (sqldb, "SELECT hash_id, dir_id, count(*) FROM maildir_files"
+    newcount (sqldb, "SELECT hash_id, dir_id, count(*)"
+	      " FROM maildir_files NATURAL JOIN modified_maildir_hashes"
 	      " GROUP BY hash_id, dir_id ORDER BY hash_id, dir_id;"),
-    oldcount (sqldb, "SELECT hash_id, dir_id, link_count, rowid"
-	      " FROM maildir_links ORDER BY hash_id, dir_id;"),
+    oldcount (sqldb, "SELECT hash_id, dir_id, link_count, maildir_links.rowid"
+	      " FROM maildir_links NATURAL JOIN modified_maildir_hashes"
+	      " ORDER BY hash_id, dir_id;"),
     updcount (sqldb, "UPDATE maildir_links SET link_count = ?"
 	      " WHERE rowid = ?;"),
     updhash (sqldb, "UPDATE maildir_hashes SET replica = %lld, version = %lld"
