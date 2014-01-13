@@ -236,6 +236,9 @@ void xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path);
 string term_from_tag (const string &tag);
 string tag_from_term (const string &term);
 
+/* fdstream.cc */
+string cmd_output (const string &cmd);
+
 /* Maildirs place messages in directories called "new" and "dir" */
 inline bool
 dir_contains_messages (const string &dir)

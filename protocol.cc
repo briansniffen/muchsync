@@ -1,14 +1,11 @@
 
 #include <iostream>
+#include <limits>
 #include <cstdio>
-
-#include <boost/iostreams/device/file_descriptor.hpp>
-#include <boost/iostreams/stream.hpp>
 
 #include "muchsync.h"
 
 using namespace std;
-namespace io = boost::iostreams;
 
 void
 connect_to (const string &destination)
@@ -25,9 +22,11 @@ connect_to (const string &destination)
 static void
 cmd_sync (sqlite3 *sqldb, const versvector &vv)
 {
-  sqlexec (sqldb, "DROP TABLE IF EXISTS peer_vector;"
-	   "CREATE TEMP TABLE peer_vector (replica INTEGER PRIMARY KEY,"
-	   " known_version INTEGER);");
+  sqlexec (sqldb, R"(
+DROP TABLE IF EXISTS peer_vector;
+CREATE TEMP TABLE peer_vector (replica INTEGER PRIMARY KEY,
+known_version INTEGER);
+)");
   sqlstmt_t pvadd (sqldb, "INSERT INTO peer_vector (replica, known_version)"
 		   " VALUES (?, ?);");
   for (writestamp ws : vv)

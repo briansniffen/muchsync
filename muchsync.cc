@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <openssl/rand.h>
+#include <sys/stat.h>
 #include "muchsync.h"
 
 using namespace std;
@@ -264,6 +265,18 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
   sqlexec (sqldb, "RELEASE localsync;");
 }
 
+string
+notmuch_maildir_location()
+{
+  string loc = cmd_output ("notmuch config get database.path");
+  while (loc.size() > 0 && (loc.back() == '\n' || loc.back() == '\r'))
+    loc.resize(loc.size()-1);
+  struct stat sb;
+  if (!loc.size() || stat(loc.c_str(), &sb) || !S_ISDIR(sb.st_mode))
+    throw runtime_error("cannot find location of default maildir");
+  return loc;
+}
+
 [[noreturn]] void
 usage ()
 {
@@ -274,10 +287,18 @@ usage ()
 static void
 server (int argc, char **argv)
 {
+  /* If same client opens multiple connections, opt_nosync avoids
+   * re-scanning all messages. */
+  bool opt_nosync = false;
+  int i = 2;
   if (argc < 3)
     usage ();
-  string maildir = argv[2];
-  string dbpath = argc >= 4 ? argv[3] : maildir + muchsync_defpath;
+  if (!strcmp (argv[i], "--nosync") && argc < 4) {
+    opt_nosync = true;
+    i++;
+  }
+  string maildir = argv[i];
+  string dbpath = argc > i+1 ? argv[i+1] : maildir + muchsync_defpath;
 
   sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
@@ -285,10 +306,9 @@ server (int argc, char **argv)
   cleanup _c (sqlite3_close_v2, db);
 
   try {
-    sync_local_data (db, maildir);
-    sqlexec (db, "BEGIN;");
+    if (!opt_nosync)
+      sync_local_data (db, maildir);
     muchsync_server (db, maildir);
-    sqlexec (db, "COMMIT;");
   }
   catch (const exception &e) {
     cerr << e.what() << '\n';
@@ -299,19 +319,23 @@ server (int argc, char **argv)
 int
 main (int argc, char **argv)
 {
+  bool opt_scan_only = false;
   if (argc >= 2 && !strcmp (argv[1], "--server")) {
     server (argc, argv);
     exit (0);
   }
 
   int opt;
-  while ((opt = getopt(argc, argv, "Fms:vx")) != -1)
+  while ((opt = getopt(argc, argv, "Fmns:vx")) != -1)
     switch (opt) {
     case 'F':
       opt_fullscan = true;
       break;
     case 'm':
       opt_no_maildir = true;
+      break;
+    case 'n':
+      opt_scan_only = true;
       break;
     case 's':
       opt_ssh = optarg;
