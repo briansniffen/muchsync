@@ -238,6 +238,7 @@ string tag_from_term (const string &term);
 
 /* fdstream.cc */
 string cmd_output (const string &cmd);
+void infinite_buffer (int infd, int outfd);
 
 /* Maildirs place messages in directories called "new" and "dir" */
 inline bool
