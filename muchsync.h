@@ -233,6 +233,8 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 
 /* xapian_sync.cc */
 void xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path);
+string percent_encode (const string &raw);
+string percent_decode (const string &escaped);
 string term_from_tag (const string &tag);
 string tag_from_term (const string &term);
 

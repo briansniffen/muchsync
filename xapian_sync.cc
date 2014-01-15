@@ -63,24 +63,20 @@ sync_table (sqlstmt_t &s, T &t, T &te,
 }
 
 string
-tag_from_term (const string &term)
+percent_encode (const string &raw)
 {
-  assert (!strncmp (term.c_str(), notmuch_tag_prefix.c_str(),
-		    notmuch_tag_prefix.length()));
+  ostringstream outbuf;
+  outbuf.fill('0');
+  outbuf.setf(ios::hex, ios::basefield);
 
-  ostringstream tagbuf;
-  tagbuf.fill('0');
-  tagbuf.setf(ios::hex, ios::basefield);
-
-  char c;
-  for (const char *p = term.c_str() + 1; (c = *p); p++)
+  for (char c : raw) {
     if (isalnum (c) || (c >= '+' && c <= '.')
 	|| c == '_' || c == '@' || c == '=')
-      tagbuf << c;
+      outbuf << c;
     else
-      tagbuf << '%' << setw(2) << int (uint8_t (c));
-
-  return tagbuf.str ();
+      outbuf << '%' << setw(2) << int (uint8_t (c));
+  }
+  return outbuf.str ();
 }
 
 inline int
@@ -91,23 +87,21 @@ hexdigit (char c)
   else if (c >= 'a' && c <= 'f')
     return c - 'a' + 10;
   else
-    throw runtime_error ("illegal hexdigit " + string (1, c));
+    throw runtime_error ("precent_decode: illegal hexdigit " + string (1, c));
 }
 
 string
-term_from_tag (const string &tag)
+percent_decode (const string &encoded)
 {
-  ostringstream tagbuf;
-  tagbuf << notmuch_tag_prefix;
+  ostringstream outbuf;
   int escape_pos = 0, escape_val = 0;
-  char c;
-  for (const char *p = tag.c_str() + 1; (c = *p); p++) {
+  for (char c : encoded) {
     switch (escape_pos) {
     case 0:
       if (c == '%')
 	escape_pos = 1;
       else
-	tagbuf << c;
+	outbuf << c;
       break;
     case 1:
       escape_val = hexdigit(c) << 4;
@@ -115,13 +109,27 @@ term_from_tag (const string &tag)
       break;
     case 2:
       escape_pos = 0;
-      tagbuf << char (escape_val | hexdigit(c));
+      outbuf << char (escape_val | hexdigit(c));
       break;
     }
   }
   if (escape_pos)
-    throw runtime_error ("term_from_tag: incomplete escape");
-  return tagbuf.str();
+    throw runtime_error ("percent_decode: incomplete escape");
+  return outbuf.str();
+}
+
+string
+tag_from_term (const string &term)
+{
+  assert (!strncmp (term.c_str(), notmuch_tag_prefix.c_str(),
+		    notmuch_tag_prefix.length()));
+  return percent_encode (term.substr (notmuch_tag_prefix.length()));
+}
+
+string
+term_from_tag (const string &tag)
+{
+  return notmuch_tag_prefix + percent_decode (tag);
 }
 
 static void
