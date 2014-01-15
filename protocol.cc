@@ -20,6 +20,16 @@ connect_to (const string &destination)
       + destination.substr(n);
 }
 
+extern "C" void
+sqlite_percent_encode (sqlite3_context *ctx, int argc, sqlite3_value **av)
+{
+  assert (argc == 1);
+  string escaped = percent_encode (reinterpret_cast <const char *>
+				   (sqlite3_value_text (av[0])));
+  sqlite3_result_text (ctx, escaped.c_str(), escaped.size(),
+		       SQLITE_TRANSIENT);
+}
+
 static void
 cmd_sync (sqlite3 *sqldb, const versvector &vv)
 {
@@ -34,17 +44,19 @@ known_version INTEGER);
     pvadd.reset().param(ws.first, ws.second).step();
 
   sqlstmt_t changed (sqldb, R"(
-SELECT h.hash_id, x.message_id, cattags, catdirs
+SELECT h.hash, h.replica, h.version,
+       x.message_id, x.replica, x.version,
+       cattags, catdirs
 FROM 
     (maildir_hashes h LEFT OUTER JOIN peer_vector pvh USING (replica))
       LEFT OUTER JOIN
     (message_ids x LEFT OUTER JOIN peer_vector pvx USING (replica))
         USING (message_id)
       LEFT OUTER JOIN
-    (SELECT docid, group_concat(tag) cattags FROM tags GROUP BY docid)
+    (SELECT docid, group_concat(tag, ' ') cattags FROM tags GROUP BY docid)
         USING (docid)
       LEFT OUTER JOIN
-    (SELECT hash_id, group_concat(link_count || ':' || dir_path) catdirs
+    (SELECT hash_id, group_concat(link_count || ':' || percent_encode(dir_path)) catdirs
      FROM maildir_links NATURAL JOIN maildir_dirs GROUP BY hash_id)
         USING(hash_id)
   WHERE (h.version > ifnull(pvh.known_version,-1))
@@ -52,17 +64,24 @@ FROM
 ;)");
 
   for (changed.step(); changed.row(); changed.step()) {
-    cout << "200-" << changed.integer(0) << ' ' << changed.str(1)
-	 << ' ' << changed.str(2)
-	 << ' ' << changed.str(3) << '\n';
+    cout << "200-" << changed.str(0) << ' '
+	 << percent_encode (changed.str(3))
+	 << " R" << changed.integer(4) << '=' << changed.integer(5)
+	 << " (" << changed.str(6)
+	 << ") R" << changed.integer(1) << '=' << changed.integer(2)
+	 << " (" << changed.str(7) << ")\n";
   }
 
-  cout << "200 Synchronized at " << show_sync_vector(vv) << '\n';
+  cout << "200 Synchronized " << show_sync_vector(vv) << '\n';
 }
 
 void
 muchsync_server (sqlite3 *db, const string &maildir)
 {
+  sqlite3_create_function_v2 (db, "percent_encode", 1, SQLITE_UTF8,
+			      nullptr, &sqlite_percent_encode, nullptr,
+			      nullptr, nullptr);
+
   {
     int ifd = spawn_infinite_input_buffer (0);
     switch (ifd) {
