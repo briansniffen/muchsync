@@ -34,7 +34,7 @@ known_version INTEGER);
     pvadd.reset().param(ws.first, ws.second).step();
 
   sqlstmt_t changed (sqldb, R"(
-SELECT h.hash_id, docid, cattags, catdirs
+SELECT h.hash_id, x.message_id, cattags, catdirs
 FROM 
     (maildir_hashes h LEFT OUTER JOIN peer_vector pvh USING (replica))
       LEFT OUTER JOIN
@@ -52,12 +52,12 @@ FROM
 ;)");
 
   for (changed.step(); changed.row(); changed.step()) {
-    cout << "200-" << changed.integer(0) << ' ' << changed.integer(1)
+    cout << "200-" << changed.integer(0) << ' ' << changed.str(1)
 	 << ' ' << changed.str(2)
 	 << ' ' << changed.str(3) << '\n';
   }
 
-  cout << "200 You asked for " << show_sync_vector(vv) << '\n';
+  cout << "200 Synchronized at " << show_sync_vector(vv) << '\n';
 }
 
 void
