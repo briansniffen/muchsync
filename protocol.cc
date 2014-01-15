@@ -2,6 +2,7 @@
 #include <iostream>
 #include <limits>
 #include <cstdio>
+#include <vector>
 #include <unistd.h>
 
 #include "muchsync.h"
@@ -20,6 +21,7 @@ connect_to (const string &destination)
       + destination.substr(n);
 }
 
+#if 0
 extern "C" void
 sqlite_percent_encode (sqlite3_context *ctx, int argc, sqlite3_value **av)
 {
@@ -28,6 +30,36 @@ sqlite_percent_encode (sqlite3_context *ctx, int argc, sqlite3_value **av)
 				   (sqlite3_value_text (av[0])));
   sqlite3_result_text (ctx, escaped.c_str(), escaped.size(),
 		       SQLITE_TRANSIENT);
+}
+/*
+  sqlite3_create_function_v2 (db, "percent_encode", 1, SQLITE_UTF8,
+			      nullptr, &sqlite_percent_encode, nullptr,
+			      nullptr, nullptr);
+*/
+#endif
+
+struct hash_info {
+  string hash;
+  string message_id;
+  writestamp tag_stamp;
+  vector<string> tags;
+  writestamp dir_stamp;
+  vector<pair<string,unsigned>> dirs;
+};
+
+unique_ptr<hash_info>
+read_hash_info (istream &in)
+{
+  unique_ptr<hash_info> hip {new hash_info};
+
+  in >> hip->hash;
+  string t;
+  in >> t;
+  hip->message_id = percent_decode (t);
+  char c;
+  
+
+  return hip;
 }
 
 static void
@@ -56,7 +88,8 @@ FROM
     (SELECT docid, group_concat(tag, ' ') cattags FROM tags GROUP BY docid)
         USING (docid)
       LEFT OUTER JOIN
-    (SELECT hash_id, group_concat(link_count || ':' || percent_encode(dir_path)) catdirs
+    (SELECT hash_id, group_concat(link_count || '*' || quote(dir_path), ' ')
+                           AS catdirs
      FROM maildir_links NATURAL JOIN maildir_dirs GROUP BY hash_id)
         USING(hash_id)
   WHERE (h.version > ifnull(pvh.known_version,-1))
@@ -78,10 +111,6 @@ FROM
 void
 muchsync_server (sqlite3 *db, const string &maildir)
 {
-  sqlite3_create_function_v2 (db, "percent_encode", 1, SQLITE_UTF8,
-			      nullptr, &sqlite_percent_encode, nullptr,
-			      nullptr, nullptr);
-
   {
     int ifd = spawn_infinite_input_buffer (0);
     switch (ifd) {

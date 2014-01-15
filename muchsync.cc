@@ -210,6 +210,21 @@ show_sync_vector (const versvector &vv)
 }
 
 bool
+read_writestamp (istream &in, writestamp &ws)
+{
+  char c;
+  in >> c;
+  if (c != 'R')
+    return false;
+  in >> ws.first;
+  in >> c;
+  if (c != '=')
+    return false;
+  in >> ws.second;
+  return in;
+}
+
+bool
 read_sync_vector (const string &s, versvector &vv)
 {
   istringstream sb{s};
