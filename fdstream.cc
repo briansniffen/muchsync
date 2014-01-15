@@ -85,7 +85,6 @@ infinite_buffer (int infd, int outfd)
   bool eof = false;
   queue<buf> q;
 
-  make_nonblocking (infd);
   make_nonblocking (outfd);
 
   for (;;) {
@@ -93,6 +92,7 @@ infinite_buffer (int infd, int outfd)
     while (!q.empty() && q.front().empty())
       q.pop();
     if (q.empty() && eof) {
+      shutdown (outfd, 1);
       close (outfd);
       return;
     }
@@ -111,6 +111,32 @@ infinite_buffer (int infd, int outfd)
     if (fds[1].revents)
       q.front().output(outfd);
   }
+}
+
+int
+spawn_infinite_input_buffer (int infd)
+{
+  int fds[2];
+  if (pipe (fds)) {
+    cerr << string ("pipe: ") + strerror (errno);
+    return -1;
+  }
+
+  pid_t pid = fork();
+  switch (pid) {
+  case -1:
+    cerr << string ("fork: ") + strerror (errno);
+    return -1;
+  case 0:
+    close (fds[0]);
+    try { infinite_buffer (infd, fds[1]); }
+    catch (...) { _exit (1); }
+    _exit (0);
+    break;
+  default:
+    close (fds[1]);
+    return fds[0];
+  } 
 }
 
 int
