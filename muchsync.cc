@@ -212,47 +212,35 @@ show_sync_vector (const versvector &vv)
   return sb.str();
 }
 
-bool
+istream &
 read_writestamp (istream &in, writestamp &ws)
 {
-  char c;
-  in >> c;
-  if (c != 'R')
-    return false;
+  input_match (in, 'R');
   in >> ws.first;
-  in >> c;
-  if (c != '=')
-    return false;
+  input_match (in, '=');
   in >> ws.second;
   return in;
 }
 
-bool
-read_sync_vector (const string &s, versvector &vv)
+istream &
+read_sync_vector (istream &in, versvector &vv)
 {
-  istringstream sb{s};
-  char c;
-  sb >> c;
-  if (c != '<')
-    return false;
-
+  input_match (in, '<');
   vv.clear();
-
   for (;;) {
-    sb >> c;
-    if (c != 'R')
-      return false;
-    i64 r, v;
-    char e;
-    sb >> r >> c >> v >> e;
-    if (sb.fail() || c != '=')
-      return false;
-    vv.emplace(r, v);
-    if (e == '>')
-      return true;
-    if (e != ',')
-      return false;
+    writestamp ws;
+    if (!read_writestamp (in, ws))
+      break;
+    vv.insert (ws);
+    char c;
+    if (!(in >> c) || c == '>')
+      break;
+    if (c != ',') {
+      in.setstate (ios_base::failbit);
+      break;
+    }
   }
+  return in;
 }
 
 void

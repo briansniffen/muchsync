@@ -211,7 +211,9 @@ using versvector = std::unordered_map<i64,i64>;
 void print_time (string msg);
 versvector get_sync_vector (sqlite3 *db);
 string show_sync_vector (const versvector &vv);
-bool read_sync_vector (const string &s, versvector &vv);
+std::istream &read_writestamp (std::istream &in, writestamp &ws);
+std::istream &read_sync_vector (std::istream &sb, versvector &vv);
+
 
 
 /*
@@ -254,3 +256,12 @@ dir_contains_messages (const string &dir)
   return dir == "cur" || dir == "new";
 }
 void scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir);
+
+inline std::istream &
+input_match (std::istream &in, char want)
+{
+  char got;
+  if ((in >> got) && got != want)
+    in.setstate (std::ios_base::failbit);
+  return in;
+}

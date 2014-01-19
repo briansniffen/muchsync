@@ -1,5 +1,6 @@
 
 #include <iostream>
+#include <sstream>
 #include <limits>
 #include <cstdio>
 #include <vector>
@@ -137,10 +138,15 @@ muchsync_server (sqlite3 *db, const string &maildir)
     else if (cmd == "sync") {
       versvector vv;
       string tail;
-      if (!getline(cin, tail) || !read_sync_vector(tail, vv))
+      if (!getline(cin, tail))
 	cout << "500 could not parse vector\n";
-      else
-	cmd_sync (db, vv);
+      else {
+	istringstream tailstream (tail);
+	if (!read_sync_vector(tailstream, vv))
+	  cout << "500 could not parse vector\n";
+	else
+	  cmd_sync (db, vv);
+      }
       continue;
     }
     else
