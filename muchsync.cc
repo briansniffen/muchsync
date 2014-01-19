@@ -105,8 +105,11 @@ print_time (string msg)
 {
   double now = time_stamp();
   if (opt_verbose > 0) {
+    auto oldFlags = cout.flags();
+    cout.setf (ios::fixed, ios::floatfield);
     cout << msg << "... " << now - start_time_stamp
 	 << " (+" << now - last_time_stamp << ")\n";
+    cout.flags (oldFlags);
   }
   last_time_stamp = now;
 }

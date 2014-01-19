@@ -22,7 +22,7 @@ struct buf {
   char *last_;
   char *lim_;
 
-  buf(size_t size = 0x10000)
+  explicit buf(size_t size = 0x10000)
     : base_(static_cast<char *> (malloc (size))), first_(base_), last_(base_),
       lim_(base_+size) {
     if (!base_)
