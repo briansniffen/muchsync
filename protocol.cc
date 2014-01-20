@@ -13,6 +13,39 @@
 
 using namespace std;
 
+struct hash_info {
+  string hash;
+  string message_id;
+  writestamp tag_stamp = {-1, -1};
+  vector<string> tags;
+  writestamp dir_stamp = {-1, -1};
+  unordered_map<string,unsigned> dirs;
+};
+
+class message_reader {
+  static const char gethash_sql[];
+  static const char gettags_sql[];
+
+  const string maildir_;
+  sqlstmt_t gethash_;
+  sqlstmt_t gettags_;
+  ifstream content_;
+  i64 size_;
+  hash_info hi_;
+  bool ok_ = false;
+  string err_;
+public:
+  message_reader(sqlite3 *db, const string &m) :
+    maildir_(m), gethash_(db, gethash_sql), gettags_(db, gettags_sql) {}
+  bool lookup(const string &hash);
+  bool ok() const { return ok_; }
+  const string &err() const { assert (!ok()); return err_; }
+  i64 size() const { assert (ok()); return size_; }
+  const hash_info &info() const { assert (ok()); return hi_; }
+  streambuf *rdbuf() { assert (ok()); return content_.rdbuf(); }
+};
+
+
 void
 connect_to (const string &destination)
 {
@@ -56,15 +89,6 @@ sqlite_register_percent_encode (sqlite3 *db)
 				     nullptr, &sqlite_percent_encode, nullptr,
 				     nullptr, nullptr);
 }
-
-struct hash_info {
-  string hash;
-  string message_id;
-  writestamp tag_stamp;
-  vector<string> tags;
-  writestamp dir_stamp;
-  unordered_map<string,unsigned> dirs;
-};
 
 string
 show_hash_info (const hash_info &hi)
@@ -154,6 +178,50 @@ read_hash_info (istream &in)
   return hip;
 }
 
+const char message_reader::gethash_sql[] = R"(
+SELECT dir_path, name, message_id, replica, version, size
+FROM maildir_hashes JOIN maildir_files USING (hash_id)
+                    JOIN maildir_dirs USING (dir_id)
+WHERE hash = ? ORDER BY dir_id, name;)";
+const char message_reader::gettags_sql[] =  R"(
+SELECT tag, replica, version
+FROM message_ids LEFT OUTER JOIN tags USING (docid)
+WHERE message_id = ?;)";
+
+bool
+message_reader::lookup (const string &hash)
+{
+  hi_ = hash_info();
+  content_.close();
+  hi_.hash = hash;
+  if (!gethash_.reset().param(hash).step().row()) {
+    err_ = "510 hash not found";
+    return ok_ = false;
+  }
+  hi_.message_id = gethash_.str(2);
+  hi_.dir_stamp = { gethash_.integer(3), gethash_.integer(4) };
+
+  gettags_.reset().param(gethash_.value(2)).step();
+  if (gettags_.row())
+    hi_.tag_stamp = { gettags_.integer(1), gettags_.integer(2) };
+  for (; gettags_.row(); gettags_.step())
+    hi_.tags.push_back(gettags_.str(0));
+    
+  for (; gethash_.row(); gethash_.step()) {
+    string dirpath (gethash_.str(0));
+    if (!content_.is_open()) {
+      content_.open (maildir_ + "/" + dirpath + "/" + gethash_.str(1));
+      size_ = gethash_.integer(5);
+    }
+    ++hi_.dirs[dirpath];
+  }
+  if (!content_.is_open()) {
+    err_ = "420 cannot open file";
+    return ok_ = false;
+  }
+  return ok_ = true;
+}
+
 static void
 cmd_sync (sqlite3 *sqldb, const versvector &vv)
 {
@@ -218,17 +286,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
   }
 
   sqlite_register_percent_encode (db);
-  sqlstmt_t
-    gettags (db, R"(
-SELECT cattags, replica, version
-FROM message_ids LEFT OUTER JOIN
-     (SELECT docid, group_concat(tag, ' ') cattags FROM tags GROUP BY docid)
-  USING (docid)
-WHERE message_id = ?;)"),
-    gethash (db, R"(SELECT dir_path, name, message_id, replica, version, size
-FROM maildir_hashes JOIN maildir_files USING (hash_id)
-                    JOIN maildir_dirs USING (dir_id)
-WHERE hash = ? ORDER BY dir_id, name;)");
+  message_reader mr (db, maildir);
 
   cout << "200 " << dbvers << '\n';
   string cmd;
@@ -243,45 +301,20 @@ WHERE hash = ? ORDER BY dir_id, name;)");
     else if (cmd == "send") {
       string hash;
       cin >> hash;
-      gethash.reset().param(hash).step();
-      if (!gethash.row()) {
-	cout << "500 not found";
-	cin.ignore (numeric_limits<streamsize>::max(), '\n');
-	continue;
-      }
-      gettags.reset().param(gethash.value(2)).step();
-      ostringstream lastline;
-      i64 size;
-      lastline << "220 " << hash << ' '
-	       << permissive_percent_encode (gethash.str(2))
-	       << " R" << gettags.integer(1) << '=' << gettags.integer(2)
-	       << " (" << gettags.str(0)
-	       << ") R" << gethash.integer(3) << '=' << gethash.integer(4)
-	       << " (";
-      unordered_map<string,int> dirs;
-      ifstream f;
-      do {
-	string dirpath = gethash.str(0);
-	if (!f.is_open()) {
-	  f.open (maildir + "/" + dirpath + "/" + gethash.str(1));
-	  size = gethash.integer(5);
-	}
-	++dirs[dirpath];
-      } while (gethash.step().row());
-      bool first = true;
-      for (auto d : dirs) {
-	if (first)
-	  first = false;
-	else
-	  cout << ' ';
-	lastline << d.second << '*' << permissive_percent_encode (d.first);
-      }
-      lastline << ")\n";
-      if (f.is_open())
-	cout << "220-" << size << " bytes\n"
-	     << f.rdbuf() << lastline.str();
+      if (mr.lookup(hash))
+	cout << "220-" << mr.size() << " bytes\n" << mr.rdbuf()
+	     << "220 " << show_hash_info (mr.info()) << '\n';
       else
-	cout << "420 cannot open file\n";
+	cout << mr.err() << '\n';
+    }
+    else if (cmd == "info") {
+      string hash;
+      cin >> hash;
+      if (mr.lookup(hash))
+	cout << "210-" << mr.size() << " bytes\n"
+	     << "210 " << show_hash_info (mr.info()) << '\n';
+      else
+	cout << mr.err() << '\n';
     }
     else if (cmd == "sync") {
       versvector vv;
