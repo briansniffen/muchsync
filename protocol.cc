@@ -1,9 +1,11 @@
 
 #include <iostream>
+#include <fstream>
 #include <sstream>
 #include <limits>
 #include <cstdio>
 #include <iomanip>
+#include <unordered_map>
 #include <vector>
 #include <unistd.h>
 
@@ -61,7 +63,7 @@ struct hash_info {
   writestamp tag_stamp;
   vector<string> tags;
   writestamp dir_stamp;
-  vector<pair<string,unsigned>> dirs;
+  unordered_map<string,unsigned> dirs;
 };
 
 string
@@ -111,7 +113,7 @@ read_strings (istream &in, vector<string> &out)
 }
 
 istream &
-read_dirs (istream &in, vector<pair<string,unsigned>> &out)
+read_dirs (istream &in, unordered_map<string,unsigned> &out)
 {
   char c;
   in >> c;
@@ -129,7 +131,7 @@ read_dirs (istream &in, vector<pair<string,unsigned>> &out)
       in.setstate (ios_base::failbit);
       return in;
     }
-    out.emplace_back (percent_decode (s), n);
+    out[s] += n;
   }
   return in;
 }
@@ -202,7 +204,6 @@ FROM
 void
 muchsync_server (sqlite3 *db, const string &maildir)
 {
-  sqlite_register_percent_encode (db);
   {
     int ifd = spawn_infinite_input_buffer (0);
     switch (ifd) {
@@ -216,6 +217,19 @@ muchsync_server (sqlite3 *db, const string &maildir)
     }
   }
 
+  sqlite_register_percent_encode (db);
+  sqlstmt_t
+    gettags (db, R"(
+SELECT cattags, replica, version
+FROM message_ids LEFT OUTER JOIN
+     (SELECT docid, group_concat(tag, ' ') cattags FROM tags GROUP BY docid)
+  USING (docid)
+WHERE message_id = ?;)"),
+    gethash (db, R"(SELECT dir_path, name, message_id, replica, version
+FROM maildir_hashes JOIN maildir_files USING (hash_id)
+                    JOIN maildir_dirs USING (dir_id)
+WHERE hash = ? ORDER BY dir_id, name;)");
+
   cout << "200 " << dbvers << '\n';
   string cmd;
   while ((cin >> cmd).good()) {
@@ -225,6 +239,40 @@ muchsync_server (sqlite3 *db, const string &maildir)
     }
     else if (cmd == "vect") {
       cout << "200 " << show_sync_vector (get_sync_vector (db)) << '\n';
+    }
+    else if (cmd == "send") {
+      string hash;
+      cin >> hash;
+      gethash.reset().param(hash).step();
+      if (!gethash.row()) {
+	cout << "500 not found";
+	cin.ignore (numeric_limits<streamsize>::max(), '\n');
+	continue;
+      }
+      gettags.reset().param(gethash.value(2)).step();
+      cout << "200 " << hash << ' '
+	   << permissive_percent_encode (gethash.str(2))
+	   << " R" << gettags.integer(1) << '=' << gettags.integer(2)
+	   << " (" << gettags.str(0)
+	   << ") R" << gethash.integer(3) << '=' << gethash.integer(4)
+	   << " (";
+      unordered_map<string,int> dirs;
+      ifstream f;
+      do {
+	string dirpath = gethash.str(0);
+	if (!f.is_open())
+	  f.open (maildir + "/" + dirpath + "/" + gethash.str(1));
+	++dirs[dirpath];
+      } while (gethash.step().row());
+      bool first = true;
+      for (auto d : dirs) {
+	if (first)
+	  first = false;
+	else
+	  cout << ' ';
+	cout << d.second << '*' << permissive_percent_encode (d.first);
+      }
+      cout << ")\n" << f.rdbuf() << '\n';
     }
     else if (cmd == "sync") {
       versvector vv;
