@@ -289,7 +289,8 @@ notmuch_maildir_location()
 [[noreturn]] void
 usage ()
 {
-  fprintf (stderr, "usage: muchsync [-F] db maildir\n");
+  cerr << "usage: muchsync [-FMXv] [-m maildir] [-s ssh] [server[:maildir]]\n"
+       << "       muchsync --server [--nosync] [maildir]\n";
   exit (1);
 }
 
@@ -300,14 +301,20 @@ server (int argc, char **argv)
    * re-scanning all messages. */
   bool opt_nosync = false;
   int i = 2;
-  if (argc < 3)
-    usage ();
-  if (!strcmp (argv[i], "--nosync") && argc < 4) {
+  if (i < argc && !strcmp (argv[i], "--nosync")) {
     opt_nosync = true;
     i++;
   }
-  string maildir = argv[i];
-  string dbpath = argc > i+1 ? argv[i+1] : maildir + muchsync_defpath;
+
+  string maildir;
+  if (i < argc)
+    maildir = argv[i++];
+  else
+    try { maildir = notmuch_maildir_location(); }
+    catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+  string dbpath = maildir + muchsync_defpath;
+  if (i != argc)
+    usage ();
 
   sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
@@ -328,23 +335,30 @@ server (int argc, char **argv)
 int
 main (int argc, char **argv)
 {
-  bool opt_scan_only = false;
   if (argc >= 2 && !strcmp (argv[1], "--server")) {
     server (argc, argv);
     exit (0);
   }
 
+  string maildir, dbpath, opt_remotehost, opt_remotepath;
+
   int opt;
-  while ((opt = getopt(argc, argv, "Fmns:vx")) != -1)
+  while ((opt = getopt(argc, argv, "FMXm:d:s:v")) != -1)
     switch (opt) {
     case 'F':
       opt_fullscan = true;
       break;
-    case 'm':
+    case 'M':
       opt_no_maildir = true;
       break;
-    case 'n':
-      opt_scan_only = true;
+    case 'X':
+      opt_no_xapian = true;
+      break;
+    case 'd':			// for testing
+      dbpath = optarg;
+      break;
+    case 'm':
+      maildir = optarg;
       break;
     case 's':
       opt_ssh = optarg;
@@ -352,21 +366,15 @@ main (int argc, char **argv)
     case 'v':
       opt_verbose++;
       break;
-    case 'x':
-      opt_no_xapian = true;
-      break;
     default:
       usage ();
     }
 
-  if (optind >= argc)
-    usage();
-  string maildir = argv[optind];
-  string dbpath = maildir + muchsync_defpath;
-  if (optind + 2 <= argc)
-    dbpath = argv[optind+1];
-  if (optind + 2 < argc)
-    usage ();
+  if (maildir.empty())
+    try { maildir = notmuch_maildir_location(); }
+    catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+  if (dbpath.empty())
+    dbpath = maildir + muchsync_defpath;
 
   sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
@@ -384,6 +392,10 @@ main (int argc, char **argv)
     exit (1);
   }
 #endif
+
+  if (optind < argc) {
+    cerr << "should connect to server " << argv[optind] << " now...\n";
+  }
 
   return 0;
 }
