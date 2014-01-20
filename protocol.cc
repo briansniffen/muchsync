@@ -190,7 +190,7 @@ FROM
 ;)");
 
   for (changed.step(); changed.row(); changed.step()) {
-    cout << "200-" << changed.str(0) << ' '
+    cout << "210-" << changed.str(0) << ' '
 	 << permissive_percent_encode (changed.str(3))
 	 << " R" << changed.integer(4) << '=' << changed.integer(5)
 	 << " (" << changed.str(6)
@@ -198,7 +198,7 @@ FROM
 	 << " (" << changed.str(7) << ")\n";
   }
 
-  cout << "200 Synchronized " << show_sync_vector(vv) << '\n';
+  cout << "210 Synchronized " << show_sync_vector(vv) << '\n';
 }
 
 void
@@ -225,7 +225,7 @@ FROM message_ids LEFT OUTER JOIN
      (SELECT docid, group_concat(tag, ' ') cattags FROM tags GROUP BY docid)
   USING (docid)
 WHERE message_id = ?;)"),
-    gethash (db, R"(SELECT dir_path, name, message_id, replica, version
+    gethash (db, R"(SELECT dir_path, name, message_id, replica, version, size
 FROM maildir_hashes JOIN maildir_files USING (hash_id)
                     JOIN maildir_dirs USING (dir_id)
 WHERE hash = ? ORDER BY dir_id, name;)");
@@ -250,18 +250,22 @@ WHERE hash = ? ORDER BY dir_id, name;)");
 	continue;
       }
       gettags.reset().param(gethash.value(2)).step();
-      cout << "200 " << hash << ' '
-	   << permissive_percent_encode (gethash.str(2))
-	   << " R" << gettags.integer(1) << '=' << gettags.integer(2)
-	   << " (" << gettags.str(0)
-	   << ") R" << gethash.integer(3) << '=' << gethash.integer(4)
-	   << " (";
+      ostringstream lastline;
+      i64 size;
+      lastline << "220 " << hash << ' '
+	       << permissive_percent_encode (gethash.str(2))
+	       << " R" << gettags.integer(1) << '=' << gettags.integer(2)
+	       << " (" << gettags.str(0)
+	       << ") R" << gethash.integer(3) << '=' << gethash.integer(4)
+	       << " (";
       unordered_map<string,int> dirs;
       ifstream f;
       do {
 	string dirpath = gethash.str(0);
-	if (!f.is_open())
+	if (!f.is_open()) {
 	  f.open (maildir + "/" + dirpath + "/" + gethash.str(1));
+	  size = gethash.integer(5);
+	}
 	++dirs[dirpath];
       } while (gethash.step().row());
       bool first = true;
@@ -270,9 +274,14 @@ WHERE hash = ? ORDER BY dir_id, name;)");
 	  first = false;
 	else
 	  cout << ' ';
-	cout << d.second << '*' << permissive_percent_encode (d.first);
+	lastline << d.second << '*' << permissive_percent_encode (d.first);
       }
-      cout << ")\n" << f.rdbuf() << '\n';
+      lastline << ")\n";
+      if (f.is_open())
+	cout << "220-" << size << " bytes\n"
+	     << f.rdbuf() << lastline.str();
+      else
+	cout << "420 cannot open file\n";
     }
     else if (cmd == "sync") {
       versvector vv;

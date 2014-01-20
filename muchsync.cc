@@ -228,11 +228,14 @@ read_sync_vector (istream &in, versvector &vv)
   input_match (in, '<');
   vv.clear();
   for (;;) {
+    char c;
+    if ((in >> c) && c == '>')
+      return in;
+    in.unget();
     writestamp ws;
     if (!read_writestamp (in, ws))
       break;
     vv.insert (ws);
-    char c;
     if (!(in >> c) || c == '>')
       break;
     if (c != ',') {
