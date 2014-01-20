@@ -3,6 +3,7 @@
 #include <sstream>
 #include <limits>
 #include <cstdio>
+#include <iomanip>
 #include <vector>
 #include <unistd.h>
 
@@ -22,22 +23,37 @@ connect_to (const string &destination)
       + destination.substr(n);
 }
 
-#if 0
+string
+permissive_percent_encode (const string &raw)
+{
+  ostringstream outbuf;
+  outbuf.fill('0');
+  outbuf.setf(ios::hex, ios::basefield);
+  for (char c : raw)
+    if (c <= ' ' || c >= '\177' || c == '%' || c == '(' || c == ')')
+      outbuf << '%' << setw(2) << int (uint8_t(c));
+    else
+      outbuf << c;
+  return outbuf.str();
+}
+
 extern "C" void
 sqlite_percent_encode (sqlite3_context *ctx, int argc, sqlite3_value **av)
 {
   assert (argc == 1);
-  string escaped = percent_encode (reinterpret_cast <const char *>
-				   (sqlite3_value_text (av[0])));
+  string escaped = permissive_percent_encode (reinterpret_cast <const char *>
+					      (sqlite3_value_text (av[0])));
   sqlite3_result_text (ctx, escaped.c_str(), escaped.size(),
 		       SQLITE_TRANSIENT);
 }
-/*
-  sqlite3_create_function_v2 (db, "percent_encode", 1, SQLITE_UTF8,
-			      nullptr, &sqlite_percent_encode, nullptr,
-			      nullptr, nullptr);
-*/
-#endif
+
+int
+sqlite_register_percent_encode (sqlite3 *db)
+{
+  return sqlite3_create_function_v2 (db, "percent_encode", 1, SQLITE_UTF8,
+				     nullptr, &sqlite_percent_encode, nullptr,
+				     nullptr, nullptr);
+}
 
 struct hash_info {
   string hash;
@@ -48,6 +64,76 @@ struct hash_info {
   vector<pair<string,unsigned>> dirs;
 };
 
+string
+show_hash_info (const hash_info &hi)
+{
+  ostringstream os;
+  os << hi.hash << ' ' << hi.message_id << " R"
+     << hi.tag_stamp.first << '=' << hi.tag_stamp.second
+     << " (";
+  bool first = true;
+  for (auto s : hi.tags) {
+    if (first)
+      first = false;
+    else
+      os << ' ';
+    os << s;
+  }
+  os << ") R" << hi.dir_stamp.first << '=' << hi.dir_stamp.second << " (";
+  first = true;
+  for (auto d : hi.dirs) {
+    if (first)
+      first = false;
+    else
+      os << ' ';
+    os << d.second << '*' << d.first;
+  }
+  os << ')';
+  return os.str();
+}
+
+istream &
+read_strings (istream &in, vector<string> &out)
+{
+  char c;
+  in >> c;
+  if (c != '(') {
+    in.setstate (ios_base::failbit);
+    return in;
+  }
+  string content;
+  getline (in, content, ')');
+  istringstream is (content);
+  string s;
+  while (is >> s)
+    out.push_back (move (s));
+  return in;
+}
+
+istream &
+read_dirs (istream &in, vector<pair<string,unsigned>> &out)
+{
+  char c;
+  in >> c;
+  if (c != '(') {
+    in.setstate (ios_base::failbit);
+    return in;
+  }
+  string content;
+  getline (in, content, ')');
+  istringstream is (content);
+  unsigned n;
+  string s;
+  while (is >> n >> c >> s) {
+    if (c != '*') {
+      in.setstate (ios_base::failbit);
+      return in;
+    }
+    out.emplace_back (percent_decode (s), n);
+  }
+  return in;
+}
+
 unique_ptr<hash_info>
 read_hash_info (istream &in)
 {
@@ -57,9 +143,12 @@ read_hash_info (istream &in)
   string t;
   in >> t;
   hip->message_id = percent_decode (t);
-  char c;
-  
-
+  read_writestamp (in, hip->tag_stamp);
+  read_strings (in, hip->tags);
+  read_writestamp (in, hip->dir_stamp);
+  read_dirs (in, hip->dirs);
+  if (!in)
+    hip.reset();
   return hip;
 }
 
@@ -89,7 +178,8 @@ FROM
     (SELECT docid, group_concat(tag, ' ') cattags FROM tags GROUP BY docid)
         USING (docid)
       LEFT OUTER JOIN
-    (SELECT hash_id, group_concat(link_count || '*' || quote(dir_path), ' ')
+    (SELECT hash_id,
+            group_concat(link_count || '*' || percent_encode(dir_path), ' ')
                            AS catdirs
      FROM maildir_links NATURAL JOIN maildir_dirs GROUP BY hash_id)
         USING(hash_id)
@@ -99,7 +189,7 @@ FROM
 
   for (changed.step(); changed.row(); changed.step()) {
     cout << "200-" << changed.str(0) << ' '
-	 << percent_encode (changed.str(3))
+	 << permissive_percent_encode (changed.str(3))
 	 << " R" << changed.integer(4) << '=' << changed.integer(5)
 	 << " (" << changed.str(6)
 	 << ") R" << changed.integer(1) << '=' << changed.integer(2)
@@ -112,6 +202,7 @@ FROM
 void
 muchsync_server (sqlite3 *db, const string &maildir)
 {
+  sqlite_register_percent_encode (db);
   {
     int ifd = spawn_infinite_input_buffer (0);
     switch (ifd) {

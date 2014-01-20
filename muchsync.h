@@ -197,6 +197,9 @@ void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 
 /* protocol.cc */
 void muchsync_server (sqlite3 *db, const string &maildir);
+string permissive_percent_encode (const string &raw);
+int sqlite_register_percent_encode (sqlite3 *db);
+
 
 /* muchsync.cc */
 extern const char xapian_dirs_def[];
@@ -245,6 +248,7 @@ string cmd_output (const string &cmd);
 void infinite_buffer (int infd, int outfd);
 int spawn_infinite_input_buffer (int infd);
 
+/* maildir.cc */
 /* Maildirs place messages in directories called "new" and "dir" */
 inline bool
 dir_contains_messages (const string &dir)
@@ -256,6 +260,7 @@ dir_contains_messages (const string &dir)
   return dir == "cur" || dir == "new";
 }
 void scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir);
+
 
 inline std::istream &
 input_match (std::istream &in, char want)
