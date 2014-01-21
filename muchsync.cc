@@ -1,6 +1,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,14 +13,14 @@
 using namespace std;
 
 const char dbvers[] = "muchsync 0";
-static const char muchsync_defpath[] = "/.notmuch/muchsync.db";
-
+#define MUCHSYNC_DEFDIR "/.notmuch/muchsync"
+static const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
+static const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
 
 bool opt_fullscan;
 int opt_verbose;
 bool opt_no_maildir, opt_no_xapian;
 string opt_ssh = "ssh -Taxq";
-
 
 const char schema_def[] = R"(
 -- General table
@@ -148,6 +149,38 @@ dbcreate (const char *path)
     return NULL;
   }
   return pDb;
+}
+
+bool
+muchsync_init (const string &maildir)
+{
+  string msdir = maildir + muchsync_defdir;
+  if (mkdir (msdir.c_str(), 0777)) {
+    if (errno != EEXIST) {
+      perror (msdir.c_str());
+      return false;
+    }
+    return true;
+  }
+  string hashdir = msdir + "/hashes";
+  if (mkdir (hashdir.c_str(), 0777) && errno != EEXIST) {
+    perror (hashdir.c_str());
+    return false;
+  }
+
+  ostringstream os;
+  os.fill('0');
+  os.setf(ios::hex, ios::basefield);
+  for (int i = 0; i < 0x100; i++) {
+    os.str("");
+    os << hashdir << '/' << setw(2) << i;
+    string dir = os.str();
+    if (mkdir (dir.c_str(), 0777) && errno != EEXIST) {
+      perror (dir.c_str());
+      return false;
+    }
+  }
+  return true;
 }
 
 sqlite3 *
@@ -312,10 +345,12 @@ server (int argc, char **argv)
   else
     try { maildir = notmuch_maildir_location(); }
     catch (exception e) { cerr << e.what() << '\n'; exit (1); }
-  string dbpath = maildir + muchsync_defpath;
+  string dbpath = maildir + muchsync_dbpath;
   if (i != argc)
     usage ();
 
+  if (!muchsync_init (maildir))
+    exit (1);
   sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
     exit (1);
@@ -335,12 +370,14 @@ server (int argc, char **argv)
 int
 main (int argc, char **argv)
 {
+  umask (077);
+
   if (argc >= 2 && !strcmp (argv[1], "--server")) {
     server (argc, argv);
     exit (0);
   }
 
-  string maildir, dbpath, opt_remotehost, opt_remotepath;
+  string maildir, dbpath;
 
   int opt;
   while ((opt = getopt(argc, argv, "FMXm:d:s:v")) != -1)
@@ -374,8 +411,10 @@ main (int argc, char **argv)
     try { maildir = notmuch_maildir_location(); }
     catch (exception e) { cerr << e.what() << '\n'; exit (1); }
   if (dbpath.empty())
-    dbpath = maildir + muchsync_defpath;
+    dbpath = maildir + muchsync_dbpath;
 
+  if (!muchsync_init (maildir))
+    exit (1);
   sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
     exit (1);
