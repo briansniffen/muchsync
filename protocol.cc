@@ -337,6 +337,20 @@ muchsync_server (sqlite3 *db, const string &maildir)
   }
 }
 
+istream &
+get_response (istream &in, string &line)
+{
+  if (!getline (in, line))
+    throw runtime_error ("premature EOF");
+  //cerr << "read " << line << '\n';
+  if (line.empty())
+    throw runtime_error ("unexpected empty line");
+  if (line.front() != '2')
+    throw runtime_error ("bad response: " + line);
+  return in;
+}
+
+
 void
 muchsync_client (sqlite3 *db, const string &maildir,
 		 int ac, char *const *av)
@@ -350,16 +364,17 @@ muchsync_client (sqlite3 *db, const string &maildir,
   int cmdfd = cmd_iofd (cmd);
   ofdstream out (cmdfd);
   ifdstream in (spawn_infinite_input_buffer (cmdfd));
+  in.tie (&out);
 
   string line;
-  if (!getline (in, line) || line.empty() || line.front() != '2') {
-    cerr << av[0] << ": " << line << '\n';
-    return;
-  }
+  get_response (in, line);
+
   out << "vect\n";
-  if (!getline (in, line) || line.empty() || line.front() != '2') {
-    cerr << av[0] << ": " << line << '\n';
-    return;
-  }
   versvector vv;
+  get_response (in, line);
+  istringstream is (line.substr(4));
+  if (!read_sync_vector(is, vv))
+    throw runtime_error ("cannot parse version vector " + line.substr(4));
+
+  cerr << "you got " << show_sync_vector(vv) << '\n';
 }
