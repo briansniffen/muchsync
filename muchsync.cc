@@ -6,16 +6,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <openssl/rand.h>
 #include <sys/stat.h>
+#include <openssl/rand.h>
 #include "muchsync.h"
 
 using namespace std;
 
 const char dbvers[] = "muchsync 0";
 #define MUCHSYNC_DEFDIR "/.notmuch/muchsync"
-static const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
-static const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
+const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
+const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
+char muchsync_hashdir[] = MUCHSYNC_DEFDIR "/hashes";
 
 bool opt_fullscan;
 int opt_verbose;
@@ -153,9 +154,23 @@ dbcreate (const char *path)
 }
 
 bool
-muchsync_init (const string &maildir)
+muchsync_init (const string &maildir, bool create = false)
 {
   string msdir = maildir + muchsync_defdir;
+  if (!access (msdir.c_str(), 0))
+    return true;
+  if (mkdir (maildir.c_str(), 0777) && errno != EEXIST) {
+    perror (maildir.c_str());
+    return false;
+  }
+
+  string notmuchdir = maildir + "/.notmuch";
+  if (access (notmuchdir.c_str(), 0) && errno == ENOENT && create) {
+    notmuch_database_t *notmuch;
+    if (!notmuch_database_create (maildir.c_str(), &notmuch))
+      notmuch_database_destroy (notmuch);
+  }
+
   if (mkdir (msdir.c_str(), 0777)) {
     if (errno != EEXIST) {
       perror (msdir.c_str());
@@ -163,7 +178,7 @@ muchsync_init (const string &maildir)
     }
     return true;
   }
-  string hashdir = msdir + "/hashes";
+  string hashdir = maildir + muchsync_hashdir;
   if (mkdir (hashdir.c_str(), 0777) && errno != EEXIST) {
     perror (hashdir.c_str());
     return false;
@@ -320,11 +335,24 @@ notmuch_maildir_location()
   return loc;
 }
 
+unordered_set<string>
+notmuch_new_tags ()
+{
+  istringstream is (cmd_output ("notmuch config get new.tags"));
+  string line;
+  unordered_set<string> ret;
+  while (getline (is, line))
+    ret.insert(line);
+  return ret;
+}
+
 [[noreturn]] void
 usage ()
 {
-  cerr << "usage: muchsync [-FMXv] [-m maildir] [-s ssh] [server[:maildir]]\n"
-       << "       muchsync --server [--nosync] [maildir]\n";
+  cerr
+    << "usage: muchsync [-FMXv] [-m maildir] [-s ssh] [-n tag [-n tag ...]]\n"
+    << "                        [server[:maildir]]\n"
+    << "       muchsync --server [--nosync] [maildir]\n";
   exit (1);
 }
 
@@ -373,6 +401,10 @@ main (int argc, char **argv)
 {
   umask (077);
 
+  for (int i = 0; i < 10; i++)
+    cerr << maildir_name() << '\n';
+  return 0;
+
   if (argc >= 2 && !strcmp (argv[1], "--server")) {
     server (argc, argv);
     exit (0);
@@ -417,27 +449,28 @@ main (int argc, char **argv)
   if (dbpath.empty())
     dbpath = maildir + muchsync_dbpath;
 
-  if (!muchsync_init (maildir))
+  if (!muchsync_init (maildir, true))
     exit (1);
   sqlite3 *db = dbopen (dbpath.c_str());
   if (!db)
     exit (1);
   cleanup _c (sqlite3_close_v2, db);
 
-#if 1
-  sync_local_data (db, maildir);
-#else
+
+#if 0
   try {
-    sync_local_data (db, maildir);
+#endif
+    if (optind < argc)
+      muchsync_client (db, maildir, argc - optind, argv + optind);
+    else
+      sync_local_data (db, maildir);
+#if 0
   }
   catch (const exception &e) {
     cerr << e.what() << '\n';
     exit (1);
   }
 #endif
-
-  if (optind < argc)
-    muchsync_client (db, maildir, argc - optind, argv + optind);
 
   return 0;
 }

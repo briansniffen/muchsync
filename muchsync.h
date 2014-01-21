@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <sqlite3.h>
 #include <notmuch.h>
 
@@ -201,8 +202,7 @@ string permissive_percent_encode (const string &raw);
 int sqlite_register_percent_encode (sqlite3 *db);
 void muchsync_client (sqlite3 *db, const string &maildir,
 		      int ac, char *const *av);
-
-
+string maildir_name ();
 
 /* muchsync.cc */
 extern const char xapian_dirs_def[];
@@ -211,16 +211,18 @@ extern bool opt_maildir_only, opt_xapian_only;
 extern int opt_verbose;
 extern string opt_ssh;
 extern string opt_remote_muchsync_path;
+extern char muchsync_hashdir[];
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
 void print_time (string msg);
 versvector get_sync_vector (sqlite3 *db);
+std::unordered_set<string> notmuch_new_tags ();
 string show_sync_vector (const versvector &vv);
 std::istream &read_writestamp (std::istream &in, writestamp &ws);
 std::istream &read_sync_vector (std::istream &sb, versvector &vv);
-
+void sync_local_data (sqlite3 *sqldb, const string &maildir);
 
 
 /*
@@ -254,6 +256,7 @@ int spawn_infinite_input_buffer (int infd);
 int cmd_iofd (const string &cmd);
 
 /* maildir.cc */
+string get_sha (int dfd, const char *direntry);
 /* Maildirs place messages in directories called "new" and "dir" */
 inline bool
 dir_contains_messages (const string &dir)

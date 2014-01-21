@@ -1,4 +1,5 @@
 
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -6,21 +7,26 @@
 #include <cstdio>
 #include <iomanip>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#include <fcntl.h>
 #include <unistd.h>
-
+#include <openssl/rand.h>
+#include <notmuch.h>
 #include "muchsync.h"
 #include "fdstream.h"
 
 using namespace std;
 
+static unordered_set<string> new_tags = notmuch_new_tags();
+
 struct hash_info {
   string hash;
   string message_id;
   writestamp tag_stamp = {-1, -1};
-  vector<string> tags;
+  unordered_set<string> tags;
   writestamp dir_stamp = {-1, -1};
-  unordered_map<string,unsigned> dirs;
+  unordered_map<string,i64> dirs;
 };
 
 class message_reader {
@@ -35,6 +41,8 @@ class message_reader {
   hash_info hi_;
   bool ok_ = false;
   string err_;
+  unordered_map<string,vector<string>> pathnames_;
+  string openpath_;
 public:
   message_reader(sqlite3 *db, const string &m) :
     maildir_(m), gethash_(db, gethash_sql), gettags_(db, gettags_sql) {}
@@ -43,21 +51,19 @@ public:
   const string &err() const { assert (!ok()); return err_; }
   i64 size() const { assert (ok()); return size_; }
   const hash_info &info() const { assert (ok()); return hi_; }
-  streambuf *rdbuf() { assert (ok()); return content_.rdbuf(); }
+  bool present() const { return !pathnames_.empty(); }
+  const unordered_map<string,vector<string>> &paths() const {
+    return pathnames_;
+  }
+  streambuf *rdbuf();
+  const string &openpath() {
+    if (!rdbuf())
+      throw runtime_error ("message_reader::openpath: no valid paths");
+    return openpath_;
+  }
+  const string &maildir() const { return maildir_; }
 };
 
-
-void
-connect_to (const string &destination)
-{
-  string cmd;
-  auto n = destination.find (':');
-  if (n == string::npos)
-    cmd = opt_ssh + " " + destination + " muchsync --server";
-  else
-    cmd = opt_ssh + " " + destination.substr(0, n) + " muchsync --server "
-      + destination.substr(n);
-}
 
 string
 permissive_percent_encode (const string &raw)
@@ -73,7 +79,7 @@ permissive_percent_encode (const string &raw)
   return outbuf.str();
 }
 
-extern "C" void
+static void
 sqlite_percent_encode (sqlite3_context *ctx, int argc, sqlite3_value **av)
 {
   assert (argc == 1);
@@ -119,8 +125,8 @@ show_hash_info (const hash_info &hi)
   return os.str();
 }
 
-istream &
-read_strings (istream &in, vector<string> &out)
+static istream &
+read_strings (istream &in, unordered_set<string> &out)
 {
   char c;
   in >> c;
@@ -133,12 +139,12 @@ read_strings (istream &in, vector<string> &out)
   istringstream is (content);
   string s;
   while (is >> s)
-    out.push_back (move (s));
+    out.insert (move (s));
   return in;
 }
 
-istream &
-read_dirs (istream &in, unordered_map<string,unsigned> &out)
+static istream &
+read_dirs (istream &in, unordered_map<string,i64> &out)
 {
   char c;
   in >> c;
@@ -194,33 +200,51 @@ message_reader::lookup (const string &hash)
 {
   hi_ = hash_info();
   content_.close();
+  pathnames_.clear();
   hi_.hash = hash;
+  openpath_.clear();
   if (!gethash_.reset().param(hash).step().row()) {
     err_ = "510 hash not found";
     return ok_ = false;
   }
   hi_.message_id = gethash_.str(2);
   hi_.dir_stamp = { gethash_.integer(3), gethash_.integer(4) };
+  size_ = gethash_.integer(5);
 
   gettags_.reset().param(gethash_.value(2)).step();
   if (gettags_.row())
     hi_.tag_stamp = { gettags_.integer(1), gettags_.integer(2) };
   for (; gettags_.row(); gettags_.step())
-    hi_.tags.push_back(gettags_.str(0));
+    hi_.tags.insert(gettags_.str(0));
     
   for (; gethash_.row(); gethash_.step()) {
     string dirpath (gethash_.str(0));
-    if (!content_.is_open()) {
-      content_.open (maildir_ + "/" + dirpath + "/" + gethash_.str(1));
-      size_ = gethash_.integer(5);
-    }
+    pathnames_[dirpath]
+      .push_back (maildir_ + "/" + dirpath + "/" + gethash_.str(1));
     ++hi_.dirs[dirpath];
   }
-  if (!content_.is_open()) {
-    err_ = "420 cannot open file";
-    return ok_ = false;
-  }
   return ok_ = true;
+}
+
+streambuf *
+message_reader::rdbuf()
+{
+  assert (ok());
+  if (content_.is_open()) {
+    content_.seekg(0);
+    return content_.rdbuf();
+  }
+  for (auto d : pathnames_)
+    for (auto p : d.second) {
+      content_.open (p, ios_base::in|ios_base::ate);
+      if (content_.is_open()) {
+	openpath_ = p;
+	size_ = content_.tellg();
+	content_.seekg(0);
+	return content_.rdbuf();
+      }
+    }
+  return nullptr;
 }
 
 static void
@@ -302,9 +326,12 @@ muchsync_server (sqlite3 *db, const string &maildir)
     else if (cmd == "send") {
       string hash;
       cin >> hash;
-      if (mr.lookup(hash))
-	cout << "220-" << mr.size() << " bytes\n" << mr.rdbuf()
+      streambuf *sb;
+      if (mr.lookup(hash) && (sb = mr.rdbuf()))
+	cout << "220-" << mr.size() << " bytes\n" << sb
 	     << "220 " << show_hash_info (mr.info()) << '\n';
+      else if (mr.ok())
+	cout << "420 cannot open file\n";
       else
 	cout << mr.err() << '\n';
     }
@@ -337,7 +364,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
   }
 }
 
-istream &
+static istream &
 get_response (istream &in, string &line)
 {
   if (!getline (in, line))
@@ -350,6 +377,127 @@ get_response (istream &in, string &line)
   if (line.front() != '2')
     throw runtime_error ("bad response: " + line);
   return in;
+}
+
+static string
+myhostname()
+{
+  char buf[257];
+  buf[sizeof(buf) - 1] = '\0';
+  if (gethostname (buf, sizeof(buf) - 1))
+    throw runtime_error (string("gethsotname: ") + strerror (errno));
+  return buf;
+}
+
+static uint32_t
+randint()
+{
+  uint32_t v;
+  if (RAND_pseudo_bytes ((unsigned char *) &v, sizeof (v)) == -1)
+    throw runtime_error ("RAND_pseudo_bytes failed");
+  return v;
+}
+
+string
+maildir_name ()
+{
+  static string hostname = myhostname();
+  static int pid = getpid();
+  static int ndeliveries = 0;
+
+  ostringstream os;
+  struct timespec ts;
+  clock_gettime (CLOCK_REALTIME, &ts);
+  os << ts.tv_sec << ".M" << ts.tv_nsec << 'P' << pid
+     << 'Q' << ++ndeliveries
+     << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
+     << '.' << hostname;
+  return os.str();
+}
+
+inline string
+hash_cache_path (const string &maildir, const string &hash)
+{
+  return (maildir + muchsync_hashdir + "/" + hash.substr(0, 2)
+	  + "/" + hash.substr(2));
+}
+
+inline i64
+lookup_version (const versvector &vv, i64 replica)
+{
+  auto i = vv.find(replica);
+  return i == vv.end() ? -1 : i->second;
+}
+
+static bool
+sync_message (const versvector &rvv, message_reader &mr,
+	      const hash_info &rhi, notmuch_database_t *notmuch)
+{
+  static const hash_info empty_hash_info;
+  const hash_info &lhi = mr.lookup(rhi.hash) ? mr.info() : empty_hash_info;
+    
+  bool links_conflict
+    = (lhi.dir_stamp.second > lookup_version (rvv, lhi.dir_stamp.first)
+       && rhi.dirs != lhi.dirs);
+  unordered_map<string,i64> newlinks (rhi.dirs);
+  if (links_conflict) {
+    // should be more clever if file moves from .../new to .../cur
+    for (auto i : lhi.dirs)
+      newlinks[i.first] = max (i.second, newlinks[i.first]);
+  }
+  else {
+    // Make sure every old directory is there, even if the link count is 0
+    for (auto i : lhi.dirs)
+      newlinks[i.first];
+  }
+
+  for (auto i : newlinks) {
+    auto j = lhi.dirs.find(i.first);
+    for (i64 d = i.second - (j == lhi.dirs.end() ? 0 : j->second);
+	 d > 0; d--) {
+      string source;
+      if (mr.ok() && mr.rdbuf())
+	source = mr.openpath();
+      else {
+	source = mr.maildir() + "/" + hash_cache_path (mr.maildir(), rhi.hash);
+	if (faccessat (AT_FDCWD, source.c_str(), 0, 0))
+	  return false;
+	string hash;
+	try { hash = get_sha (AT_FDCWD, source.c_str()); }
+	catch (...) { return false; }
+	if (hash != rhi.hash)
+	  return false;
+      }
+      string target = mr.maildir() + i.first + "/" + maildir_name();
+      if (link (source.c_str(), target.c_str()))
+	throw runtime_error (string("link (\"") + source + "\", \""
+			     + target + "\"): " + strerror(errno));
+    }
+  }
+  for (auto i : newlinks) {
+    auto j = lhi.dirs.find(i.first);
+    for (i64 d = i.second - (j == lhi.dirs.end() ? 0 : j->second);
+	 d < 0; d++) {
+      /* delete */
+    }
+  }
+
+  bool tags_conflict
+    = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
+       && rhi.tags != lhi.tags);
+  unordered_set<string> newtags (rhi.tags);
+  if (tags_conflict) {
+    // Logically OR most tags
+    for (auto i : lhi.tags)
+      newtags.insert(i);
+    // But logically AND new_tags
+    for (auto i : new_tags)
+      if (rhi.tags.find(i) == rhi.tags.end()
+	  || lhi.tags.find(i) == lhi.tags.end())
+	newtags.erase(i);
+  }
+
+  return true;
 }
 
 void
@@ -367,7 +515,18 @@ muchsync_client (sqlite3 *db, const string &maildir,
   ifdstream in (spawn_infinite_input_buffer (cmdfd));
   in.tie (&out);
 
+  /* Any work done here gets overlapped with server */
+  sync_local_data (db, maildir);
   versvector localvv {get_sync_vector (db)}, remotevv;
+  message_reader mr (db, maildir);
+  i64 pending = 0;
+
+  notmuch_database_t *notmuch;
+  if (auto err = notmuch_database_open (maildir.c_str(),
+					NOTMUCH_DATABASE_MODE_READ_WRITE,
+					&notmuch))
+    throw runtime_error (string("notmuch: ") + notmuch_status_to_string(err));
+  cleanup _c (notmuch_database_destroy, notmuch);
 
   string line;
   get_response (in, line);
@@ -386,6 +545,10 @@ muchsync_client (sqlite3 *db, const string &maildir,
     hash_info hi;
     if (!read_hash_info(is, hi))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
+    if (!sync_message (remotevv, mr, hi, notmuch)) {
+      out << "send " << hi.hash << '\n';
+      pending++;
+    }
     //cerr << show_hash_info (hi) << '\n';
   }
 
