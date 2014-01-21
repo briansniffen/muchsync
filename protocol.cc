@@ -161,22 +161,22 @@ read_dirs (istream &in, unordered_map<string,unsigned> &out)
   return in;
 }
 
-unique_ptr<hash_info>
-read_hash_info (istream &in)
+istream &
+read_hash_info (istream &in, hash_info &outhi)
 {
-  unique_ptr<hash_info> hip {new hash_info};
-
-  in >> hip->hash;
+  hash_info hi;
+  in >> hi.hash;
   string t;
   in >> t;
-  hip->message_id = percent_decode (t);
-  read_writestamp (in, hip->tag_stamp);
-  read_strings (in, hip->tags);
-  read_writestamp (in, hip->dir_stamp);
-  read_dirs (in, hip->dirs);
-  if (!in)
-    hip.reset();
-  return hip;
+  try { hi.message_id = percent_decode (t); }
+  catch (...) { in.setstate(ios_base::failbit); }
+  read_writestamp (in, hi.tag_stamp);
+  read_strings (in, hi.tags);
+  read_writestamp (in, hi.dir_stamp);
+  read_dirs (in, hi.dirs);
+  if (in)
+    outhi = move(hi);
+  return in;
 }
 
 const char message_reader::gethash_sql[] = R"(
@@ -345,11 +345,12 @@ get_response (istream &in, string &line)
   //cerr << "read " << line << '\n';
   if (line.empty())
     throw runtime_error ("unexpected empty line");
+  if (line.size() < 4)
+    throw runtime_error ("unexpected short line");
   if (line.front() != '2')
     throw runtime_error ("bad response: " + line);
   return in;
 }
-
 
 void
 muchsync_client (sqlite3 *db, const string &maildir,
@@ -366,15 +367,26 @@ muchsync_client (sqlite3 *db, const string &maildir,
   ifdstream in (spawn_infinite_input_buffer (cmdfd));
   in.tie (&out);
 
+  versvector localvv {get_sync_vector (db)}, remotevv;
+
   string line;
   get_response (in, line);
 
   out << "vect\n";
-  versvector vv;
   get_response (in, line);
   istringstream is (line.substr(4));
-  if (!read_sync_vector(is, vv))
+  if (!read_sync_vector(is, remotevv))
     throw runtime_error ("cannot parse version vector " + line.substr(4));
 
-  cerr << "you got " << show_sync_vector(vv) << '\n';
+  //cerr << "you got " << show_sync_vector(remotevv) << '\n';
+
+  out << "sync " << show_sync_vector(localvv) << '\n';
+  while (get_response (in, line) && line.at(3) == '-') {
+    is.str(line.substr(4));
+    hash_info hi;
+    if (!read_hash_info(is, hi))
+      throw runtime_error ("could not parse hash_info: " + line.substr(4));
+    //cerr << show_hash_info (hi) << '\n';
+  }
+
 }
