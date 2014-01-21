@@ -29,5 +29,6 @@ public:
 };
 
 using ifdstream = genfdstream<std::istream, std::ios_base::in>;
+using ofdstream = genfdstream<std::ostream, std::ios_base::out>;
 using fdstream = genfdstream<std::basic_iostream<char>,
 			     std::ios_base::in|std::ios_base::out>;

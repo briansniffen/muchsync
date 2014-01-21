@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "muchsync.h"
+#include "fdstream.h"
 
 using namespace std;
 
@@ -336,3 +337,29 @@ muchsync_server (sqlite3 *db, const string &maildir)
   }
 }
 
+void
+muchsync_client (sqlite3 *db, const string &maildir,
+		 int ac, char *const *av)
+{
+  ostringstream os;
+  os << opt_ssh << ' ' << av[0] << ' ' << opt_remote_muchsync_path
+     << " --server";
+  for (int i = 1; i < ac; i++)
+    os << ' ' << av[i];
+  string cmd (os.str());
+  int cmdfd = cmd_iofd (cmd);
+  ofdstream out (cmdfd);
+  ifdstream in (spawn_infinite_input_buffer (cmdfd));
+
+  string line;
+  if (!getline (in, line) || line.empty() || line.front() != '2') {
+    cerr << av[0] << ": " << line << '\n';
+    return;
+  }
+  out << "vect\n";
+  if (!getline (in, line) || line.empty() || line.front() != '2') {
+    cerr << av[0] << ": " << line << '\n';
+    return;
+  }
+  versvector vv;
+}

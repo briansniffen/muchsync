@@ -199,6 +199,9 @@ void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 void muchsync_server (sqlite3 *db, const string &maildir);
 string permissive_percent_encode (const string &raw);
 int sqlite_register_percent_encode (sqlite3 *db);
+void muchsync_client (sqlite3 *db, const string &maildir,
+		      int ac, char *const *av);
+
 
 
 /* muchsync.cc */
@@ -207,6 +210,7 @@ extern bool opt_fullscan;
 extern bool opt_maildir_only, opt_xapian_only;
 extern int opt_verbose;
 extern string opt_ssh;
+extern string opt_remote_muchsync_path;
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
@@ -247,6 +251,7 @@ string tag_from_term (const string &term);
 string cmd_output (const string &cmd);
 void infinite_buffer (int infd, int outfd);
 int spawn_infinite_input_buffer (int infd);
+int cmd_iofd (const string &cmd);
 
 /* maildir.cc */
 /* Maildirs place messages in directories called "new" and "dir" */

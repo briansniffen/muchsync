@@ -21,6 +21,7 @@ bool opt_fullscan;
 int opt_verbose;
 bool opt_no_maildir, opt_no_xapian;
 string opt_ssh = "ssh -Taxq";
+string opt_remote_muchsync_path = "muchsync";
 
 const char schema_def[] = R"(
 -- General table
@@ -380,7 +381,7 @@ main (int argc, char **argv)
   string maildir, dbpath;
 
   int opt;
-  while ((opt = getopt(argc, argv, "FMXm:d:s:v")) != -1)
+  while ((opt = getopt(argc, argv, "FMXm:d:r:s:v")) != -1)
     switch (opt) {
     case 'F':
       opt_fullscan = true;
@@ -396,6 +397,9 @@ main (int argc, char **argv)
       break;
     case 'm':
       maildir = optarg;
+      break;
+    case 'r':
+      opt_remote_muchsync_path = optarg;
       break;
     case 's':
       opt_ssh = optarg;
@@ -432,9 +436,8 @@ main (int argc, char **argv)
   }
 #endif
 
-  if (optind < argc) {
-    cerr << "should connect to server " << argv[optind] << " now...\n";
-  }
+  if (optind < argc)
+    muchsync_client (db, maildir, argc - optind, argv + optind);
 
   return 0;
 }
