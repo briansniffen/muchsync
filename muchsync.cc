@@ -119,7 +119,7 @@ dbcreate (const char *path)
 {
   i64 self;
   if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1) {
-    fprintf (stderr, "RAND_pseudo_bytes failed\n");
+    cerr << "RAND_pseudo_bytes failed\n";
     return NULL;
   }
   self &= ~(i64 (1) << 63);
@@ -128,7 +128,7 @@ dbcreate (const char *path)
   int err = sqlite3_open_v2 (path, &pDb,
 			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, NULL);
   if (err) {
-    fprintf (stderr, "%s: %s\n", path, sqlite3_errstr (err));
+    cerr << path << ": " << sqlite3_errstr (err);
     return NULL;
   }
 
@@ -388,7 +388,7 @@ main (int argc, char **argv)
     sync_local_data (db, maildir);
   }
   catch (const exception &e) {
-    fprintf (stderr, "%s\n", e.what ());
+    cerr << e.what() << '\n';
     exit (1);
   }
 #endif

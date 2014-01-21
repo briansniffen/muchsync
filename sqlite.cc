@@ -68,7 +68,7 @@ sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
   if (sqlite3_prepare_v2 (db, query, -1, &stmt_, &tail))
     dbthrow (db, query);
   if (tail && *tail) {
-    fprintf (stderr, "sqlstmt_t: illegal compound query\n  Query: %s\n", query);
+    cerr << "sqlstmt_t: illegal compound query\n  Query: " << query << '\n';
     abort ();
   }
 }
@@ -101,7 +101,7 @@ fmtstmt (sqlite3 *db, const char *fmt, ...)
   query = sqlite3_vmprintf (fmt, ap);
   va_end (ap);
   if (!query) {
-    fprintf (stderr, "sqlite3_vmprintf(%s): out of memory\n", fmt);
+    cerr << "sqlite3_vmprintf(" << fmt << "): out of memory\n";
     return sqlstmt_t (nullptr);
   }
 
@@ -110,7 +110,7 @@ fmtstmt (sqlite3 *db, const char *fmt, ...)
     return sqlstmt_t (nullptr);
   }
   if (tail && *tail) {
-    fprintf (stderr, "fmtstmt: illegal compound query\n  Query: %s\n", query);
+    cerr << "fmtstmt: illegal compound query\n  Query: " << query << '\n';
     abort ();
   }
   return sqlstmt_t (stmtp);
