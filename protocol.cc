@@ -327,8 +327,9 @@ muchsync_server (sqlite3 *db, const string &maildir)
       cin >> hash;
       streambuf *sb;
       if (mr.lookup(hash) && (sb = mr.rdbuf()))
-	cout << "220-" << mr.size() << " bytes\n" << sb
-	     << "220 " << show_hash_info (mr.info()) << '\n';
+	cout << "220-" << show_hash_info (mr.info()) << '\n'
+	     << sb
+	     << "220 " << mr.info().hash << '\n';
       else if (mr.ok())
 	cout << "420 cannot open file\n";
       else
