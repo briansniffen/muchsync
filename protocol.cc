@@ -245,6 +245,82 @@ message_reader::rdbuf()
   return nullptr;
 }
 
+inline i64
+lookup_version (const versvector &vv, i64 replica)
+{
+  auto i = vv.find(replica);
+  return i == vv.end() ? -1 : i->second;
+}
+
+static bool
+sync_message (const versvector &rvv, message_reader &mr,
+	      const hash_info &rhi, notmuch_database_t *notmuch,
+	      string *sourcep = nullptr)
+{
+  static const hash_info empty_hash_info;
+  const hash_info &lhi = mr.lookup(rhi.hash) ? mr.info() : empty_hash_info;
+
+  bool links_conflict
+    = (lhi.dir_stamp.second > lookup_version (rvv, lhi.dir_stamp.first)
+       && rhi.dirs != lhi.dirs);
+  unordered_map<string,i64> needlinks (rhi.dirs);
+  bool needsource = false;
+  for (auto i : lhi.dirs)
+    if ((needlinks[i.first] -= i.second) > 0)
+      needsource = true;
+
+  /* find copy of content */
+  string source;
+  if (needsource) {
+    if (sourcep)
+      source = *sourcep;
+    else if (mr.ok() && mr.rdbuf())
+      source = mr.openpath();
+    else
+      return false;
+  }
+
+  /* add missing links */
+  for (auto li : needlinks)
+    for (; li.second > 0; --li.second) {
+      string target = mr.maildir() + li.first + "/" + maildir_name();
+      if (link (source.c_str(), target.c_str()))
+	throw runtime_error (string("link (\"") + source + "\", \""
+			     + target + "\"): " + strerror(errno));
+    }
+  /* remove extra links */
+  if (!links_conflict && mr.ok())
+    for (auto p : mr.paths()) {
+      i64 &n = needlinks[p.first];
+      if (n < 0) {
+	if (rhi.dirs.empty()) {
+	  string trash = (mr.maildir() + muchsync_trashdir + "/" + rhi.hash);
+	  if (!rename (p.second.c_str(), trash.c_str()))
+	    ++n;
+	}
+	else if (!unlink (p.second.c_str()))
+	  ++n;
+      }
+    }
+
+  bool tags_conflict
+    = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
+       && rhi.tags != lhi.tags);
+  unordered_set<string> newtags (rhi.tags);
+  if (tags_conflict) {
+    // Logically OR most tags
+    for (auto i : lhi.tags)
+      newtags.insert(i);
+    // But logically AND new_tags
+    for (auto i : new_tags)
+      if (rhi.tags.find(i) == rhi.tags.end()
+	  || lhi.tags.find(i) == lhi.tags.end())
+	newtags.erase(i);
+  }
+
+  return true;
+}
+
 static void
 cmd_sync (sqlite3 *sqldb, const versvector &vv)
 {
@@ -413,82 +489,6 @@ maildir_name ()
      << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
      << '.' << hostname;
   return os.str();
-}
-
-inline string
-hash_cache_path (const string &maildir, const string &hash)
-{
-  return (maildir + muchsync_hashdir + "/" + hash.substr(0, 2)
-	  + "/" + hash.substr(2));
-}
-
-inline i64
-lookup_version (const versvector &vv, i64 replica)
-{
-  auto i = vv.find(replica);
-  return i == vv.end() ? -1 : i->second;
-}
-
-static bool
-sync_message (const versvector &rvv, message_reader &mr,
-	      const hash_info &rhi, notmuch_database_t *notmuch)
-{
-  static const hash_info empty_hash_info;
-  const hash_info &lhi = mr.lookup(rhi.hash) ? mr.info() : empty_hash_info;
-    
-  bool links_conflict
-    = (lhi.dir_stamp.second > lookup_version (rvv, lhi.dir_stamp.first)
-       && rhi.dirs != lhi.dirs);
-  unordered_map<string,i64> needlinks (rhi.dirs);
-  bool needsource = false;
-  for (auto i : lhi.dirs)
-    if ((needlinks[i.first] -= i.second) > 0)
-      needsource = true;
-
-  /* find copy of content */
-  string source;
-  if (needsource) {
-    if (mr.ok() && mr.rdbuf())
-      source = mr.openpath();
-    else {
-      source = hash_cache_path (mr.maildir(), rhi.hash);
-      if (access (source.c_str(), 0))
-	return false;
-    }
-  }
-
-  /* add missing links */
-  for (auto li : needlinks)
-    for (; li.second > 0; --li.second) {
-      string target = mr.maildir() + li.first + "/" + maildir_name();
-      if (link (source.c_str(), target.c_str()))
-	throw runtime_error (string("link (\"") + source + "\", \""
-			     + target + "\"): " + strerror(errno));
-    }
-  /* remove extra links */
-  if (!links_conflict && mr.ok())
-    for (auto p : mr.paths()) {
-      i64 &n = needlinks[p.first];
-      if (n < 0 && !unlink (p.second.c_str()))
-	++n;
-    }
-
-  bool tags_conflict
-    = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
-       && rhi.tags != lhi.tags);
-  unordered_set<string> newtags (rhi.tags);
-  if (tags_conflict) {
-    // Logically OR most tags
-    for (auto i : lhi.tags)
-      newtags.insert(i);
-    // But logically AND new_tags
-    for (auto i : new_tags)
-      if (rhi.tags.find(i) == rhi.tags.end()
-	  || lhi.tags.find(i) == lhi.tags.end())
-	newtags.erase(i);
-  }
-
-  return true;
 }
 
 void
