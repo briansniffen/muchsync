@@ -50,9 +50,9 @@ public:
   bool ok() const { return ok_; }
   const string &err() const { assert (!ok()); return err_; }
   const hash_info &info() const { assert (ok()); return hi_; }
-  i64 size() const { return info().size; }
-  bool present() const { return !pathnames_.empty(); }
+  bool present() const { assert (ok()); return !pathnames_.empty(); }
   const vector<pair<string,string>> &paths() const {
+    assert (ok());
     return pathnames_;
   }
   streambuf *rdbuf();
@@ -62,6 +62,31 @@ public:
     return openpath_;
   }
   const string &maildir() const { return maildir_; }
+};
+
+class message_syncer {
+  sqlite3 *db_;
+  notmuch_database_t *notmuch_;
+
+  writestamp mystamp_;
+  sqlstmt_t lookup_hash_id_;
+  sqlstmt_t create_hash_id_;
+  sqlstmt_t update_hash_stamp_;
+
+  unordered_map<string,i64> dir_ids_;
+
+  static writestamp get_mystamp(sqlite3 *db);
+  i64 get_hash_id(const string &hash, i64 size, const string &msgid);
+  i64 get_dir_id(const string &dir);
+public:
+  message_reader mr;
+
+  message_syncer(sqlite3 *db, const string &m);
+  ~message_syncer();
+  // Returns false if it needs a path to a copy of message in sourcep
+  bool sync_message(const versvector &remote_sync_vector,
+		    const hash_info &remote_hash_info,
+		    string *sourcep = nullptr);
 };
 
 
@@ -252,10 +277,73 @@ lookup_version (const versvector &vv, i64 replica)
   return i == vv.end() ? -1 : i->second;
 }
 
-static bool
-sync_message (const versvector &rvv, message_reader &mr,
-	      const hash_info &rhi, notmuch_database_t *notmuch,
-	      string *sourcep = nullptr)
+message_syncer::message_syncer(sqlite3 *db, const string &m)
+  : db_(db), mystamp_(get_mystamp(db)),
+    lookup_hash_id_(db, "SELECT hash_id, size, message_id"
+		    " FROM maildir_hashes WHERE hash = ?;"),
+    create_hash_id_(db, "INSERT INTO maildir_hashes"
+		    " (hash, size, message_id, replica, version)"
+		    " VALUES (?, ?, ?, ?, ?);"),
+    update_hash_stamp_(db, "UPDATE maildir_hashes "
+		       "SET replica = ?, version = ? WHERE hash_id = ?;"),
+    mr(db, m)
+{
+  notmuch_status_t nmerr
+    = notmuch_database_open (m.c_str(), NOTMUCH_DATABASE_MODE_READ_WRITE,
+			     &notmuch_);
+  if (nmerr)
+    throw runtime_error (m + ": " + notmuch_status_to_string (nmerr));
+
+  sqlstmt_t s (db, "SELECT dir_path, dir_id FROM maildir_dirs;");
+  for (s.step(); s.row(); s.step())
+    dir_ids_.emplace (s.str(0), s.integer(1));
+}
+
+message_syncer::~message_syncer()
+{
+  notmuch_database_destroy (notmuch_);
+}
+
+writestamp
+message_syncer::get_mystamp(sqlite3 *db)
+{
+  sqlstmt_t s (db, "SELECT replica, version "
+	       "FROM configuration JOIN sync_vector ON (value = replica) "
+	       "WHERE key = 'self';");
+  if (!s.step().row())
+    throw runtime_error ("Cannot find myself in sync_vector");
+  return { s.integer(0), s.integer(1) };
+}
+
+i64
+message_syncer::get_hash_id (const string &hash, i64 size, const string &msgid)
+{
+  if (lookup_hash_id_.reset().param(hash).step().row()) {
+    if (msgid != lookup_hash_id_.str(2))
+      throw runtime_error ("disagreement over message ID of hash " + hash);
+    if (size != lookup_hash_id_.integer(1))
+      throw runtime_error ("disagreement over size of hash " + hash);
+    return lookup_hash_id_.integer(0);
+  }
+  create_hash_id_.reset().param(hash, size, msgid, nullptr, nullptr).step();
+  return sqlite3_last_insert_rowid(db_);
+}
+
+i64
+message_syncer::get_dir_id(const string &dir)
+{
+  auto i = dir_ids_.find(dir);
+  if (i != dir_ids_.end())
+    return i->second;
+
+  // XXX - this might be a nice place to reject paths with .. in them
+  // string path = mr.maildir() + "/" + dir;
+}
+
+bool
+message_syncer::sync_message (const versvector &rvv,
+			      const hash_info &rhi,
+			      string *sourcep)
 {
   static const hash_info empty_hash_info;
   const hash_info &lhi = mr.lookup(rhi.hash) ? mr.info() : empty_hash_info;
@@ -415,7 +503,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
       string hash;
       cin >> hash;
       if (mr.lookup(hash))
-	cout << "210-" << mr.size() << " bytes\n"
+	cout << "210-" << mr.info().size << " bytes\n"
 	     << "210 " << show_hash_info (mr.info()) << '\n';
       else
 	cout << mr.err() << '\n';
@@ -509,7 +597,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
   /* Any work done here gets overlapped with server */
   sync_local_data (db, maildir);
   versvector localvv {get_sync_vector (db)}, remotevv;
-  message_reader mr (db, maildir);
+  message_syncer msgsync (db, maildir);
   i64 pending = 0;
 
   notmuch_database_t *notmuch;
@@ -536,7 +624,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     hash_info hi;
     if (!read_hash_info(is, hi))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
-    if (!sync_message (remotevv, mr, hi, notmuch)) {
+    if (!msgsync.sync_message (remotevv, hi)) {
       out << "send " << hi.hash << '\n';
       pending++;
     }
