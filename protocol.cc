@@ -552,4 +552,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     //cerr << show_hash_info (hi) << '\n';
   }
 
+  for (; pending > 0; pending--) {
+    //get_response (in, line);
+  }
 }

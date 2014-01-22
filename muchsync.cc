@@ -16,7 +16,8 @@ const char dbvers[] = "muchsync 0";
 #define MUCHSYNC_DEFDIR "/.notmuch/muchsync"
 const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
 const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
-char muchsync_hashdir[] = MUCHSYNC_DEFDIR "/hashes";
+const char muchsync_hashdir[] = MUCHSYNC_DEFDIR "/hashes";
+const char muchsync_tmpdir[] = MUCHSYNC_DEFDIR "/tmp";
 
 bool opt_fullscan;
 int opt_verbose;
@@ -159,29 +160,25 @@ muchsync_init (const string &maildir, bool create = false)
   string msdir = maildir + muchsync_defdir;
   if (!access (msdir.c_str(), 0))
     return true;
-  if (mkdir (maildir.c_str(), 0777) && errno != EEXIST) {
+
+  if (create && mkdir (maildir.c_str(), 0777) && errno != EEXIST) {
     perror (maildir.c_str());
     return false;
   }
 
   string notmuchdir = maildir + "/.notmuch";
-  if (access (notmuchdir.c_str(), 0) && errno == ENOENT && create) {
+  if (create && access (notmuchdir.c_str(), 0) && errno == ENOENT) {
     notmuch_database_t *notmuch;
     if (!notmuch_database_create (maildir.c_str(), &notmuch))
       notmuch_database_destroy (notmuch);
   }
 
-  if (mkdir (msdir.c_str(), 0777)) {
-    if (errno != EEXIST) {
-      perror (msdir.c_str());
+  string hashdir = maildir + muchsync_hashdir;
+  for (string d : {msdir, hashdir, maildir + muchsync_tmpdir}) {
+    if (mkdir (d.c_str(), 0777) && errno != EEXIST) {
+      perror (d.c_str());
       return false;
     }
-    return true;
-  }
-  string hashdir = maildir + muchsync_hashdir;
-  if (mkdir (hashdir.c_str(), 0777) && errno != EEXIST) {
-    perror (hashdir.c_str());
-    return false;
   }
 
   ostringstream os;

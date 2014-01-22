@@ -211,7 +211,8 @@ extern bool opt_maildir_only, opt_xapian_only;
 extern int opt_verbose;
 extern string opt_ssh;
 extern string opt_remote_muchsync_path;
-extern char muchsync_hashdir[];
+extern const char muchsync_hashdir[];
+extern const char muchsync_tmpdir[];
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
