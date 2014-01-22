@@ -398,10 +398,6 @@ main (int argc, char **argv)
 {
   umask (077);
 
-  for (int i = 0; i < 10; i++)
-    cerr << maildir_name() << '\n';
-  return 0;
-
   if (argc >= 2 && !strcmp (argv[1], "--server")) {
     server (argc, argv);
     exit (0);
