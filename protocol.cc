@@ -41,7 +41,7 @@ class message_reader {
   hash_info hi_;
   bool ok_ = false;
   string err_;
-  unordered_map<string,vector<string>> pathnames_;
+  vector<pair<string,string>> pathnames_;
   string openpath_;
 public:
   message_reader(sqlite3 *db, const string &m) :
@@ -52,7 +52,7 @@ public:
   i64 size() const { assert (ok()); return size_; }
   const hash_info &info() const { assert (ok()); return hi_; }
   bool present() const { return !pathnames_.empty(); }
-  const unordered_map<string,vector<string>> &paths() const {
+  const vector<pair<string,string>> &paths() const {
     return pathnames_;
   }
   streambuf *rdbuf();
@@ -219,8 +219,8 @@ message_reader::lookup (const string &hash)
     
   for (; gethash_.row(); gethash_.step()) {
     string dirpath (gethash_.str(0));
-    pathnames_[dirpath]
-      .push_back (maildir_ + "/" + dirpath + "/" + gethash_.str(1));
+    pathnames_.emplace_back (dirpath,
+			     maildir_ + "/" + dirpath + "/" + gethash_.str(1));
     ++hi_.dirs[dirpath];
   }
   return ok_ = true;
@@ -234,16 +234,15 @@ message_reader::rdbuf()
     content_.seekg(0);
     return content_.rdbuf();
   }
-  for (auto d : pathnames_)
-    for (auto p : d.second) {
-      content_.open (p, ios_base::in|ios_base::ate);
-      if (content_.is_open()) {
-	openpath_ = p;
-	size_ = content_.tellg();
-	content_.seekg(0);
-	return content_.rdbuf();
-      }
+  for (auto p : pathnames_) {
+    content_.open (p.second, ios_base::in|ios_base::ate);
+    if (content_.is_open()) {
+      openpath_ = p.second;
+      size_ = content_.tellg();
+      content_.seekg(0);
+      return content_.rdbuf();
     }
+  }
   return nullptr;
 }
 
@@ -439,48 +438,39 @@ sync_message (const versvector &rvv, message_reader &mr,
   bool links_conflict
     = (lhi.dir_stamp.second > lookup_version (rvv, lhi.dir_stamp.first)
        && rhi.dirs != lhi.dirs);
-  unordered_map<string,i64> newlinks (rhi.dirs);
-  if (links_conflict) {
-    // should be more clever if file moves from .../new to .../cur
-    for (auto i : lhi.dirs)
-      newlinks[i.first] = max (i.second, newlinks[i.first]);
-  }
-  else {
-    // Make sure every old directory is there, even if the link count is 0
-    for (auto i : lhi.dirs)
-      newlinks[i.first];
+  unordered_map<string,i64> needlinks (rhi.dirs);
+  bool needsource = false;
+  for (auto i : lhi.dirs)
+    if ((needlinks[i.first] -= i.second) > 0)
+      needsource = true;
+
+  /* find copy of content */
+  string source;
+  if (needsource) {
+    if (mr.ok() && mr.rdbuf())
+      source = mr.openpath();
+    else {
+      source = hash_cache_path (mr.maildir(), rhi.hash);
+      if (access (source.c_str(), 0))
+	return false;
+    }
   }
 
-  for (auto i : newlinks) {
-    auto j = lhi.dirs.find(i.first);
-    for (i64 d = i.second - (j == lhi.dirs.end() ? 0 : j->second);
-	 d > 0; d--) {
-      string source;
-      if (mr.ok() && mr.rdbuf())
-	source = mr.openpath();
-      else {
-	source = mr.maildir() + "/" + hash_cache_path (mr.maildir(), rhi.hash);
-	if (faccessat (AT_FDCWD, source.c_str(), 0, 0))
-	  return false;
-	string hash;
-	try { hash = get_sha (AT_FDCWD, source.c_str()); }
-	catch (...) { return false; }
-	if (hash != rhi.hash)
-	  return false;
-      }
-      string target = mr.maildir() + i.first + "/" + maildir_name();
+  /* add missing links */
+  for (auto li : needlinks)
+    for (; li.second > 0; --li.second) {
+      string target = mr.maildir() + li.first + "/" + maildir_name();
       if (link (source.c_str(), target.c_str()))
 	throw runtime_error (string("link (\"") + source + "\", \""
 			     + target + "\"): " + strerror(errno));
     }
-  }
-  for (auto i : newlinks) {
-    auto j = lhi.dirs.find(i.first);
-    for (i64 d = i.second - (j == lhi.dirs.end() ? 0 : j->second);
-	 d < 0; d++) {
-      /* delete */
+  /* remove extra links */
+  if (!links_conflict && mr.ok())
+    for (auto p : mr.paths()) {
+      i64 &n = needlinks[p.first];
+      if (n < 0 && !unlink (p.second.c_str()))
+	++n;
     }
-  }
 
   bool tags_conflict
     = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
