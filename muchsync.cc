@@ -65,7 +65,6 @@ CREATE TABLE maildir_files (
   name TEXT NOT NULL COLLATE BINARY,
   mtime REAL,
   inode INTEGER,
-  size INTEGER,
   hash_id INTEGER NOT NULL,
   PRIMARY KEY (dir_id, name));
 CREATE INDEX maildir_dir_hash_index ON maildir_files (dir_id, hash_id);
@@ -77,9 +76,10 @@ CREATE TRIGGER dir_delete_trigger AFTER DELETE ON maildir_dirs
 CREATE TABLE maildir_hashes (
   hash_id INTEGER PRIMARY KEY,
   hash TEXT UNIQUE NOT NULL,
+  size INTEGER,
+  message_id TEXT,
   replica INTEGER,
-  version INTEGER,
-  message_id TEXT);
+  version INTEGER);
 CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
 CREATE TABLE maildir_links (
   hash_id INTEGER NOT NULL,

@@ -257,7 +257,7 @@ int spawn_infinite_input_buffer (int infd);
 int cmd_iofd (const string &cmd);
 
 /* maildir.cc */
-string get_sha (int dfd, const char *direntry);
+string get_sha (int dfd, const char *direntry, i64 *sizep = nullptr);
 /* Maildirs place messages in directories called "new" and "dir" */
 inline bool
 dir_contains_messages (const string &dir)

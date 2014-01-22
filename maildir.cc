@@ -48,7 +48,7 @@ hexdump (const string &s)
 }
 
 string
-get_sha (int dfd, const char *direntry)
+get_sha (int dfd, const char *direntry, i64 *sizep)
 {
   int fd = openat(dfd, direntry, O_RDONLY);
   if (fd < 0)
@@ -60,12 +60,17 @@ get_sha (int dfd, const char *direntry)
 
   char buf[16384];
   int n;
-  while ((n = read (fd, buf, sizeof (buf))) > 0)
+  i64 sz = 0;
+  while ((n = read (fd, buf, sizeof (buf))) > 0) {
     SHA1_Update (&ctx, buf, n);
+    sz += n;
+  }
   if (n < 0)
     throw runtime_error (string() + direntry + ": " + strerror (errno));
   unsigned char resbuf[SHA_DIGEST_LENGTH];
   SHA1_Final (resbuf, &ctx);
+  if (sizep)
+    *sizep = sz;
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
 
@@ -264,8 +269,8 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
       /* metadata changed suspiciously */
       if (hashid == scan.integer(4)) {
 	/* file unchanged; update metadata so we don't re-hash next time */
-	upd_file.reset().param(ts_to_double(sbp->st_mtim),i64(sbp->st_ino),
-			       i64(sbp->st_size),scan.value(5)).step();
+	upd_file.reset().param(ts_to_double(sbp->st_mtim), i64(sbp->st_ino),
+			       scan.value(5)).step();
 	scan.step();
 	f = f->fts_link;
 	continue;
@@ -275,7 +280,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
       del_file.reset().param(scan.value(5)).step();
     }
     add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),
-			   i64(sbp->st_ino), i64(sbp->st_size), hashid).step();
+			   i64(sbp->st_ino), hashid).step();
     scan.step();
     f = f->fts_link;
   }
@@ -289,7 +294,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
       cout << "    " << f->fts_name << "\n";
     i64 hashid = gethash (f->fts_name);
     add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),
-			   i64(sbp->st_ino), i64(sbp->st_size), hashid).step();
+			   i64(sbp->st_ino), hashid).step();
   }
 }
 
@@ -300,26 +305,29 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
     scandirs (sqldb, "SELECT dir_id, dir_path FROM %s ORDER BY dir_path;",
 	      opt_fullscan ? "maildir_dirs"
 	      : "maildir_dirs NATURAL JOIN modified_maildir_dirs"),
-    scanfiles (sqldb, "SELECT name, mtime, inode, size, hash_id, rowid"
-	       " FROM maildir_files WHERE dir_id = ? ORDER BY name;"),
+    scanfiles (sqldb, "SELECT name, mtime, inode, size, hash_id,"
+	       " maildir_files.rowid"
+	       " FROM maildir_files JOIN maildir_hashes USING (hash_id)"
+	       " WHERE dir_id = ? ORDER BY name;"),
     del_file (sqldb, "DELETE FROM maildir_files WHERE rowid = ?;"),
     add_file (sqldb, "INSERT INTO maildir_files"
-	      " (name, mtime, inode, size, hash_id, dir_id)"
-	      " VALUES (?, ?, ?, ?, ?, ?);"),
+	      " (name, mtime, inode, hash_id, dir_id)"
+	      " VALUES (?, ?, ?, ?, ?);"),
     upd_file (sqldb, "UPDATE maildir_files"
-	      " SET mtime = ?, inode = ?, size = ? WHERE rowid = ?;"),
+	      " SET mtime = ?, inode = ? WHERE rowid = ?;"),
     get_hash (sqldb, "SELECT hash_id, replica, version, message_id"
 	      " FROM maildir_hashes WHERE hash = ?;"),
     add_hash (sqldb, "INSERT INTO maildir_hashes "
-	      "(hash, replica, version) VALUES (?, %lld, %lld);",
+	      "(hash, size, replica, version) VALUES (?, ?, %lld, %lld);",
 	      ws.first, ws.second);
 
   int dfd;
   auto gethash = [sqldb,ws,&get_hash,&add_hash,&dfd] (const char *path) -> i64 {
-    string h = get_sha (dfd, path);
+    i64 sz;
+    string h = get_sha (dfd, path, &sz);
     if (get_hash.reset().param(h).step().row())
       return get_hash.integer(0);
-    add_hash.reset().bind_text(1, h).step();
+    add_hash.reset().param(h, sz).step();
     return sqlite3_last_insert_rowid (sqldb);
   };
 
@@ -330,7 +338,7 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
       throw runtime_error (dir + ": " + strerror (errno));
     cleanup _c (close, dfd);
     scanfiles.reset().bind_value(1, scandirs.value(0));
-    add_file.reset().bind_value(6, scandirs.value(0));
+    add_file.reset().bind_value(5, scandirs.value(0));
     scan_directory (sqldb, maildir, dir,
 		    scanfiles, del_file, add_file, upd_file, dfd, gethash);
   }
@@ -434,8 +442,4 @@ UPDATE maildir_hashes SET message_id =
   print_time ("updating version stamps");
   sync_maildir_ws (sqldb, ws);
   print_time ("done");
-
-  //scan_directory (sqldb, maildir, "");
-
-  // traverse_maildir (maildir, oldtime, lookup, insert);
 }

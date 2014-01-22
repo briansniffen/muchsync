@@ -22,6 +22,7 @@ static unordered_set<string> new_tags = notmuch_new_tags();
 
 struct hash_info {
   string hash;
+  i64 size = -1;
   string message_id;
   writestamp tag_stamp = {-1, -1};
   unordered_set<string> tags;
@@ -37,7 +38,6 @@ class message_reader {
   sqlstmt_t gethash_;
   sqlstmt_t gettags_;
   ifstream content_;
-  i64 size_;
   hash_info hi_;
   bool ok_ = false;
   string err_;
@@ -49,8 +49,8 @@ public:
   bool lookup(const string &hash);
   bool ok() const { return ok_; }
   const string &err() const { assert (!ok()); return err_; }
-  i64 size() const { assert (ok()); return size_; }
   const hash_info &info() const { assert (ok()); return hi_; }
+  i64 size() const { return info().size; }
   bool present() const { return !pathnames_.empty(); }
   const vector<pair<string,string>> &paths() const {
     return pathnames_;
@@ -101,7 +101,7 @@ string
 show_hash_info (const hash_info &hi)
 {
   ostringstream os;
-  os << hi.hash << ' ' << hi.message_id << " R"
+  os << hi.hash << ' ' << hi.size << ' ' << hi.message_id << " R"
      << hi.tag_stamp.first << '=' << hi.tag_stamp.second
      << " (";
   bool first = true;
@@ -172,6 +172,7 @@ read_hash_info (istream &in, hash_info &outhi)
 {
   hash_info hi;
   in >> hi.hash;
+  in >> hi.size;
   string t;
   in >> t;
   try { hi.message_id = percent_decode (t); }
@@ -209,7 +210,7 @@ message_reader::lookup (const string &hash)
   }
   hi_.message_id = gethash_.str(2);
   hi_.dir_stamp = { gethash_.integer(3), gethash_.integer(4) };
-  size_ = gethash_.integer(5);
+  hi_.size = gethash_.integer(5);
 
   gettags_.reset().param(gethash_.value(2)).step();
   if (gettags_.row())
@@ -235,11 +236,9 @@ message_reader::rdbuf()
     return content_.rdbuf();
   }
   for (auto p : pathnames_) {
-    content_.open (p.second, ios_base::in|ios_base::ate);
+    content_.open (p.second, ios_base::in);
     if (content_.is_open()) {
       openpath_ = p.second;
-      size_ = content_.tellg();
-      content_.seekg(0);
       return content_.rdbuf();
     }
   }
@@ -262,7 +261,7 @@ known_version INTEGER);
   sqlstmt_t changed (sqldb, R"(
 SELECT h.hash, h.replica, h.version,
        x.message_id, x.replica, x.version,
-       cattags, catdirs
+       cattags, catdirs, h.size
 FROM 
     (maildir_hashes h LEFT OUTER JOIN peer_vector pvh USING (replica))
       LEFT OUTER JOIN
@@ -283,6 +282,7 @@ FROM
 
   for (changed.step(); changed.row(); changed.step()) {
     cout << "210-" << changed.str(0) << ' '
+	 << changed.str(8) << ' '
 	 << permissive_percent_encode (changed.str(3))
 	 << " R" << changed.integer(4) << '=' << changed.integer(5)
 	 << " (" << changed.str(6)
