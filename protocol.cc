@@ -332,65 +332,62 @@ message_syncer::get_hash_id (const string &hash, i64 size, const string &msgid)
 }
 
 static bool
-maybe_mkdir (const string &s)
+sanity_check_path (const string &path)
 {
-  struct stat sb;
-  if (!stat (s.c_str(), &sb)) {
-    if (S_ISDIR (sb.st_mode))
-      return true;
-    errno = ENOTDIR;
+  if (path == "..")
     return false;
-  }
-  if (errno != ENOENT)
-    throw false;
-  return !mkdir (s.c_str(), 0777);
+  if (path.size() < 3)
+    return true;
+  return (path.substr(0, 3) != "../"
+	  && path.substr(path.size()-3) != "/.."
+	  && path.find("/../") == string::npos);
 }
 
-/*
-static vector<string::size_type>
-dirnames (const string &s)
+inline bool
+is_dir (const string &path)
 {
-  vector<string::size_type> ret;
-  ssize_t n = s.size() - 1;
-  for (;;) {
-    while (n >= 0 && s[n] == '/')
-      n--;
-    ret.push_back (n);
-    if (n < 0)
-      break;
-    while (n >= 0 && s[n] != '/')
-      n--;
-  }
-  return ret;
+  struct stat sb;
+  return !stat (path.c_str(), &sb) && (errno = ENOTDIR, S_ISDIR (sb.st_mode));
 }
-*/
 
 bool
 recursive_mkdir (string path)
 {
   string::size_type n = 0;
-  do {
+  for (;;) {
     n = path.find_first_not_of ('/', n);
+    if (n == string::npos)
+      return true;
     n = path.find_first_of ('/', n);
     if (n != string::npos)
       path[n] = '\0';
-    // mkdir whatever
-    if (n != string::npos)
-      path[n] = '/';
-  } while (n != string::npos);
+    cerr << path.c_str() << '\n';
+    if (!is_dir (path) && mkdir (path.c_str(), 0777))
+      return false;
+    if (n == string::npos)
+      return true;
+    path[n] = '/';
+  };
 }
 
 i64
-message_syncer::get_dir_id(const string &dir)
+message_syncer::get_dir_id (const string &dir)
 {
   auto i = dir_ids_.find(dir);
   if (i != dir_ids_.end())
     return i->second;
 
+  if (!sanity_check_path (dir))
+    throw runtime_error (dir + ": illegal directory name");
   string path = mr.maildir() + dir;
-
-  // XXX - this might be a nice place to reject paths with .. in them
-  // string path = mr.maildir() + "/" + dir;
+  if (!is_dir(path) && !recursive_mkdir(path))
+    throw runtime_error (path + ": cannot create directory");
+  
+  sqlexec (db_, "INSERT INTO maildir_dirs (dir_path) VALUES (%Q);",
+	   dir.c_str());
+  i64 dir_id = sqlite3_last_insert_rowid (db_);
+  dir_ids_.emplace (dir, dir_id);
+  return dir_id;
 }
 
 bool
