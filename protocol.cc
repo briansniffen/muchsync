@@ -329,6 +329,29 @@ message_syncer::get_hash_id (const string &hash, i64 size, const string &msgid)
   return sqlite3_last_insert_rowid(db_);
 }
 
+vector<string>
+split_path (const string &s)
+{
+  vector<string> ret;
+  string::size_type component_begin = 0, end = s.size();
+  while (component_begin < end) {
+    while (component_begin < end && s[component_begin] == '/')
+      component_begin++;
+    string::size_type component_end = component_begin;
+    while (component_end < end && s[component_end] != '/')
+      component_end++;
+    if (component_end > component_begin) {
+      string c = s.substr(component_begin, component_end - component_begin);
+      if (c == "..")
+	throw runtime_error ("split_path: illegal path \"" + s + "\"");
+      if (c != ".")
+	ret.push_back(c);
+    }
+    component_begin = component_end;
+  }
+  return ret;
+}
+
 i64
 message_syncer::get_dir_id(const string &dir)
 {
