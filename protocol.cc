@@ -11,6 +11,8 @@
 #include <vector>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <openssl/rand.h>
 #include <notmuch.h>
 #include "muchsync.h"
@@ -329,27 +331,53 @@ message_syncer::get_hash_id (const string &hash, i64 size, const string &msgid)
   return sqlite3_last_insert_rowid(db_);
 }
 
-vector<string>
-split_path (const string &s)
+static bool
+maybe_mkdir (const string &s)
 {
-  vector<string> ret;
-  string::size_type component_begin = 0, end = s.size();
-  while (component_begin < end) {
-    while (component_begin < end && s[component_begin] == '/')
-      component_begin++;
-    string::size_type component_end = component_begin;
-    while (component_end < end && s[component_end] != '/')
-      component_end++;
-    if (component_end > component_begin) {
-      string c = s.substr(component_begin, component_end - component_begin);
-      if (c == "..")
-	throw runtime_error ("split_path: illegal path \"" + s + "\"");
-      if (c != ".")
-	ret.push_back(c);
-    }
-    component_begin = component_end;
+  struct stat sb;
+  if (!stat (s.c_str(), &sb)) {
+    if (S_ISDIR (sb.st_mode))
+      return true;
+    errno = ENOTDIR;
+    return false;
+  }
+  if (errno != ENOENT)
+    throw false;
+  return !mkdir (s.c_str(), 0777);
+}
+
+/*
+static vector<string::size_type>
+dirnames (const string &s)
+{
+  vector<string::size_type> ret;
+  ssize_t n = s.size() - 1;
+  for (;;) {
+    while (n >= 0 && s[n] == '/')
+      n--;
+    ret.push_back (n);
+    if (n < 0)
+      break;
+    while (n >= 0 && s[n] != '/')
+      n--;
   }
   return ret;
+}
+*/
+
+bool
+recursive_mkdir (string path)
+{
+  string::size_type n = 0;
+  do {
+    n = path.find_first_not_of ('/', n);
+    n = path.find_first_of ('/', n);
+    if (n != string::npos)
+      path[n] = '\0';
+    // mkdir whatever
+    if (n != string::npos)
+      path[n] = '/';
+  } while (n != string::npos);
 }
 
 i64
@@ -358,6 +386,8 @@ message_syncer::get_dir_id(const string &dir)
   auto i = dir_ids_.find(dir);
   if (i != dir_ids_.end())
     return i->second;
+
+  string path = mr.maildir() + dir;
 
   // XXX - this might be a nice place to reject paths with .. in them
   // string path = mr.maildir() + "/" + dir;
