@@ -74,6 +74,8 @@ class message_syncer {
   sqlstmt_t lookup_hash_id_;
   sqlstmt_t create_hash_id_;
   sqlstmt_t update_hash_stamp_;
+  sqlstmt_t update_links_;
+  sqlstmt_t delete_links_;
 
   unordered_map<string,i64> dir_ids_;
 
@@ -288,6 +290,10 @@ message_syncer::message_syncer(sqlite3 *db, const string &m)
 		    " VALUES (?, ?, ?, ?, ?);"),
     update_hash_stamp_(db, "UPDATE maildir_hashes "
 		       "SET replica = ?, version = ? WHERE hash_id = ?;"),
+    update_links_(db, "INSERT OR REPLACE INTO maildir_links"
+		  " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
+    delete_links_(db, "DELETE FROM maildir_links"
+		  " WHERE hash_id = ? & dir_id = ?;"),
     mr(db, m)
 {
   notmuch_status_t nmerr
@@ -417,6 +423,23 @@ message_syncer::sync_message (const versvector &rvv,
     else
       return false;
   }
+
+  i64 hash_id = get_hash_id (rhi.hash, rhi.size, rhi.message_id);
+  sqlexec (db_, "SAVEPOINT sync_message;");
+  cleanup c (sqlexec, db_, "ROLLBACK to sync_message");
+
+  for (auto li : needlinks)
+    if (li.second != 0) {
+      i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
+      i64 dir_id = get_dir_id (li.first); // XXX don't always create
+      if (newcount > 0)
+	update_links_.reset().param(hash_id, dir_id, newcount).step();
+      else
+	delete_links_.reset().param(hash_id, dir_id);
+    }
+
+  const writestamp *wsp = links_conflict ? &mystamp_ : &rhi.dir_stamp;
+  update_hash_stamp_.reset().param(wsp->first, wsp->second, hash_id).step();
 
   /* add missing links */
   for (auto li : needlinks)

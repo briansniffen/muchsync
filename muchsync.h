@@ -10,6 +10,13 @@
 
 using std::string;
 
+template<typename C> inline typename C::mapped_type
+find_default (typename C::mapped_type def, const C &c, typename C::key_type k)
+{
+  auto i = c.find(k);
+  return i == c.end() ? def : i->second;
+}
+
 extern const char dbvers[];
 
 constexpr double
@@ -25,6 +32,7 @@ public:
   cleanup(std::function<void()> &&action) : action_(action) {}
   template<typename... Args> cleanup (Args... args)
     : action_(std::bind(args...)) {}
+  void disable() { action_ = [] () {}; }
   ~cleanup() { action_(); }
 };
 
