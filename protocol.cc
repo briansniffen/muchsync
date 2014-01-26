@@ -76,6 +76,9 @@ class message_syncer {
   sqlstmt_t update_hash_stamp_;
   sqlstmt_t update_links_;
   sqlstmt_t delete_links_;
+  sqlstmt_t get_docid_;
+  sqlstmt_t update_msgid_;
+  sqlstmt_t delete_msgid_;
 
   unordered_map<string,i64> dir_ids_;
 
@@ -295,6 +298,11 @@ message_syncer::message_syncer(sqlite3 *db, const string &m)
 		  " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
     delete_links_(db, "DELETE FROM maildir_links"
 		  " WHERE hash_id = ? & dir_id = ?;"),
+    get_docid_(db, "SELECT docid FROM message_ids WHERE message_id = ?;"),
+    update_msgid_(db, "INSERT OR REPLACE INTO"
+		  " message_ids (message_id, docid, replica, version)"
+		  " VALUES (?, ?, ?, ?);"),
+    delete_msgid_(db, "DELETE FROM message_ids WHERE message_id = ?;"),
     mr(db, m)
 {
   notmuch_status_t nmerr
@@ -399,6 +407,8 @@ message_syncer::get_dir_id (const string &dir, bool create)
   return dir_id;
 }
 
+extern "C" unsigned int _notmuch_message_get_doc_id (notmuch_message_t *);
+
 bool
 message_syncer::sync_message (const versvector &rvv,
 			      const hash_info &rhi,
@@ -410,6 +420,7 @@ message_syncer::sync_message (const versvector &rvv,
   bool links_conflict
     = (lhi.dir_stamp.second > lookup_version (rvv, lhi.dir_stamp.first)
        && rhi.dirs != lhi.dirs);
+  bool deleting = rhi.dirs.empty() && (!links_conflict || lhi.dirs.empty());
   unordered_map<string,i64> needlinks (rhi.dirs);
   bool needsource = false;
   for (auto i : lhi.dirs)
@@ -429,7 +440,7 @@ message_syncer::sync_message (const versvector &rvv,
 
   i64 hash_id = get_hash_id (rhi.hash, rhi.size, rhi.message_id);
   sqlexec (db_, "SAVEPOINT sync_message;");
-  cleanup c (sqlexec, db_, "ROLLBACK to sync_message;");
+  cleanup c (sqlexec, db_, "ROLLBACK TO sync_message;");
 
   /* Adjust link counts */
   for (auto li : needlinks)
@@ -467,7 +478,7 @@ message_syncer::sync_message (const versvector &rvv,
     for (auto p : mr.paths()) {
       i64 &n = needlinks[p.first];
       if (n < 0) {
-	if (rhi.dirs.empty()) {
+	if (deleting) {
 	  string trash = (mr.maildir() + muchsync_trashdir + "/" + rhi.hash);
 	  if (!rename (p.second.c_str(), trash.c_str()))
 	    ++n;
@@ -478,7 +489,23 @@ message_syncer::sync_message (const versvector &rvv,
       }
     }
 
-  // This totally sucks--no public way to get docid out of message
+  assert (!(deleting && (message || needsource)));
+  if (deleting) {
+    delete_msgid_.reset().param(rhi.message_id).step();
+    c.disable();
+    sqlexec (db_, "RELEASE sync_message;");
+    return true;
+  }
+
+  if (!message) {
+    notmuch_status_t err =
+      notmuch_database_find_message (notmuch_, rhi.message_id.c_str(),
+				     &message);
+    if (err)
+      throw runtime_error ("cannot find " + rhi.message_id + " in database: "
+			   + notmuch_status_to_string(err));
+  }
+  i64 docid = _notmuch_message_get_doc_id (message);
 
   bool tags_conflict
     = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
@@ -495,6 +522,12 @@ message_syncer::sync_message (const versvector &rvv,
 	newtags.erase(i);
   }
 
+  wsp = tags_conflict ? &mystamp_ : &rhi.tag_stamp;
+  update_hash_stamp_.reset()
+    .param(rhi.message_id, docid, wsp->first, wsp->second, hash_id).step();
+
+  c.disable();
+  sqlexec (db_, "RELEASE sync_message;");
   return true;
 }
 
