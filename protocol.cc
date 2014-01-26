@@ -499,6 +499,94 @@ message_syncer::sync_message (const versvector &rvv,
 }
 
 static void
+set_peer_vector (sqlite3 *sqldb, const versvector &vv)
+{
+  sqlexec (sqldb, R"(
+DROP TABLE IF EXISTS peer_vector;
+CREATE TEMP TABLE peer_vector (replica INTEGER PRIMARY KEY,
+  known_version INTEGER);
+INSERT OR REPLACE INTO peer_vector
+  SELECT DISTINCT replica, -1 FROM message_ids;
+INSERT OR REPLACE INTO peer_vector
+  SELECT DISTINCT replica, -1 FROM maildir_hashes;
+)");
+  sqlstmt_t pvadd (sqldb, "INSERT OR REPLACE INTO"
+		   " peer_vector (replica, known_version) VALUES (?, ?);");
+  for (writestamp ws : vv)
+    pvadd.reset().param(ws.first, ws.second).step();
+}
+
+static void
+cmd_fsyn (sqlite3 *sqldb, const versvector &vv)
+{
+  versvector myvv = get_sync_vector(sqldb);
+  set_peer_vector (sqldb, vv);
+
+  unordered_map<i64,string> dirs;
+  {
+    sqlstmt_t d (sqldb, "SELECT dir_id, dir_path FROM maildir_dirs;");
+    while (d.step().row())
+      dirs.emplace (d.integer(0), d.str(1));
+  }
+
+  sqlstmt_t changed (sqldb, R"(
+SELECT hash, h.hash_id, h.replica, h.version, dir_id, link_count
+FROM (peer_vector p JOIN maildir_hashes h
+      ON ((p.replica = h.replica) & (p.known_version < h.version)))
+LEFT OUTER JOIN maildir_links USING (hash_id);)");
+
+  changed.step();
+  while (changed.row()) {
+    cout << "210-H:" << changed.str(0)
+	 << " R" << changed.integer(2) << '=' << changed.integer(3)
+	 << " (";
+    if (changed.null(4))
+      changed.step();
+    else {
+      i64 hash_id = changed.integer(1);
+      cout << changed.integer(5) << '*'
+	   << permissive_percent_encode (dirs[changed.integer(4)]);
+      while (changed.step().row() && changed.integer(1) == hash_id)
+	cout << ' ' << changed.integer(5) << '*'
+	     << permissive_percent_encode (dirs[changed.integer(4)]);
+    }
+    cout << ")\n";
+  }
+
+  cout << "210 " << show_sync_vector(myvv) << '\n';
+}
+
+static void
+cmd_tsyn (sqlite3 *sqldb, const versvector &vv)
+{
+  versvector myvv = get_sync_vector(sqldb);
+  set_peer_vector (sqldb, vv);
+  sqlstmt_t changed (sqldb, R"(
+SELECT m.message_id, m.replica, m.version, m.docid, tags.tag
+FROM (peer_vector p JOIN message_ids m
+      ON ((p.replica = m.replica) & (p.known_version < m.version)))
+      LEFT OUTER JOIN tags USING (docid);)");
+
+  changed.step();
+  while (changed.row()) {
+    cout << "210-M:" << permissive_percent_encode(changed.str(0))
+	 << " R" << changed.integer(1) << '=' << changed.integer(2)
+	 << " (";
+    if (changed.null(4))
+      changed.step();
+    else {
+      i64 docid = changed.integer(3);
+      cout << changed.str(4);
+      while (changed.step().row() && changed.integer(3) == docid)
+	cout << ' ' << changed.str(3);
+    }
+    cout << ")\n";
+  }
+
+  cout << "210 " << show_sync_vector(myvv) << '\n';
+}
+
+static void
 cmd_sync (sqlite3 *sqldb, const versvector &vv)
 {
   sqlexec (sqldb, R"(
@@ -608,6 +696,34 @@ muchsync_server (sqlite3 *db, const string &maildir)
 	  cout << "500 could not parse vector\n";
 	else
 	  cmd_sync (db, vv);
+      }
+      continue;
+    }
+    else if (cmd == "fsyn") {
+      versvector vv;
+      string tail;
+      if (!getline(cin, tail))
+	cout << "500 could not parse vector\n";
+      else {
+	istringstream tailstream (tail);
+	if (!read_sync_vector(tailstream, vv))
+	  cout << "500 could not parse vector\n";
+	else
+	  cmd_fsyn (db, vv);
+      }
+      continue;
+    }
+    else if (cmd == "tsyn") {
+      versvector vv;
+      string tail;
+      if (!getline(cin, tail))
+	cout << "500 could not parse vector\n";
+      else {
+	istringstream tailstream (tail);
+	if (!read_sync_vector(tailstream, vv))
+	  cout << "500 could not parse vector\n";
+	else
+	  cmd_tsyn (db, vv);
       }
       continue;
     }

@@ -45,6 +45,7 @@ CREATE TABLE message_ids (
   docid INTEGER PRIMARY KEY,
   replica INTEGER,
   version INTEGER);
+CREATE INDEX message_ids_writestamp ON message_ids (replica, version);
 CREATE TABLE xapian_files (
   file_id INTEGER PRIMARY KEY AUTOINCREMENT,
   dir_docid INTEGER,
@@ -81,6 +82,7 @@ CREATE TABLE maildir_hashes (
   replica INTEGER,
   version INTEGER);
 CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
+CREATE INDEX maildir_hashes_writestamp ON maildir_hashes (replica, version);
 CREATE TABLE maildir_links (
   hash_id INTEGER NOT NULL,
   dir_id INTEGER NOT NULL,
@@ -109,11 +111,11 @@ print_time (string msg)
 {
   double now = time_stamp();
   if (opt_verbose > 0) {
-    auto oldFlags = cout.flags();
-    cout.setf (ios::fixed, ios::floatfield);
-    cout << msg << "... " << now - start_time_stamp
+    auto oldFlags = cerr.flags();
+    cerr.setf (ios::fixed, ios::floatfield);
+    cerr << msg << "... " << now - start_time_stamp
 	 << " (+" << now - last_time_stamp << ")\n";
-    cout.flags (oldFlags);
+    cerr.flags (oldFlags);
   }
   last_time_stamp = now;
 }
