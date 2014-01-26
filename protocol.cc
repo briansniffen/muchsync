@@ -26,6 +26,111 @@ struct hash_info {
   string hash;
   i64 size = -1;
   string message_id;
+  writestamp hash_stamp = {-1, -1};
+  unordered_map<string,i64> dirs;
+};
+
+struct tag_info {
+  string message_id;
+  writestamp tag_stamp = {-1, -1};
+  unordered_set<string> tags;
+};
+
+template<typename C, typename F> inline void
+intercalate (const C &c, F &&each, function<void()> between)
+{
+  auto i = c.begin(), end = c.end();
+  if (i != end) {
+    each (i);
+    while (++i != end) {
+      between();
+      each(i);
+    }
+  }
+}
+
+ostream &
+operator<< (ostream &os, const hash_info &hi)
+{
+  os << "H " << hi.hash << ' ' << hi.size << ' '
+     << permissive_percent_encode(hi.message_id)
+     << " R" << hi.hash_stamp.first << '=' << hi.hash_stamp.second
+     << " (";
+  intercalate (hi.dirs,
+	       [&](decltype(hi.dirs.begin()) i) {
+		 os << i->second << '*' << permissive_percent_encode(i->first);
+	       },
+	       [&]() {os << ' ';});
+  os << ')';
+  return os;
+}
+
+istream &
+operator>> (istream &is, hash_info &hi)
+{
+  {
+    string msgid;
+    input_match(is, 'H') >> hi.hash >> hi.size >> msgid;
+    hi.message_id = percent_decode (msgid);
+  }
+  read_writestamp(is, hi.hash_stamp);
+  input_match(is, '(');
+  hi.dirs.clear();
+  char c;
+  while ((is >> skipws >> c) && c != ')') {
+    is.putback (c);
+    i64 nlinks;
+    is >> nlinks;
+    input_match(is, '*');
+    string dir;
+    is >> dir;
+    if (is)
+      hi.dirs.emplace (percent_decode (dir), nlinks);
+  }
+  return is;
+}
+
+ostream &
+operator<< (ostream &os, const tag_info &ti)
+{
+  os << "T " << permissive_percent_encode(ti.message_id)
+     << " R" << ti.tag_stamp.first << '=' << ti.tag_stamp.second
+     << " (";
+  intercalate (ti.tags,
+	       [&](decltype(ti.tags.begin()) i) {
+		 os << *i;
+	       },
+	       [&]() {os << ' ';});
+  os << ')';
+  return os;
+}
+
+istream &
+operator>> (istream &is, tag_info &ti)
+{
+  {
+    string msgid;
+    input_match(is, 'T') >> msgid;
+    ti.message_id = percent_decode (msgid);
+  }
+  read_writestamp(is, ti.tag_stamp);
+  input_match(is, '(');
+  ti.tags.clear();
+  char c;
+  while ((is >> skipws >> c) && c != ')') {
+    is.putback (c);
+    string tag;
+    if (is >> tag)
+      ti.tags.insert(tag);
+  }
+  return is;
+}
+
+
+struct hashmsg_info {
+  string hash;
+  i64 size = -1;
+  string message_id;
   writestamp tag_stamp = {-1, -1};
   unordered_set<string> tags;
   writestamp dir_stamp = {-1, -1};
@@ -40,7 +145,7 @@ class message_reader {
   sqlstmt_t gethash_;
   sqlstmt_t gettags_;
   ifstream content_;
-  hash_info hi_;
+  hashmsg_info hi_;
   bool ok_ = false;
   string err_;
   vector<pair<string,string>> pathnames_;
@@ -51,7 +156,7 @@ public:
   bool lookup(const string &hash);
   bool ok() const { return ok_; }
   const string &err() const { assert (!ok()); return err_; }
-  const hash_info &info() const { assert (ok()); return hi_; }
+  const hashmsg_info &info() const { assert (ok()); return hi_; }
   bool present() const { assert (ok()); return !pathnames_.empty(); }
   const vector<pair<string,string>> &paths() const {
     assert (ok());
@@ -68,7 +173,7 @@ public:
 
 class message_syncer {
   sqlite3 *db_;
-  notmuch_database_t *notmuch_;
+  notmuch_database_t *notmuch_ = nullptr;
 
   writestamp mystamp_;
   sqlstmt_t lookup_hash_id_;
@@ -91,9 +196,18 @@ public:
 
   message_syncer(sqlite3 *db, const string &m);
   ~message_syncer();
+  notmuch_database_t *notmuch();
+  void notmuch_close();
+
+  bool sync_links(const versvector &remote_sync_vector,
+		  const string &hash,
+		  writestamp hash_stamp,
+		  const unordered_map<string,i64> &dirs,
+		  string *sourcep = nullptr);
+
   // Returns false if it needs a path to a copy of message in sourcep
   bool sync_message(const versvector &remote_sync_vector,
-		    const hash_info &remote_hash_info,
+		    const hashmsg_info &remote_hashmsg_info,
 		    string *sourcep = nullptr);
 };
 
@@ -131,7 +245,7 @@ sqlite_register_percent_encode (sqlite3 *db)
 }
 
 string
-show_hash_info (const hash_info &hi)
+show_hashmsg_info (const hashmsg_info &hi)
 {
   ostringstream os;
   os << hi.hash << ' ' << hi.size << ' ' << hi.message_id << " R"
@@ -201,9 +315,9 @@ read_dirs (istream &in, unordered_map<string,i64> &out)
 }
 
 istream &
-read_hash_info (istream &in, hash_info &outhi)
+read_hashmsg_info (istream &in, hashmsg_info &outhi)
 {
-  hash_info hi;
+  hashmsg_info hi;
   in >> hi.hash;
   in >> hi.size;
   string t;
@@ -232,7 +346,7 @@ WHERE message_id = ?;)";
 bool
 message_reader::lookup (const string &hash)
 {
-  hi_ = hash_info();
+  hi_ = hashmsg_info();
   content_.close();
   pathnames_.clear();
   hi_.hash = hash;
@@ -305,12 +419,6 @@ message_syncer::message_syncer(sqlite3 *db, const string &m)
     delete_msgid_(db, "DELETE FROM message_ids WHERE message_id = ?;"),
     mr(db, m)
 {
-  notmuch_status_t nmerr
-    = notmuch_database_open (m.c_str(), NOTMUCH_DATABASE_MODE_READ_WRITE,
-			     &notmuch_);
-  if (nmerr)
-    throw runtime_error (m + ": " + notmuch_status_to_string (nmerr));
-
   sqlstmt_t s (db, "SELECT dir_path, dir_id FROM maildir_dirs;");
   for (s.step(); s.row(); s.step())
     dir_ids_.emplace (s.str(0), s.integer(1));
@@ -318,7 +426,31 @@ message_syncer::message_syncer(sqlite3 *db, const string &m)
 
 message_syncer::~message_syncer()
 {
-  notmuch_database_destroy (notmuch_);
+  notmuch_close();
+}
+
+notmuch_database_t *
+message_syncer::notmuch()
+{
+  if (notmuch_)
+    return notmuch_;
+  notmuch_status_t nmerr
+    = notmuch_database_open (mr.maildir().c_str(),
+			     NOTMUCH_DATABASE_MODE_READ_WRITE,
+			     &notmuch_);
+  if (nmerr)
+    throw runtime_error (mr.maildir() + ": "
+			 + notmuch_status_to_string (nmerr));
+  return notmuch_;
+}
+
+void
+message_syncer::notmuch_close()
+{
+  if (notmuch_) {
+    notmuch_database_destroy (notmuch_);
+    notmuch_ = nullptr;
+  }
 }
 
 writestamp
@@ -407,15 +539,17 @@ message_syncer::get_dir_id (const string &dir, bool create)
   return dir_id;
 }
 
-extern "C" unsigned int _notmuch_message_get_doc_id (notmuch_message_t *);
-
 bool
-message_syncer::sync_message (const versvector &rvv,
-			      const hash_info &rhi,
-			      string *sourcep)
+message_syncer::sync_links (const versvector &rvv,
+			    const string &hash,
+			    writestamp rws,
+			    const unordered_map<string,i64> &dirs,
+			    string *sourcep)
 {
-  static const hash_info empty_hash_info;
-  const hash_info &lhi = mr.lookup(rhi.hash) ? mr.info() : empty_hash_info;
+  return false;
+#if 0
+  static const hashmsg_info empty_hashmsg_info;
+  const hashmsg_info &lhi = mr.lookup(rhi.hash) ? mr.info() : empty_hashmsg_info;
 
   bool links_conflict
     = (lhi.dir_stamp.second > lookup_version (rvv, lhi.dir_stamp.first)
@@ -529,6 +663,135 @@ message_syncer::sync_message (const versvector &rvv,
   c.disable();
   sqlexec (db_, "RELEASE sync_message;");
   return true;
+#endif
+}
+
+
+
+//extern "C" unsigned int _notmuch_message_get_doc_id (notmuch_message_t *);
+
+bool
+message_syncer::sync_message (const versvector &rvv,
+			      const hashmsg_info &rhi,
+			      string *sourcep)
+{
+  static const hashmsg_info empty_hashmsg_info;
+  const hashmsg_info &lhi = mr.lookup(rhi.hash) ? mr.info() : empty_hashmsg_info;
+
+  bool links_conflict
+    = (lhi.dir_stamp.second > lookup_version (rvv, lhi.dir_stamp.first)
+       && rhi.dirs != lhi.dirs);
+  bool deleting = rhi.dirs.empty() && (!links_conflict || lhi.dirs.empty());
+  unordered_map<string,i64> needlinks (rhi.dirs);
+  bool needsource = false;
+  for (auto i : lhi.dirs)
+    if ((needlinks[i.first] -= i.second) > 0)
+      needsource = true;
+
+  /* find copy of content */
+  string source;
+  if (needsource) {
+    if (sourcep)
+      source = *sourcep;
+    else if (mr.ok() && mr.rdbuf())
+      source = mr.openpath();
+    else
+      return false;
+  }
+
+  i64 hash_id = get_hash_id (rhi.hash, rhi.size, rhi.message_id);
+  sqlexec (db_, "SAVEPOINT sync_message;");
+  cleanup c (sqlexec, db_, "ROLLBACK TO sync_message;");
+
+  /* Adjust link counts */
+  for (auto li : needlinks)
+    if (li.second != 0) {
+      i64 dir_id = get_dir_id (li.first, li.second > 0);
+      if (dir_id == bad_dir_id)
+	continue;
+      i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
+      if (newcount > 0)
+	update_links_.reset().param(hash_id, dir_id, newcount).step();
+      else
+	delete_links_.reset().param(hash_id, dir_id);
+    }
+
+  /* Set writestamp for new link counts */
+  const writestamp *wsp = links_conflict ? &mystamp_ : &rhi.dir_stamp;
+  update_hash_stamp_.reset().param(wsp->first, wsp->second, hash_id).step();
+
+  notmuch_message_t *message = nullptr;
+  cleanup _msg (notmuch_message_destroy, message);
+
+  /* add missing links */
+  for (auto li : needlinks)
+    for (; li.second > 0; --li.second) {
+      string newname = li.first + "/" + maildir_name();
+      string target = mr.maildir() + "/" + newname;
+      if (link (source.c_str(), target.c_str()))
+	throw runtime_error (string("link (\"") + source + "\", \""
+			     + target + "\"): " + strerror(errno));
+      notmuch_database_add_message (notmuch_, newname.c_str(),
+				    message ? nullptr : &message);
+    }
+  /* remove extra links */
+  if (!links_conflict && mr.ok())
+    for (auto p : mr.paths()) {
+      i64 &n = needlinks[p.first];
+      if (n < 0) {
+	if (deleting) {
+	  string trash = (mr.maildir() + muchsync_trashdir + "/" + rhi.hash);
+	  if (!rename (p.second.c_str(), trash.c_str()))
+	    ++n;
+	}
+	else if (!unlink (p.second.c_str()))
+	  ++n;
+	notmuch_database_remove_message (notmuch_, p.second.c_str());
+      }
+    }
+
+  assert (!(deleting && (message || needsource)));
+  if (deleting) {
+    delete_msgid_.reset().param(rhi.message_id).step();
+    c.disable();
+    sqlexec (db_, "RELEASE sync_message;");
+    return true;
+  }
+
+  if (!message) {
+    notmuch_status_t err =
+      notmuch_database_find_message (notmuch_, rhi.message_id.c_str(),
+				     &message);
+    if (err)
+      throw runtime_error ("cannot find " + rhi.message_id + " in database: "
+			   + notmuch_status_to_string(err));
+  }
+#if 0
+  i64 docid = _notmuch_message_get_doc_id (message);
+
+  bool tags_conflict
+    = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
+       && rhi.tags != lhi.tags);
+  unordered_set<string> newtags (rhi.tags);
+  if (tags_conflict) {
+    // Logically OR most tags
+    for (auto i : lhi.tags)
+      newtags.insert(i);
+    // But logically AND new_tags
+    for (auto i : new_tags)
+      if (rhi.tags.find(i) == rhi.tags.end()
+	  || lhi.tags.find(i) == lhi.tags.end())
+	newtags.erase(i);
+  }
+
+  wsp = tags_conflict ? &mystamp_ : &rhi.tag_stamp;
+  update_hash_stamp_.reset()
+    .param(rhi.message_id, docid, wsp->first, wsp->second, hash_id).step();
+
+  c.disable();
+  sqlexec (db_, "RELEASE sync_message;");
+#endif
+  return true;
 }
 
 static void
@@ -550,7 +813,7 @@ INSERT OR REPLACE INTO peer_vector
 }
 
 static void
-cmd_fsyn (sqlite3 *sqldb, const versvector &vv)
+cmd_hsyn (sqlite3 *sqldb, const versvector &vv)
 {
   versvector myvv = get_sync_vector(sqldb);
   set_peer_vector (sqldb, vv);
@@ -563,28 +826,30 @@ cmd_fsyn (sqlite3 *sqldb, const versvector &vv)
   }
 
   sqlstmt_t changed (sqldb, R"(
-SELECT hash, h.hash_id, message_id, h.replica, h.version, dir_id, link_count
+SELECT h.hash_id, hash, size, message_id, h.replica, h.version,
+       dir_id, link_count
 FROM (peer_vector p JOIN maildir_hashes h
       ON ((p.replica = h.replica) & (p.known_version < h.version)))
 LEFT OUTER JOIN maildir_links USING (hash_id);)");
-
+  
+  hash_info hi;
   changed.step();
   while (changed.row()) {
-    cout << "210-H " << changed.str(0)
-	 << " " << permissive_percent_encode(changed.str(2))
-	 << " R" << changed.integer(3) << '=' << changed.integer(4)
-	 << " (";
-    if (changed.null(5))
+    i64 hash_id = changed.integer(0);
+    hi.hash = changed.str(1);
+    hi.size = changed.integer(2);
+    hi.message_id = changed.str(3);
+    hi.hash_stamp.first = changed.integer(4);
+    hi.hash_stamp.second = changed.integer(5);
+    hi.dirs.clear();
+    if (changed.null(6))
       changed.step();
     else {
-      i64 hash_id = changed.integer(1);
-      cout << changed.integer(6) << '*'
-	   << permissive_percent_encode (dirs[changed.integer(5)]);
-      while (changed.step().row() && changed.integer(1) == hash_id)
-	cout << ' ' << changed.integer(6) << '*'
-	     << permissive_percent_encode (dirs[changed.integer(5)]);
+      hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
+      while (changed.step().row() && changed.integer(0) == hash_id)
+	hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
     }
-    cout << ")\n";
+    cout << "210-" << hi << '\n';
   }
 
   cout << "210 " << show_sync_vector(myvv) << '\n';
@@ -596,25 +861,27 @@ cmd_tsyn (sqlite3 *sqldb, const versvector &vv)
   versvector myvv = get_sync_vector(sqldb);
   set_peer_vector (sqldb, vv);
   sqlstmt_t changed (sqldb, R"(
-SELECT m.message_id, m.replica, m.version, m.docid, tags.tag
+SELECT m.docid, m.message_id, m.replica, m.version, tags.tag
 FROM (peer_vector p JOIN message_ids m
       ON ((p.replica = m.replica) & (p.known_version < m.version)))
       LEFT OUTER JOIN tags USING (docid);)");
 
+  tag_info ti;
   changed.step();
   while (changed.row()) {
-    cout << "210-M " << permissive_percent_encode(changed.str(0))
-	 << " R" << changed.integer(1) << '=' << changed.integer(2)
-	 << " (";
+    i64 docid = changed.integer(0);
+    ti.message_id = changed.str(1);
+    ti.tag_stamp.first = changed.integer(2);
+    ti.tag_stamp.second = changed.integer(3);
+    ti.tags.clear();
     if (changed.null(4))
       changed.step();
     else {
-      i64 docid = changed.integer(3);
-      cout << changed.str(4);
-      while (changed.step().row() && changed.integer(3) == docid)
-	cout << ' ' << changed.str(3);
+      ti.tags.insert (changed.str(4));
+      while (changed.step().row() && changed.integer(0) == docid)
+	ti.tags.insert (changed.str(4));
     }
-    cout << ")\n";
+    cout << "210-" << ti << '\n';
   }
 
   cout << "210 " << show_sync_vector(myvv) << '\n';
@@ -702,7 +969,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
       cin >> hash;
       streambuf *sb;
       if (mr.lookup(hash) && (sb = mr.rdbuf()))
-	cout << "220-" << show_hash_info (mr.info()) << '\n'
+	cout << "220-" << show_hashmsg_info (mr.info()) << '\n'
 	     << sb
 	     << "220 " << mr.info().hash << '\n';
       else if (mr.ok())
@@ -715,7 +982,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
       cin >> hash;
       if (mr.lookup(hash))
 	cout << "210-" << mr.info().size << " bytes\n"
-	     << "210 " << show_hash_info (mr.info()) << '\n';
+	     << "210 " << show_hashmsg_info (mr.info()) << '\n';
       else
 	cout << mr.err() << '\n';
     }
@@ -733,7 +1000,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
       }
       continue;
     }
-    else if (cmd == "fsyn") {
+    else if (cmd == "hsyn") {
       versvector vv;
       string tail;
       if (!getline(cin, tail))
@@ -743,7 +1010,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
 	if (!read_sync_vector(tailstream, vv))
 	  cout << "500 could not parse vector\n";
 	else
-	  cmd_fsyn (db, vv);
+	  cmd_hsyn (db, vv);
       }
       continue;
     }
@@ -860,14 +1127,14 @@ muchsync_client (sqlite3 *db, const string &maildir,
   out << "sync " << show_sync_vector(localvv) << '\n';
   while (get_response (in, line) && line.at(3) == '-') {
     is.str(line.substr(4));
-    hash_info hi;
-    if (!read_hash_info(is, hi))
-      throw runtime_error ("could not parse hash_info: " + line.substr(4));
+    hashmsg_info hi;
+    if (!read_hashmsg_info(is, hi))
+      throw runtime_error ("could not parse hashmsg_info: " + line.substr(4));
     if (!msgsync.sync_message (remotevv, hi)) {
       out << "send " << hi.hash << '\n';
       pending++;
     }
-    //cerr << show_hash_info (hi) << '\n';
+    //cerr << show_hashmsg_info (hi) << '\n';
   }
 
   for (; pending > 0; pending--) {
