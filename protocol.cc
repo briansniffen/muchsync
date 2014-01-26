@@ -81,7 +81,8 @@ class message_syncer {
 
   static writestamp get_mystamp(sqlite3 *db);
   i64 get_hash_id(const string &hash, i64 size, const string &msgid);
-  i64 get_dir_id(const string &dir);
+  static constexpr i64 bad_dir_id = -1;
+  i64 get_dir_id(const string &dir, bool create);
 public:
   message_reader mr;
 
@@ -377,7 +378,7 @@ recursive_mkdir (string path)
 }
 
 i64
-message_syncer::get_dir_id (const string &dir)
+message_syncer::get_dir_id (const string &dir, bool create)
 {
   auto i = dir_ids_.find(dir);
   if (i != dir_ids_.end())
@@ -385,6 +386,8 @@ message_syncer::get_dir_id (const string &dir)
 
   if (!sanity_check_path (dir))
     throw runtime_error (dir + ": illegal directory name");
+  if (!create)
+    return bad_dir_id;
   string path = mr.maildir() + dir;
   if (!is_dir(path) && !recursive_mkdir(path))
     throw runtime_error (path + ": cannot create directory");
@@ -426,28 +429,38 @@ message_syncer::sync_message (const versvector &rvv,
 
   i64 hash_id = get_hash_id (rhi.hash, rhi.size, rhi.message_id);
   sqlexec (db_, "SAVEPOINT sync_message;");
-  cleanup c (sqlexec, db_, "ROLLBACK to sync_message");
+  cleanup c (sqlexec, db_, "ROLLBACK to sync_message;");
 
+  /* Adjust link counts */
   for (auto li : needlinks)
     if (li.second != 0) {
+      i64 dir_id = get_dir_id (li.first, li.second > 0);
+      if (dir_id == bad_dir_id)
+	continue;
       i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
-      i64 dir_id = get_dir_id (li.first); // XXX don't always create
       if (newcount > 0)
 	update_links_.reset().param(hash_id, dir_id, newcount).step();
       else
 	delete_links_.reset().param(hash_id, dir_id);
     }
 
+  /* Set writestamp for new link counts */
   const writestamp *wsp = links_conflict ? &mystamp_ : &rhi.dir_stamp;
   update_hash_stamp_.reset().param(wsp->first, wsp->second, hash_id).step();
+
+  notmuch_message_t *message = nullptr;
+  cleanup _msg (notmuch_message_destroy, message);
 
   /* add missing links */
   for (auto li : needlinks)
     for (; li.second > 0; --li.second) {
-      string target = mr.maildir() + li.first + "/" + maildir_name();
+      string newname = li.first + "/" + maildir_name();
+      string target = mr.maildir() + "/" + newname;
       if (link (source.c_str(), target.c_str()))
 	throw runtime_error (string("link (\"") + source + "\", \""
 			     + target + "\"): " + strerror(errno));
+      notmuch_database_add_message (notmuch_, newname.c_str(),
+				    message ? nullptr : &message);
     }
   /* remove extra links */
   if (!links_conflict && mr.ok())
@@ -461,8 +474,11 @@ message_syncer::sync_message (const versvector &rvv,
 	}
 	else if (!unlink (p.second.c_str()))
 	  ++n;
+	notmuch_database_remove_message (notmuch_, p.second.c_str());
       }
     }
+
+  // This totally sucks--no public way to get docid out of message
 
   bool tags_conflict
     = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
