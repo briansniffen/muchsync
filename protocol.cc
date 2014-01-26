@@ -530,25 +530,26 @@ cmd_fsyn (sqlite3 *sqldb, const versvector &vv)
   }
 
   sqlstmt_t changed (sqldb, R"(
-SELECT hash, h.hash_id, h.replica, h.version, dir_id, link_count
+SELECT hash, h.hash_id, message_id, h.replica, h.version, dir_id, link_count
 FROM (peer_vector p JOIN maildir_hashes h
       ON ((p.replica = h.replica) & (p.known_version < h.version)))
 LEFT OUTER JOIN maildir_links USING (hash_id);)");
 
   changed.step();
   while (changed.row()) {
-    cout << "210-H:" << changed.str(0)
-	 << " R" << changed.integer(2) << '=' << changed.integer(3)
+    cout << "210-H " << changed.str(0)
+	 << " " << permissive_percent_encode(changed.str(2))
+	 << " R" << changed.integer(3) << '=' << changed.integer(4)
 	 << " (";
-    if (changed.null(4))
+    if (changed.null(5))
       changed.step();
     else {
       i64 hash_id = changed.integer(1);
-      cout << changed.integer(5) << '*'
-	   << permissive_percent_encode (dirs[changed.integer(4)]);
+      cout << changed.integer(6) << '*'
+	   << permissive_percent_encode (dirs[changed.integer(5)]);
       while (changed.step().row() && changed.integer(1) == hash_id)
-	cout << ' ' << changed.integer(5) << '*'
-	     << permissive_percent_encode (dirs[changed.integer(4)]);
+	cout << ' ' << changed.integer(6) << '*'
+	     << permissive_percent_encode (dirs[changed.integer(5)]);
     }
     cout << ")\n";
   }
@@ -569,7 +570,7 @@ FROM (peer_vector p JOIN message_ids m
 
   changed.step();
   while (changed.row()) {
-    cout << "210-M:" << permissive_percent_encode(changed.str(0))
+    cout << "210-M " << permissive_percent_encode(changed.str(0))
 	 << " R" << changed.integer(1) << '=' << changed.integer(2)
 	 << " (";
     if (changed.null(4))
