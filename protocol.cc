@@ -77,6 +77,20 @@ public:
   const tag_info &info() const { assert (ok()); return ti_; }
 };
 
+string
+permissive_percent_encode (const string &raw)
+{
+  ostringstream outbuf;
+  outbuf.fill('0');
+  outbuf.setf(ios::hex, ios::basefield);
+  for (char c : raw)
+    if (c <= ' ' || c >= '\177' || c == '%' || c == '(' || c == ')')
+      outbuf << '%' << setw(2) << int (uint8_t(c));
+    else
+      outbuf << c;
+  return outbuf.str();
+}
+
 template<typename C, typename F> inline void
 intercalate (const C &c, F &&each, function<void()> between)
 {
@@ -93,7 +107,7 @@ intercalate (const C &c, F &&each, function<void()> between)
 ostream &
 operator<< (ostream &os, const hash_info &hi)
 {
-  os << "H " << hi.hash << ' ' << hi.size << ' '
+  os << "L " << hi.hash << ' ' << hi.size << ' '
      << permissive_percent_encode(hi.message_id)
      << " R" << hi.hash_stamp.first << '=' << hi.hash_stamp.second
      << " (";
@@ -111,7 +125,7 @@ operator>> (istream &is, hash_info &hi)
 {
   {
     string msgid;
-    input_match(is, 'H') >> hi.hash >> hi.size >> msgid;
+    input_match(is, 'L') >> hi.hash >> hi.size >> msgid;
     hi.message_id = percent_decode (msgid);
   }
   read_writestamp(is, hi.hash_stamp);
@@ -254,6 +268,195 @@ tag_lookup::lookup (const string &msgid)
 }
 
 
+static void
+set_peer_vector (sqlite3 *sqldb, const versvector &vv)
+{
+  sqlexec (sqldb, R"(
+DROP TABLE IF EXISTS peer_vector;
+CREATE TEMP TABLE peer_vector (replica INTEGER PRIMARY KEY,
+  known_version INTEGER);
+INSERT OR REPLACE INTO peer_vector
+  SELECT DISTINCT replica, -1 FROM message_ids;
+INSERT OR REPLACE INTO peer_vector
+  SELECT DISTINCT replica, -1 FROM maildir_hashes;
+)");
+  sqlstmt_t pvadd (sqldb, "INSERT OR REPLACE INTO"
+		   " peer_vector (replica, known_version) VALUES (?, ?);");
+  for (writestamp ws : vv)
+    pvadd.reset().param(ws.first, ws.second).step();
+}
+
+static void
+cmd_lsync (sqlite3 *sqldb, const versvector &vv)
+{
+  versvector myvv = get_sync_vector(sqldb);
+  set_peer_vector (sqldb, vv);
+
+  unordered_map<i64,string> dirs;
+  {
+    sqlstmt_t d (sqldb, "SELECT dir_id, dir_path FROM maildir_dirs;");
+    while (d.step().row())
+      dirs.emplace (d.integer(0), d.str(1));
+  }
+
+  sqlstmt_t changed (sqldb, R"(
+SELECT h.hash_id, hash, size, message_id, h.replica, h.version,
+       dir_id, link_count
+FROM (peer_vector p JOIN maildir_hashes h
+      ON ((p.replica = h.replica) & (p.known_version < h.version)))
+LEFT OUTER JOIN maildir_links USING (hash_id);)");
+  
+  hash_info hi;
+  changed.step();
+  while (changed.row()) {
+    i64 hash_id = changed.integer(0);
+    hi.hash = changed.str(1);
+    hi.size = changed.integer(2);
+    hi.message_id = changed.str(3);
+    hi.hash_stamp.first = changed.integer(4);
+    hi.hash_stamp.second = changed.integer(5);
+    hi.dirs.clear();
+    if (changed.null(6))
+      changed.step();
+    else {
+      hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
+      while (changed.step().row() && changed.integer(0) == hash_id)
+	hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
+    }
+    cout << "210-" << hi << '\n';
+  }
+
+  cout << "210 " << show_sync_vector(myvv) << '\n';
+}
+
+static void
+cmd_tsync (sqlite3 *sqldb, const versvector &vv)
+{
+  versvector myvv = get_sync_vector(sqldb);
+  set_peer_vector (sqldb, vv);
+  sqlstmt_t changed (sqldb, R"(
+SELECT m.docid, m.message_id, m.replica, m.version, tags.tag
+FROM (peer_vector p JOIN message_ids m
+      ON ((p.replica = m.replica) & (p.known_version < m.version)))
+      LEFT OUTER JOIN tags USING (docid);)");
+
+  tag_info ti;
+  changed.step();
+  while (changed.row()) {
+    i64 docid = changed.integer(0);
+    ti.message_id = changed.str(1);
+    ti.tag_stamp.first = changed.integer(2);
+    ti.tag_stamp.second = changed.integer(3);
+    ti.tags.clear();
+    if (changed.null(4))
+      changed.step();
+    else {
+      ti.tags.insert (changed.str(4));
+      while (changed.step().row() && changed.integer(0) == docid)
+	ti.tags.insert (changed.str(4));
+    }
+    cout << "210-" << ti << '\n';
+  }
+
+  cout << "210 " << show_sync_vector(myvv) << '\n';
+}
+
+void
+muchsync_server (sqlite3 *db, const string &maildir)
+{
+  {
+    int ifd = spawn_infinite_input_buffer (0);
+    switch (ifd) {
+    case -1:
+      exit (1);
+    case 0:
+      break;
+    default:
+      dup2 (ifd, 0);
+      close (ifd);
+    }
+  }
+
+  hash_lookup hashdb(maildir, db);
+  tag_lookup tagdb(db);
+
+  cout << "200 " << dbvers << '\n';
+  string cmdline;
+  istringstream cmdstream;
+  while (getline(cin, cmdline).good()) {
+    cmdstream.clear();
+    cmdstream.str(cmdline);
+    string cmd;
+    cmdstream >> cmd;
+    if (cmd.empty()) {
+      cout << "500 invalid empty line\n";
+    }
+    else if (cmd == "quit") {
+      cout << "200 goodbye\n";
+      return;
+    }
+    else if (cmd == "vect") {
+      cout << "200 " << show_sync_vector (get_sync_vector (db)) << '\n';
+    }
+    else if (cmd == "send") {
+      string hash;
+      cmdstream >> hash;
+      streambuf *sb;
+      if (hashdb.lookup(hash) && (sb = hashdb.content()))
+	cout << "220-" << hashdb.info() << '\n'
+	     << sb
+	     << "220 " << hashdb.info().hash << '\n';
+      else if (hashdb.ok())
+	cout << "420 cannot open file\n";
+      else
+	cout << "520 unknown hash\n";
+    }
+    else if (cmd.substr(1) == "info") {
+      string key;
+      cmdstream >> key;
+      switch (cmd[0]) {
+      case 'l':			// linfo command
+	if (hashdb.lookup(key))
+	  cout << "210 " << hashdb.info() << '\n';
+	else
+	  cout << "510 unknown hash\n";
+	break;
+      case 't':			// tinfo command
+	if (tagdb.lookup(key))
+	  cout << "210 " << tagdb.info() << '\n';
+	else
+	  cout << "510 unkown message id\n";
+	break;
+      default:
+	cout << "500 unknown verb " << cmd << '\n';
+	break;
+      }
+    }
+    else if (cmd.substr(1) == "sync") {
+      versvector vv;
+      if (!read_sync_vector(cmdstream, vv))
+	cout << "500 could not parse vector\n";
+      else {
+	switch (cmd[0]) {
+	case 'l':			// lsync command
+	  cmd_lsync (db, vv);
+	  break;
+	case 't':			// tsync command
+	  cmd_tsync (db, vv);
+	  break;
+	default:
+	  cout << "500 unknown verb " << cmd << '\n';
+	  break;
+	}
+      }
+    }
+    else
+      cout << "500 unknown verb " << cmd << '\n';
+  }
+}
+
+
+
 struct hashmsg_info {
   string hash;
   i64 size = -1;
@@ -338,20 +541,6 @@ public:
 		    string *sourcep = nullptr);
 };
 
-
-string
-permissive_percent_encode (const string &raw)
-{
-  ostringstream outbuf;
-  outbuf.fill('0');
-  outbuf.setf(ios::hex, ios::basefield);
-  for (char c : raw)
-    if (c <= ' ' || c >= '\177' || c == '%' || c == '(' || c == ')')
-      outbuf << '%' << setw(2) << int (uint8_t(c));
-    else
-      outbuf << c;
-  return outbuf.str();
-}
 
 static void
 sqlite_percent_encode (sqlite3_context *ctx, int argc, sqlite3_value **av)
@@ -919,184 +1108,6 @@ message_syncer::sync_message (const versvector &rvv,
   sqlexec (db_, "RELEASE sync_message;");
 #endif
   return true;
-}
-
-static void
-set_peer_vector (sqlite3 *sqldb, const versvector &vv)
-{
-  sqlexec (sqldb, R"(
-DROP TABLE IF EXISTS peer_vector;
-CREATE TEMP TABLE peer_vector (replica INTEGER PRIMARY KEY,
-  known_version INTEGER);
-INSERT OR REPLACE INTO peer_vector
-  SELECT DISTINCT replica, -1 FROM message_ids;
-INSERT OR REPLACE INTO peer_vector
-  SELECT DISTINCT replica, -1 FROM maildir_hashes;
-)");
-  sqlstmt_t pvadd (sqldb, "INSERT OR REPLACE INTO"
-		   " peer_vector (replica, known_version) VALUES (?, ?);");
-  for (writestamp ws : vv)
-    pvadd.reset().param(ws.first, ws.second).step();
-}
-
-static void
-cmd_hsyn (sqlite3 *sqldb, const versvector &vv)
-{
-  versvector myvv = get_sync_vector(sqldb);
-  set_peer_vector (sqldb, vv);
-
-  unordered_map<i64,string> dirs;
-  {
-    sqlstmt_t d (sqldb, "SELECT dir_id, dir_path FROM maildir_dirs;");
-    while (d.step().row())
-      dirs.emplace (d.integer(0), d.str(1));
-  }
-
-  sqlstmt_t changed (sqldb, R"(
-SELECT h.hash_id, hash, size, message_id, h.replica, h.version,
-       dir_id, link_count
-FROM (peer_vector p JOIN maildir_hashes h
-      ON ((p.replica = h.replica) & (p.known_version < h.version)))
-LEFT OUTER JOIN maildir_links USING (hash_id);)");
-  
-  hash_info hi;
-  changed.step();
-  while (changed.row()) {
-    i64 hash_id = changed.integer(0);
-    hi.hash = changed.str(1);
-    hi.size = changed.integer(2);
-    hi.message_id = changed.str(3);
-    hi.hash_stamp.first = changed.integer(4);
-    hi.hash_stamp.second = changed.integer(5);
-    hi.dirs.clear();
-    if (changed.null(6))
-      changed.step();
-    else {
-      hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
-      while (changed.step().row() && changed.integer(0) == hash_id)
-	hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
-    }
-    cout << "210-" << hi << '\n';
-  }
-
-  cout << "210 " << show_sync_vector(myvv) << '\n';
-}
-
-static void
-cmd_tsyn (sqlite3 *sqldb, const versvector &vv)
-{
-  versvector myvv = get_sync_vector(sqldb);
-  set_peer_vector (sqldb, vv);
-  sqlstmt_t changed (sqldb, R"(
-SELECT m.docid, m.message_id, m.replica, m.version, tags.tag
-FROM (peer_vector p JOIN message_ids m
-      ON ((p.replica = m.replica) & (p.known_version < m.version)))
-      LEFT OUTER JOIN tags USING (docid);)");
-
-  tag_info ti;
-  changed.step();
-  while (changed.row()) {
-    i64 docid = changed.integer(0);
-    ti.message_id = changed.str(1);
-    ti.tag_stamp.first = changed.integer(2);
-    ti.tag_stamp.second = changed.integer(3);
-    ti.tags.clear();
-    if (changed.null(4))
-      changed.step();
-    else {
-      ti.tags.insert (changed.str(4));
-      while (changed.step().row() && changed.integer(0) == docid)
-	ti.tags.insert (changed.str(4));
-    }
-    cout << "210-" << ti << '\n';
-  }
-
-  cout << "210 " << show_sync_vector(myvv) << '\n';
-}
-
-void
-muchsync_server (sqlite3 *db, const string &maildir)
-{
-  {
-    int ifd = spawn_infinite_input_buffer (0);
-    switch (ifd) {
-    case -1:
-      exit (1);
-    case 0:
-      break;
-    default:
-      dup2 (ifd, 0);
-      close (ifd);
-    }
-  }
-
-  sqlite_register_percent_encode (db);
-  message_reader mr (db, maildir);
-
-  cout << "200 " << dbvers << '\n';
-  string cmd;
-  while ((cin >> cmd).good()) {
-    if (cmd == "quit") {
-      cout << "200 goodbye\n";
-      return;
-    }
-    else if (cmd == "vect") {
-      cout << "200 " << show_sync_vector (get_sync_vector (db)) << '\n';
-    }
-    else if (cmd == "send") {
-      string hash;
-      cin >> hash;
-      streambuf *sb;
-      if (mr.lookup(hash) && (sb = mr.rdbuf()))
-	cout << "220-" << show_hashmsg_info (mr.info()) << '\n'
-	     << sb
-	     << "220 " << mr.info().hash << '\n';
-      else if (mr.ok())
-	cout << "420 cannot open file\n";
-      else
-	cout << mr.err() << '\n';
-    }
-    else if (cmd == "info") {
-      string hash;
-      cin >> hash;
-      if (mr.lookup(hash))
-	cout << "210-" << mr.info().size << " bytes\n"
-	     << "210 " << show_hashmsg_info (mr.info()) << '\n';
-      else
-	cout << mr.err() << '\n';
-    }
-    else if (cmd == "hsyn") {
-      versvector vv;
-      string tail;
-      if (!getline(cin, tail))
-	cout << "500 could not parse vector\n";
-      else {
-	istringstream tailstream (tail);
-	if (!read_sync_vector(tailstream, vv))
-	  cout << "500 could not parse vector\n";
-	else
-	  cmd_hsyn (db, vv);
-      }
-      continue;
-    }
-    else if (cmd == "tsyn") {
-      versvector vv;
-      string tail;
-      if (!getline(cin, tail))
-	cout << "500 could not parse vector\n";
-      else {
-	istringstream tailstream (tail);
-	if (!read_sync_vector(tailstream, vv))
-	  cout << "500 could not parse vector\n";
-	else
-	  cmd_tsyn (db, vv);
-      }
-      continue;
-    }
-    else
-      cout << "500 unknown verb " << cmd << '\n';
-    cin.ignore (numeric_limits<streamsize>::max(), '\n');
-  }
 }
 
 static istream &
