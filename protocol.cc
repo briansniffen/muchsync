@@ -33,6 +33,7 @@ struct hash_info {
 class hash_lookup {
   sqlstmt_t gethash_;
   sqlstmt_t getlinks_;
+  sqlstmt_t makehash_;
   bool ok_ = false;
   hash_info hi_;
   i64 hash_id_;
@@ -43,7 +44,9 @@ public:
 
   hash_lookup(const string &maildir, sqlite3 *db);
   bool lookup(const string &hash);
+  void create(const hash_info &info);
   bool ok() const { return ok_; }
+  i64 hash_id() const { assert (ok()); return hash_id_; }
   const hash_info &info() const { assert (ok()); return hi_; }
   const vector<pair<string,string>> &links() const { 
     assert (ok());
@@ -56,6 +59,24 @@ public:
   }
   bool get_pathname(string *path) const;
   streambuf *content();
+};
+
+class hash_sync {
+  sqlite3 *db_;
+  sqlstmt_t update_hash_stamp_;
+  sqlstmt_t set_link_count_;
+  sqlstmt_t delete_link_count_;
+  unordered_map<string,i64> dir_ids_;
+  writestamp mystamp_;
+
+  static constexpr i64 bad_dir_id = -1;
+  i64 get_dir_id (const string &dir, bool create);
+public:
+  hash_lookup hashdb;
+  hash_sync(const string &maildir, sqlite3 *db);
+  bool sync(const versvector &remote_sync_vector,
+	    const hash_info &remote_hash_info,
+	    const string *sourcefile);
 };
 
 struct tag_info {
@@ -74,6 +95,7 @@ public:
   tag_lookup (sqlite3 *db);
   bool lookup(const string &msgid);
   bool ok() const { return ok_; }
+  i64 docid() const { assert (ok()); return docid_; }
   const tag_info &info() const { assert (ok()); return ti_; }
 };
 
@@ -181,12 +203,26 @@ operator>> (istream &is, tag_info &ti)
   return is;
 }
 
+writestamp
+get_mystamp(sqlite3 *db)
+{
+  sqlstmt_t s (db, "SELECT replica, version "
+	       "FROM configuration JOIN sync_vector ON (value = replica) "
+	       "WHERE key = 'self';");
+  if (!s.step().row())
+    throw runtime_error ("Cannot find myself in sync_vector");
+  return { s.integer(0), s.integer(1) };
+}
+
 hash_lookup::hash_lookup (const string &m, sqlite3 *db)
   : gethash_(db, "SELECT hash_id, size, message_id, replica, version"
 	     " FROM maildir_hashes WHERE hash = ?;"),
     getlinks_(db, "SELECT dir_path, name"
 	      " FROM maildir_files JOIN maildir_dirs USING (dir_id)"
 	      " WHERE hash_id = ?;"),
+    makehash_(db, "INSERT INTO maildir_hashes"
+	      " (hash, size, message_id, replica, version)"
+	      " VALUES (?, ?, ?, ?, ?);"),
     maildir(m)
 {
 }
@@ -213,6 +249,21 @@ hash_lookup::lookup (const string &hash)
     links_.emplace_back(dir, name);
   }
   return ok_ = true;
+}
+
+void
+hash_lookup::create (const hash_info &rhi)
+{
+  ok_ = false;
+  content_.close();
+  makehash_.reset().param(rhi.hash, rhi.size, rhi.message_id,
+			  rhi.hash_stamp.first, rhi.hash_stamp.second).step();
+  hi_.hash = rhi.hash;
+  hi_.size = rhi.size;
+  hi_.message_id = rhi.message_id;
+  hi_.hash_stamp = rhi.hash_stamp;
+  hi_.dirs.clear();
+  ok_ = true;
 }
 
 bool
@@ -242,6 +293,168 @@ hash_lookup::content()
       return content_.rdbuf();
   }
   return nullptr;
+}
+
+hash_sync::hash_sync (const string &maildir, sqlite3 *db)
+  : db_(db),
+    update_hash_stamp_(db_, "UPDATE maildir_hashes "
+		       "SET replica = ?, version = ? WHERE hash_id = ?;"),
+    set_link_count_(db_, "INSERT OR REPLACE INTO maildir_links"
+		    " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
+    delete_link_count_(db_, "DELETE FROM maildir_links"
+		       " WHERE hash_id = ? & dir_id = ?;"),
+    mystamp_(get_mystamp(db_)),
+    hashdb (maildir, db_)
+{
+  sqlstmt_t s (db, "SELECT dir_path, dir_id FROM maildir_dirs;");
+  for (s.step(); s.row(); s.step())
+    dir_ids_.emplace (s.str(0), s.integer(1));
+}
+
+static bool
+sanity_check_path (const string &path)
+{
+  if (path == "..")
+    return false;
+  if (path.size() < 3)
+    return true;
+  return (path.substr(0, 3) != "../"
+	  && path.substr(path.size()-3) != "/.."
+	  && path.find("/../") == string::npos);
+}
+
+inline bool
+is_dir (const string &path)
+{
+  struct stat sb;
+  return !stat (path.c_str(), &sb) && (errno = ENOTDIR, S_ISDIR (sb.st_mode));
+}
+
+bool
+recursive_mkdir (string path)
+{
+  string::size_type n = 0;
+  for (;;) {
+    n = path.find_first_not_of ('/', n);
+    if (n == string::npos)
+      return true;
+    n = path.find_first_of ('/', n);
+    if (n != string::npos)
+      path[n] = '\0';
+    cerr << path.c_str() << '\n';
+    if (!is_dir (path) && mkdir (path.c_str(), 0777))
+      return false;
+    if (n == string::npos)
+      return true;
+    path[n] = '/';
+  }
+}
+
+i64
+hash_sync::get_dir_id (const string &dir, bool create)
+{
+  auto i = dir_ids_.find(dir);
+  if (i != dir_ids_.end())
+    return i->second;
+
+  if (!sanity_check_path (dir))
+    throw runtime_error (dir + ": illegal directory name");
+  if (!create)
+    return bad_dir_id;
+  string path = hashdb.maildir + "/" + dir;
+  if (!is_dir(path) && !recursive_mkdir(path))
+    throw runtime_error (path + ": cannot create directory");
+  
+  sqlexec (db_, "INSERT INTO maildir_dirs (dir_path) VALUES (%Q);",
+	   dir.c_str());
+  i64 dir_id = sqlite3_last_insert_rowid (db_);
+  dir_ids_.emplace (dir, dir_id);
+  return dir_id;
+}
+
+bool
+hash_sync::sync(const versvector &rvv,
+		const hash_info &rhi,
+		const string *sourcep)
+{
+  sqlexec (db_, "SAVEPOINT hash_sync;");
+  cleanup c (sqlexec, db_, "ROLLBACK TO hash_sync;");
+
+  if (hashdb.lookup(rhi.hash)) {
+    /* We might already be up to date from a previous sync that never
+     * completed (meaning some hashes got ahead of the global sync
+     * vector). */
+    if (hashdb.info().hash_stamp == rhi.hash_stamp)
+      return true;
+  }
+  else
+    hashdb.create(rhi);
+  const hash_info &lhi = hashdb.info();
+
+  bool links_conflict =
+    lhi.hash_stamp.second > find_default (-1, rvv, lhi.hash_stamp.first);
+  bool deleting = rhi.dirs.empty() && (!links_conflict || lhi.dirs.empty());
+  unordered_map<string,i64> needlinks (rhi.dirs);
+  bool needsource = false;
+  for (auto i : lhi.dirs)
+    if ((needlinks[i.first] -= i.second) > 0)
+      needsource = true;
+
+  /* find copy of content, if needed */
+  string source;
+  if (needsource) {
+    if (sourcep)
+      source = *sourcep;
+    else if (!hashdb.get_pathname (&source))
+      return false;
+  }
+
+  /* Adjust link counts in database */
+  for (auto li : needlinks)
+    if (li.second != 0) {
+      i64 dir_id = get_dir_id (li.first, li.second > 0);
+      if (dir_id == bad_dir_id)
+	continue;
+      i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
+      if (newcount > 0)
+	set_link_count_.reset()
+	  .param(hashdb.hash_id(), dir_id, newcount).step();
+      else
+	delete_link_count_.reset().param(hashdb.hash_id(), dir_id).step();
+    }
+
+  /* Set writestamp for new link counts */
+  const writestamp *wsp = links_conflict ? &mystamp_ : &rhi.hash_stamp;
+  update_hash_stamp_.reset()
+    .param(wsp->first, wsp->second, hashdb.hash_id()).step();
+
+  /* add missing links */
+  for (auto li : needlinks)
+    for (; li.second > 0; --li.second) {
+      string newname = li.first + "/" + maildir_name();
+      string target = hashdb.maildir + "/" + newname;
+      if (link (source.c_str(), target.c_str()))
+	throw runtime_error (string("link (\"") + source + "\", \""
+			     + target + "\"): " + strerror(errno));
+    }
+  /* remove extra links */
+  if (!links_conflict)
+    for (int i = 0, e = hashdb.nlinks(); i < e; i++) {
+      i64 &n = needlinks[hashdb.links().at(i).first];
+      if (n < 0) {
+	if (deleting) {
+	  string trash = (hashdb.maildir + muchsync_trashdir + "/" + rhi.hash);
+	  if (!rename (hashdb.link_path(i).c_str(), trash.c_str()))
+	    ++n;
+	}
+	else if (!unlink (hashdb.link_path(i).c_str()))
+	  ++n;
+      }
+    }
+
+  c.disable();
+  sqlexec (db_, "RELEASE sync_message;");
+  return true;
 }
 
 tag_lookup::tag_lookup (sqlite3 *db)
@@ -517,7 +730,6 @@ class message_syncer {
 
   unordered_map<string,i64> dir_ids_;
 
-  static writestamp get_mystamp(sqlite3 *db);
   i64 get_hash_id(const string &hash, i64 size, const string &msgid);
   static constexpr i64 bad_dir_id = -1;
   i64 get_dir_id(const string &dir, bool create);
@@ -769,17 +981,6 @@ message_syncer::notmuch_close()
   }
 }
 
-writestamp
-message_syncer::get_mystamp(sqlite3 *db)
-{
-  sqlstmt_t s (db, "SELECT replica, version "
-	       "FROM configuration JOIN sync_vector ON (value = replica) "
-	       "WHERE key = 'self';");
-  if (!s.step().row())
-    throw runtime_error ("Cannot find myself in sync_vector");
-  return { s.integer(0), s.integer(1) };
-}
-
 i64
 message_syncer::get_hash_id (const string &hash, i64 size, const string &msgid)
 {
@@ -792,45 +993,6 @@ message_syncer::get_hash_id (const string &hash, i64 size, const string &msgid)
   }
   create_hash_id_.reset().param(hash, size, msgid, nullptr, nullptr).step();
   return sqlite3_last_insert_rowid(db_);
-}
-
-static bool
-sanity_check_path (const string &path)
-{
-  if (path == "..")
-    return false;
-  if (path.size() < 3)
-    return true;
-  return (path.substr(0, 3) != "../"
-	  && path.substr(path.size()-3) != "/.."
-	  && path.find("/../") == string::npos);
-}
-
-inline bool
-is_dir (const string &path)
-{
-  struct stat sb;
-  return !stat (path.c_str(), &sb) && (errno = ENOTDIR, S_ISDIR (sb.st_mode));
-}
-
-bool
-recursive_mkdir (string path)
-{
-  string::size_type n = 0;
-  for (;;) {
-    n = path.find_first_not_of ('/', n);
-    if (n == string::npos)
-      return true;
-    n = path.find_first_of ('/', n);
-    if (n != string::npos)
-      path[n] = '\0';
-    cerr << path.c_str() << '\n';
-    if (!is_dir (path) && mkdir (path.c_str(), 0777))
-      return false;
-    if (n == string::npos)
-      return true;
-    path[n] = '/';
-  };
 }
 
 i64
