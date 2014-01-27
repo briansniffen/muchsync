@@ -30,10 +30,51 @@ struct hash_info {
   unordered_map<string,i64> dirs;
 };
 
+class hash_lookup {
+  sqlstmt_t gethash_;
+  sqlstmt_t getlinks_;
+  bool ok_ = false;
+  hash_info hi_;
+  i64 hash_id_;
+  vector<pair<string,string>> links_;
+  ifstream content_;
+public:
+  const string maildir;
+
+  hash_lookup(const string &maildir, sqlite3 *db);
+  bool lookup(const string &hash);
+  bool ok() const { return ok_; }
+  const hash_info &info() const { assert (ok()); return hi_; }
+  const vector<pair<string,string>> &links() const { 
+    assert (ok());
+    return links_;
+  }
+  int nlinks() const { return links().size(); }
+  string link_path(int i) const {
+    auto &lnk = links().at(i);
+    return maildir + "/" + lnk.first + "/" + lnk.second;
+  }
+  bool get_pathname(string *path) const;
+  streambuf *content();
+};
+
 struct tag_info {
   string message_id;
   writestamp tag_stamp = {-1, -1};
   unordered_set<string> tags;
+};
+
+class tag_lookup {
+  sqlstmt_t getmsg_;
+  sqlstmt_t gettags_;
+  bool ok_ = false;
+  tag_info ti_;
+  i64 docid_;
+public:
+  tag_lookup (sqlite3 *db);
+  bool lookup(const string &msgid);
+  bool ok() const { return ok_; }
+  const tag_info &info() const { assert (ok()); return ti_; }
 };
 
 template<typename C, typename F> inline void
@@ -124,6 +165,92 @@ operator>> (istream &is, tag_info &ti)
       ti.tags.insert(tag);
   }
   return is;
+}
+
+hash_lookup::hash_lookup (const string &m, sqlite3 *db)
+  : gethash_(db, "SELECT hash_id, size, message_id, replica, version"
+	     " FROM maildir_hashes WHERE hash = ?;"),
+    getlinks_(db, "SELECT dir_path, name"
+	      " FROM maildir_files JOIN maildir_dirs USING (dir_id)"
+	      " WHERE hash_id = ?;"),
+    maildir(m)
+{
+}
+
+bool
+hash_lookup::lookup (const string &hash)
+{
+  ok_ = false;
+  content_.close();
+  if (!gethash_.reset().param(hash).step().row())
+    return false;
+  hash_id_ = gethash_.integer(0);
+  hi_.hash = hash;
+  hi_.size = gethash_.integer(1);
+  hi_.message_id = gethash_.integer(2);
+  hi_.hash_stamp.first = gethash_.integer(3);
+  hi_.hash_stamp.second = gethash_.integer(4);
+  hi_.dirs.clear();
+  links_.clear();
+  for (getlinks_.reset().param(hash_id_).step();
+       getlinks_.row(); getlinks_.step()) {
+    string dir = getlinks_.str(0), name = getlinks_.str(1);
+    ++hi_.dirs[dir];
+    links_.emplace_back(dir, name);
+  }
+  return ok_ = true;
+}
+
+bool
+hash_lookup::get_pathname(string *out) const
+{
+  for (int i = 0, e = nlinks(); i < e; i++) {
+    string path = link_path(i);
+    struct stat sb;
+    if (!stat(path.c_str(), &sb) && S_ISREG(sb.st_mode)) {
+      *out = move(path);
+      return true;
+    }
+  }
+  return false;
+}
+
+streambuf *
+hash_lookup::content()
+{
+  if (content_.is_open()) {
+    content_.seekg(0);
+    return content_.rdbuf();
+  }
+  for (int i = 0, e = nlinks(); i < e; i++) {
+    content_.open (link_path(i), ios_base::in);
+    if (content_.is_open())
+      return content_.rdbuf();
+  }
+  return nullptr;
+}
+
+tag_lookup::tag_lookup (sqlite3 *db)
+  : getmsg_(db, "SELECT docid, replica, version"
+	    " FROM message_ids WHERE message_id = ?;"),
+    gettags_(db, "SELECT tag FROM tags WHERE docid = ?;")
+{
+}
+
+bool
+tag_lookup::lookup (const string &msgid)
+{
+  ok_ = false;
+  if (!getmsg_.reset().param(msgid).step().row())
+    return false;
+  ti_.message_id = msgid;
+  docid_ = getmsg_.integer(0);
+  ti_.tag_stamp.first = getmsg_.integer(1);
+  ti_.tag_stamp.second = getmsg_.integer(2);
+  ti_.tags.clear();
+  for (gettags_.reset().param(docid_).step(); gettags_.row(); gettags_.step())
+    ti_.tags.insert(gettags_.str(0));
+  return ok_ = true;
 }
 
 
@@ -887,54 +1014,6 @@ FROM (peer_vector p JOIN message_ids m
   cout << "210 " << show_sync_vector(myvv) << '\n';
 }
 
-static void
-cmd_sync (sqlite3 *sqldb, const versvector &vv)
-{
-  sqlexec (sqldb, R"(
-DROP TABLE IF EXISTS peer_vector;
-CREATE TABLE peer_vector (replica INTEGER PRIMARY KEY,
-known_version INTEGER);
-)");
-  sqlstmt_t pvadd (sqldb, "INSERT INTO peer_vector (replica, known_version)"
-		   " VALUES (?, ?);");
-  for (writestamp ws : vv)
-    pvadd.reset().param(ws.first, ws.second).step();
-
-  sqlstmt_t changed (sqldb, R"(
-SELECT h.hash, h.replica, h.version,
-       x.message_id, x.replica, x.version,
-       cattags, catdirs, h.size
-FROM 
-    (maildir_hashes h LEFT OUTER JOIN peer_vector pvh USING (replica))
-      LEFT OUTER JOIN
-    (message_ids x LEFT OUTER JOIN peer_vector pvx USING (replica))
-        USING (message_id)
-      LEFT OUTER JOIN
-    (SELECT docid, group_concat(tag, ' ') cattags FROM tags GROUP BY docid)
-        USING (docid)
-      LEFT OUTER JOIN
-    (SELECT hash_id,
-            group_concat(link_count || '*' || percent_encode(dir_path), ' ')
-                           AS catdirs
-     FROM maildir_links NATURAL JOIN maildir_dirs GROUP BY hash_id)
-        USING(hash_id)
-  WHERE (h.version > ifnull(pvh.known_version,-1))
-        | (x.version > ifnull(pvx.known_version,-1))
-;)");
-
-  for (changed.step(); changed.row(); changed.step()) {
-    cout << "210-" << changed.str(0) << ' '
-	 << changed.str(8) << ' '
-	 << permissive_percent_encode (changed.str(3))
-	 << " R" << changed.integer(4) << '=' << changed.integer(5)
-	 << " (" << changed.str(6)
-	 << ") R" << changed.integer(1) << '=' << changed.integer(2)
-	 << " (" << changed.str(7) << ")\n";
-  }
-
-  cout << "210 Synchronized " << show_sync_vector(vv) << '\n';
-}
-
 void
 muchsync_server (sqlite3 *db, const string &maildir)
 {
@@ -985,20 +1064,6 @@ muchsync_server (sqlite3 *db, const string &maildir)
 	     << "210 " << show_hashmsg_info (mr.info()) << '\n';
       else
 	cout << mr.err() << '\n';
-    }
-    else if (cmd == "sync") {
-      versvector vv;
-      string tail;
-      if (!getline(cin, tail))
-	cout << "500 could not parse vector\n";
-      else {
-	istringstream tailstream (tail);
-	if (!read_sync_vector(tailstream, vv))
-	  cout << "500 could not parse vector\n";
-	else
-	  cmd_sync (db, vv);
-      }
-      continue;
     }
     else if (cmd == "hsyn") {
       versvector vv;
