@@ -99,6 +99,12 @@ public:
   const tag_info &info() const { assert (ok()); return ti_; }
 };
 
+inline string
+trashname (const string &maildir, const string &hash)
+{
+  return maildir + muchsync_trashdir + "/" + hash;
+}
+
 string
 permissive_percent_encode (const string &raw)
 {
@@ -269,13 +275,21 @@ hash_lookup::create (const hash_info &rhi)
 bool
 hash_lookup::get_pathname(string *out) const
 {
+  struct stat sb;
+  string path;
   for (int i = 0, e = nlinks(); i < e; i++) {
-    string path = link_path(i);
-    struct stat sb;
-    if (!stat(path.c_str(), &sb) && S_ISREG(sb.st_mode)) {
+    path = link_path(i);
+    if (!stat(path.c_str(), &sb) && S_ISREG(sb.st_mode)
+	&& sb.st_size == hi_.size) {
       *out = move(path);
       return true;
     }
+  }
+  path = trashname(maildir, hi_.hash);
+  if (!stat(path.c_str(), &sb) && S_ISREG(sb.st_mode)
+      && sb.st_size == hi_.size) {
+    *out = move(path);
+    return true;
   }
   return false;
 }
@@ -443,8 +457,8 @@ hash_sync::sync(const versvector &rvv,
       i64 &n = needlinks[hashdb.links().at(i).first];
       if (n < 0) {
 	if (deleting) {
-	  string trash = (hashdb.maildir + muchsync_trashdir + "/" + rhi.hash);
-	  if (!rename (hashdb.link_path(i).c_str(), trash.c_str()))
+	  if (!rename (hashdb.link_path(i).c_str(),
+		       trashname(hashdb.maildir, rhi.hash).c_str()))
 	    ++n;
 	}
 	else if (!unlink (hashdb.link_path(i).c_str()))
