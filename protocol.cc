@@ -683,6 +683,111 @@ muchsync_server (sqlite3 *db, const string &maildir)
 }
 
 
+static istream &
+get_response (istream &in, string &line)
+{
+  if (!getline (in, line))
+    throw runtime_error ("premature EOF");
+  //cerr << "read " << line << '\n';
+  if (line.empty())
+    throw runtime_error ("unexpected empty line");
+  if (line.size() < 4)
+    throw runtime_error ("unexpected short line");
+  if (line.front() != '2')
+    throw runtime_error ("bad response: " + line);
+  return in;
+}
+
+static string
+myhostname()
+{
+  char buf[257];
+  buf[sizeof(buf) - 1] = '\0';
+  if (gethostname (buf, sizeof(buf) - 1))
+    throw runtime_error (string("gethsotname: ") + strerror (errno));
+  return buf;
+}
+
+inline uint32_t
+randint()
+{
+  uint32_t v;
+  if (RAND_pseudo_bytes ((unsigned char *) &v, sizeof (v)) == -1)
+    throw runtime_error ("RAND_pseudo_bytes failed");
+  return v;
+}
+
+string
+maildir_name ()
+{
+  static string hostname = myhostname();
+  static int pid = getpid();
+  static int ndeliveries = 0;
+
+  ostringstream os;
+  struct timespec ts;
+  clock_gettime (CLOCK_REALTIME, &ts);
+  os << ts.tv_sec << ".M" << ts.tv_nsec << 'P' << pid
+     << 'Q' << ++ndeliveries
+     << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
+     << '.' << hostname;
+  return os.str();
+}
+
+void
+muchsync_client (sqlite3 *db, const string &maildir,
+		 int ac, char *const *av)
+{
+  ostringstream os;
+  os << opt_ssh << ' ' << av[0] << ' ' << opt_remote_muchsync_path
+     << " --server";
+  for (int i = 1; i < ac; i++)
+    os << ' ' << av[i];
+  string cmd (os.str());
+  int cmdfd = cmd_iofd (cmd);
+  ofdstream out (cmdfd);
+  ifdstream in (spawn_infinite_input_buffer (cmdfd));
+  in.tie (&out);
+
+  /* Any work done here gets overlapped with server */
+  sync_local_data (db, maildir);
+  versvector localvv {get_sync_vector (db)}, remotevv;
+  hash_sync hsync (maildir, db);
+  i64 pending = 0;
+
+  string line;
+  get_response (in, line);
+
+  out << "vect\n";
+  get_response (in, line);
+  istringstream is (line.substr(4));
+  if (!read_sync_vector(is, remotevv))
+    throw runtime_error ("cannot parse version vector " + line.substr(4));
+
+  //cerr << "you got " << show_sync_vector(remotevv) << '\n';
+
+  out << "lsync " << show_sync_vector(localvv) << '\n';
+  while (get_response (in, line) && line.at(3) == '-') {
+    is.str(line.substr(4));
+    hash_info hi;
+    if (!(is >> hi))
+      throw runtime_error ("could not parse hashmsg_info: " + line.substr(4));
+    if (!hsync.sync (remotevv, hi, nullptr)) {
+      out << "send " << hi.hash << '\n';
+      pending++;
+    }
+    //cerr << show_hashmsg_info (hi) << '\n';
+  }
+
+  for (; pending > 0; pending--) {
+    //get_response (in, line);
+  }
+}
+
+
+
+
+#if 0
 
 struct hashmsg_info {
   string hash;
@@ -1301,42 +1406,6 @@ get_response (istream &in, string &line)
   return in;
 }
 
-static string
-myhostname()
-{
-  char buf[257];
-  buf[sizeof(buf) - 1] = '\0';
-  if (gethostname (buf, sizeof(buf) - 1))
-    throw runtime_error (string("gethsotname: ") + strerror (errno));
-  return buf;
-}
-
-static uint32_t
-randint()
-{
-  uint32_t v;
-  if (RAND_pseudo_bytes ((unsigned char *) &v, sizeof (v)) == -1)
-    throw runtime_error ("RAND_pseudo_bytes failed");
-  return v;
-}
-
-string
-maildir_name ()
-{
-  static string hostname = myhostname();
-  static int pid = getpid();
-  static int ndeliveries = 0;
-
-  ostringstream os;
-  struct timespec ts;
-  clock_gettime (CLOCK_REALTIME, &ts);
-  os << ts.tv_sec << ".M" << ts.tv_nsec << 'P' << pid
-     << 'Q' << ++ndeliveries
-     << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
-     << '.' << hostname;
-  return os.str();
-}
-
 void
 muchsync_client (sqlite3 *db, const string &maildir,
 		 int ac, char *const *av)
@@ -1393,3 +1462,5 @@ muchsync_client (sqlite3 *db, const string &maildir,
     //get_response (in, line);
   }
 }
+
+#endif
