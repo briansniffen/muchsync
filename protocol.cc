@@ -767,10 +767,12 @@ muchsync_client (sqlite3 *db, const string &maildir,
   for (int i = 1; i < ac; i++)
     os << ' ' << av[i];
   string cmd (os.str());
-  int cmdfd = cmd_iofd (cmd);
-  ofdstream out (cmdfd);
-  ifdstream in (spawn_infinite_input_buffer (cmdfd));
+  int fds[2];
+  cmd_iofds (fds, cmd);
+  ofdstream out (fds[1]);
+  ifdstream in (spawn_infinite_input_buffer (fds[0]));
   in.tie (&out);
+  close (fds[0]);
 
   /* Any work done here gets overlapped with server */
   sync_local_data (db, maildir);
@@ -786,8 +788,6 @@ muchsync_client (sqlite3 *db, const string &maildir,
   istringstream is (line.substr(4));
   if (!read_sync_vector(is, remotevv))
     throw runtime_error ("cannot parse version vector " + line.substr(4));
-
-  //cerr << "you got " << show_sync_vector(remotevv) << '\n';
 
   sqlexec (db, "BEGIN;");
   out << "lsync " << show_sync_vector(localvv) << '\n';

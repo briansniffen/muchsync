@@ -262,7 +262,7 @@ string tag_from_term (const string &term);
 string cmd_output (const string &cmd);
 void infinite_buffer (int infd, int outfd);
 int spawn_infinite_input_buffer (int infd);
-int cmd_iofd (const string &cmd);
+void cmd_iofds (int fds[2], const string &cmd);
 
 /* maildir.cc */
 string get_sha (int dfd, const char *direntry, i64 *sizep = nullptr);
