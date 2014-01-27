@@ -337,7 +337,7 @@ usage ()
 {
   cerr
     << "usage: muchsync [-FMXv] [-m maildir] [-s ssh] [-n tag [-n tag ...]]\n"
-    << "                        [server[:maildir]]\n"
+    << "                        [-r /path/to/muchsync] [server[:maildir]]\n"
     << "       muchsync --server [--nosync] [maildir]\n";
   exit (1);
 }
