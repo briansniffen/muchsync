@@ -57,7 +57,7 @@ public:
     auto &lnk = links().at(i);
     return maildir + "/" + lnk.first + "/" + lnk.second;
   }
-  bool get_pathname(string *path) const;
+  bool get_pathname(string *path, bool *from_trash = nullptr) const;
   streambuf *content();
 };
 
@@ -111,6 +111,42 @@ inline string
 trashname (const string &maildir, const string &hash)
 {
   return maildir + muchsync_trashdir + "/" + hash;
+}
+
+static string
+myhostname()
+{
+  char buf[257];
+  buf[sizeof(buf) - 1] = '\0';
+  if (gethostname (buf, sizeof(buf) - 1))
+    throw runtime_error (string("gethsotname: ") + strerror (errno));
+  return buf;
+}
+
+inline uint32_t
+randint()
+{
+  uint32_t v;
+  if (RAND_pseudo_bytes ((unsigned char *) &v, sizeof (v)) == -1)
+    throw runtime_error ("RAND_pseudo_bytes failed");
+  return v;
+}
+
+static string
+maildir_name ()
+{
+  static string hostname = myhostname();
+  static int pid = getpid();
+  static int ndeliveries = 0;
+
+  ostringstream os;
+  struct timespec ts;
+  clock_gettime (CLOCK_REALTIME, &ts);
+  os << ts.tv_sec << ".M" << ts.tv_nsec << 'P' << pid
+     << 'Q' << ++ndeliveries
+     << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
+     << '.' << hostname;
+  return os.str();
 }
 
 string
@@ -290,7 +326,7 @@ hash_lookup::create (const hash_info &rhi)
 }
 
 bool
-hash_lookup::get_pathname(string *out) const
+hash_lookup::get_pathname(string *out, bool *from_trash) const
 {
   struct stat sb;
   string path;
@@ -298,7 +334,10 @@ hash_lookup::get_pathname(string *out) const
     path = link_path(i);
     if (!stat(path.c_str(), &sb) && S_ISREG(sb.st_mode)
 	&& sb.st_size == hi_.size) {
-      *out = move(path);
+      if (out)
+	*out = move(path);
+      if (from_trash)
+	*from_trash = false;
       return true;
     }
   }
@@ -306,7 +345,10 @@ hash_lookup::get_pathname(string *out) const
   if (!stat(path.c_str(), &sb) && S_ISREG(sb.st_mode)
       && sb.st_size == hi_.size
       && hi_.hash == get_sha (AT_FDCWD, path.c_str(), nullptr)) {
-    *out = move(path);
+    if (out)
+      *out = move(path);
+    if (from_trash)
+      *from_trash = true;
     return true;
   }
   return false;
@@ -460,10 +502,11 @@ hash_sync::sync(const versvector &rvv,
 
   /* find copy of content, if needed */
   string source;
+  bool clean_trash = false;
   if (needsource) {
     if (sourcep)
       source = *sourcep;
-    else if (!hashdb.ok() || !hashdb.get_pathname (&source))
+    else if (!hashdb.ok() || !hashdb.get_pathname (&source, &clean_trash))
       return false;
   }
 
@@ -532,6 +575,8 @@ hash_sync::sync(const versvector &rvv,
 
   c.disable();
   sqlexec (db_, "RELEASE hash_sync;");
+  if (clean_trash)
+    unlink (trashname(hashdb.maildir, rhi.hash).c_str());
   return true;
 }
 
@@ -558,6 +603,35 @@ tag_lookup::lookup (const string &msgid)
   return ok_ = true;
 }
 
+static string
+receive_message (istream &in, const hash_info &hi, const string &maildir)
+{
+  string path (maildir + muchsync_tmpdir + "/" + maildir_name());
+  ofstream tmp (path, ios_base::out|ios_base::trunc);
+  if (!tmp.is_open())
+    throw runtime_error (path + ": " + strerror(errno));
+  cleanup _unlink (unlink, path.c_str());
+  i64 size = hi.size;
+  hash_ctx ctx;
+  while (size > 0) {
+    char buf[16384];
+    int n = min<i64>(sizeof(buf), size);
+    in.read(buf, n);
+    if (!in.good())
+      throw runtime_error ("premature EOF receiving message");
+    ctx.update(buf, n);
+    tmp.write(buf, n);
+    if (!tmp.good())
+      throw runtime_error (string("error writing mail file: ")
+			   + strerror(errno));
+    size -= n;
+  }
+  tmp.close();
+  if (ctx.final() != hi.hash)
+    throw runtime_error ("message received does not match hash");
+  _unlink.disable();
+  return path;
+}
 
 static void
 set_peer_vector (sqlite3 *sqldb, const versvector &vv)
@@ -579,11 +653,8 @@ INSERT OR REPLACE INTO peer_vector
 }
 
 static void
-cmd_lsync (sqlite3 *sqldb, const versvector &vv)
+send_links (sqlite3 *sqldb, const string &prefix, ostream &out)
 {
-  versvector myvv = get_sync_vector(sqldb);
-  set_peer_vector (sqldb, vv);
-
   unordered_map<i64,string> dirs;
   {
     sqlstmt_t d (sqldb, "SELECT dir_id, dir_path FROM maildir_dirs;");
@@ -615,17 +686,13 @@ LEFT OUTER JOIN maildir_links USING (hash_id);)");
       while (changed.step().row() && changed.integer(0) == hash_id)
 	hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
     }
-    cout << "210-" << hi << '\n';
+    out << prefix << hi << '\n';
   }
-
-  cout << "210 " << show_sync_vector(myvv) << '\n';
 }
 
 static void
-cmd_tsync (sqlite3 *sqldb, const versvector &vv)
+send_tags (sqlite3 *sqldb, const string &prefix, ostream &out)
 {
-  versvector myvv = get_sync_vector(sqldb);
-  set_peer_vector (sqldb, vv);
   sqlstmt_t changed (sqldb, R"(
 SELECT m.docid, m.message_id, m.replica, m.version, tags.tag
 FROM (peer_vector p JOIN message_ids m
@@ -647,10 +714,8 @@ FROM (peer_vector p JOIN message_ids m
       while (changed.step().row() && changed.integer(0) == docid)
 	ti.tags.insert (changed.str(4));
     }
-    cout << "210-" << ti << '\n';
+    out << prefix << ti << '\n';
   }
-
-  cout << "210 " << show_sync_vector(myvv) << '\n';
 }
 
 void
@@ -669,8 +734,11 @@ muchsync_server (sqlite3 *db, const string &maildir)
     }
   }
 
-  hash_lookup hashdb(maildir, db);
+  hash_sync hsync(maildir, db);
+  hash_lookup &hashdb = hsync.hashdb;
   tag_lookup tagdb(db);
+  bool remotevv_valid = false;
+  versvector remotevv;
 
   cout << "200 " << dbvers << '\n';
   string cmdline;
@@ -686,22 +754,6 @@ muchsync_server (sqlite3 *db, const string &maildir)
     else if (cmd == "quit") {
       cout << "200 goodbye\n";
       return;
-    }
-    else if (cmd == "vect") {
-      cout << "200 " << show_sync_vector (get_sync_vector (db)) << '\n';
-    }
-    else if (cmd == "send") {
-      string hash;
-      cmdstream >> hash;
-      streambuf *sb;
-      if (hashdb.lookup(hash) && (sb = hashdb.content()))
-	cout << "220-" << hashdb.info() << '\n'
-	     << sb
-	     << "220 " << hashdb.info().hash << '\n';
-      else if (hashdb.ok())
-	cout << "420 cannot open file\n";
-      else
-	cout << "520 unknown hash\n";
     }
     else if (cmd.substr(1) == "info") {
       string key;
@@ -724,23 +776,69 @@ muchsync_server (sqlite3 *db, const string &maildir)
 	break;
       }
     }
-    else if (cmd.substr(1) == "sync") {
-      versvector vv;
-      if (!read_sync_vector(cmdstream, vv))
+    else if (cmd == "send") {
+      string hash;
+      cmdstream >> hash;
+      streambuf *sb;
+      if (hashdb.lookup(hash) && (sb = hashdb.content()))
+	cout << "220-" << hashdb.info() << '\n'
+	     << sb
+	     << "220 " << hashdb.info().hash << '\n';
+      else if (hashdb.ok())
+	cout << "420 cannot open file\n";
+      else
+	cout << "520 unknown hash\n";
+    }
+    else if (cmd == "vect") {
+      if (!read_sync_vector(cmdstream, remotevv)) {
 	cout << "500 could not parse vector\n";
+	remotevv_valid = false;
+      }
       else {
+	set_peer_vector(db, remotevv);
+	remotevv_valid = true;
+	cout << "200 " << show_sync_vector (get_sync_vector (db)) << '\n';
+      }
+    }
+    else if (cmd == "link") {
+      hash_info hi;
+      if (!remotevv_valid)
+	cout << "500 must follow vect command\n";
+      else if (!(cmdstream >> hi))
+	cout << "500 could not parse hash_info\n";
+      else if (hsync.sync(remotevv, hi, nullptr))
+	cout << "220 " << hi.hash << " ok\n";
+      else {
+	cout << "350 " << hi.hash << " upload content\n";
+	try {
+	  string path = receive_message (cin, hi, maildir);
+	  if (!hsync.sync(remotevv, hi, &path))
+	    cout << "550 failed to synchronize message\n";
+	  else
+	    cout << "250 ok\n";
+	}
+	catch (exception e) {
+	  cout << "550 " << e.what() << '\n';
+	}
+      }
+    }
+    else if (cmd.substr(1) == "sync") {
+      if (!remotevv_valid)
+	cout << "500 must follow vect command\n";
+      else
 	switch (cmd[0]) {
 	case 'l':			// lsync command
-	  cmd_lsync (db, vv);
+	  send_links (db, "210-", cout);
+	  cout << "210 ok\n";
 	  break;
 	case 't':			// tsync command
-	  cmd_tsync (db, vv);
+	  send_tags (db, "210-", cout);
+	  cout << "210 ok\n";
 	  break;
 	default:
 	  cout << "500 unknown verb " << cmd << '\n';
 	  break;
 	}
-      }
     }
     else
       cout << "500 unknown verb " << cmd << '\n';
@@ -754,6 +852,8 @@ get_response (istream &in, string &line)
   if (!getline (in, line))
     throw runtime_error ("premature EOF");
   //cerr << "read " << line << '\n';
+  if (opt_verbose >= 3)
+    cerr << line;
   if (line.empty())
     throw runtime_error ("unexpected empty line");
   if (line.size() < 4)
@@ -761,72 +861,6 @@ get_response (istream &in, string &line)
   if (line.front() != '2')
     throw runtime_error ("bad response: " + line);
   return in;
-}
-
-static string
-myhostname()
-{
-  char buf[257];
-  buf[sizeof(buf) - 1] = '\0';
-  if (gethostname (buf, sizeof(buf) - 1))
-    throw runtime_error (string("gethsotname: ") + strerror (errno));
-  return buf;
-}
-
-inline uint32_t
-randint()
-{
-  uint32_t v;
-  if (RAND_pseudo_bytes ((unsigned char *) &v, sizeof (v)) == -1)
-    throw runtime_error ("RAND_pseudo_bytes failed");
-  return v;
-}
-
-string
-maildir_name ()
-{
-  static string hostname = myhostname();
-  static int pid = getpid();
-  static int ndeliveries = 0;
-
-  ostringstream os;
-  struct timespec ts;
-  clock_gettime (CLOCK_REALTIME, &ts);
-  os << ts.tv_sec << ".M" << ts.tv_nsec << 'P' << pid
-     << 'Q' << ++ndeliveries
-     << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
-     << '.' << hostname;
-  return os.str();
-}
-
-static string
-receive_message (istream &in, const hash_info &hi, const string &maildir)
-{
-  string path (maildir + muchsync_tmpdir + maildir_name());
-  ofstream tmp (path, ios_base::out|ios_base::trunc);
-  if (!tmp.is_open())
-    throw runtime_error (path + ": " + strerror(errno));
-  cleanup _unlink (unlink, path.c_str());
-  i64 size = hi.size;
-  hash_ctx ctx;
-  while (size > 0) {
-    char buf[16384];
-    int n = min<i64>(sizeof(buf), size);
-    in.read(buf, n);
-    if (!in.good())
-      throw runtime_error ("premature EOF receiving message");
-    ctx.update(buf, n);
-    tmp.write(buf, n);
-    if (!tmp.good())
-      throw runtime_error (string("error writing mail file: ")
-			   + strerror(errno));
-    size -= n;
-  }
-  tmp.close();
-  if (ctx.final() != hi.hash)
-    throw runtime_error ("message received does not match hash");
-  _unlink.disable();
-  return path;
 }
 
 void
@@ -856,7 +890,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
 
   get_response (in, line);
 
-  out << "vect\n";
+  out << "vect " << show_sync_vector(localvv) << '\n';
   get_response (in, line);
   is.str(line.substr(4));
   if (!read_sync_vector(is, remotevv))
@@ -890,6 +924,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     if (!(is >> hi))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
     string path = receive_message(in, hi, maildir);
+    cleanup _unlink (unlink, path.c_str());
     getline (in, line);
     if (line.size() < 4 || line.at(0) != '2' || line.at(3) != ' '
 	|| line.substr(4) != hi.hash)

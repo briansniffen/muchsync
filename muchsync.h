@@ -205,12 +205,10 @@ int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
 void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 
 /* protocol.cc */
-void muchsync_server (sqlite3 *db, const string &maildir);
 string permissive_percent_encode (const string &raw);
-int sqlite_register_percent_encode (sqlite3 *db);
+void muchsync_server (sqlite3 *db, const string &maildir);
 void muchsync_client (sqlite3 *db, const string &maildir,
 		      int ac, char *const *av);
-string maildir_name ();
 
 /* muchsync.cc */
 extern const char xapian_dirs_def[];
