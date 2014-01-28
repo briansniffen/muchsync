@@ -291,10 +291,19 @@ xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
 }
 
 void
-xapian_scan (sqlite3 *sqldb, writestamp ws, const string &path)
+xapian_refresh_message_ids (sqlite3 *sqldb, const string &maildir)
 {
   print_time ("opening Xapian");
-  Xapian::Database xdb (path + "/.notmuch/xapian");
+  Xapian::Database xdb (maildir + "/.notmuch/xapian");
+  print_time ("scanning message IDs");
+  xapian_scan_message_ids (sqldb, xdb);
+}
+
+void
+xapian_scan (sqlite3 *sqldb, writestamp ws, const string &maildir)
+{
+  print_time ("opening Xapian");
+  Xapian::Database xdb (maildir + "/.notmuch/xapian");
   sqlexec (sqldb, xapian_triggers);
   print_time ("scanning message IDs");
   xapian_scan_message_ids (sqldb, xdb);
