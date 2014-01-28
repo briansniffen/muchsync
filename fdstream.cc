@@ -129,6 +129,15 @@ spawn_infinite_input_buffer (int infd)
     return -1;
   case 0:
     close (fds[0]);
+    // This isn't perfect, but whatever 10 bad file descriptors in a
+    // row is a pretty good sign we've arrived at the end.
+    for (int fd = 0, badfd = 0; fd <= infd || fd <= fds[1] || badfd < 10; fd++)
+      if (fd != infd && fd != fds[1] && fd != 2) {
+	if (close(fd) && errno == EBADF)
+	  badfd++;
+	else
+	  badfd = 0;
+      }
     try { infinite_buffer (infd, fds[1]); }
     catch (...) { _exit (1); }
     _exit (0);

@@ -398,7 +398,8 @@ recursive_mkdir (string path)
 	     << " failed (" << strerror(errno) << ")\n";
 	return false;
       }
-      cerr << "created directory " << path << '\n';
+      if (opt_verbose > 0)
+	cerr << "created directory " << path.c_str() << '\n';
     }
     if (n == string::npos)
       return true;
@@ -562,9 +563,10 @@ static void
 set_peer_vector (sqlite3 *sqldb, const versvector &vv)
 {
   sqlexec (sqldb, R"(
-DROP TABLE IF EXISTS peer_vector;
-CREATE TEMP TABLE peer_vector (replica INTEGER PRIMARY KEY,
+CREATE TEMP TABLE IF NOT EXISTS peer_vector (
+  replica INTEGER PRIMARY KEY,
   known_version INTEGER);
+DELETE FROM peer_vector;
 INSERT OR REPLACE INTO peer_vector
   SELECT DISTINCT replica, -1 FROM message_ids;
 INSERT OR REPLACE INTO peer_vector
@@ -573,7 +575,7 @@ INSERT OR REPLACE INTO peer_vector
   sqlstmt_t pvadd (sqldb, "INSERT OR REPLACE INTO"
 		   " peer_vector (replica, known_version) VALUES (?, ?);");
   for (writestamp ws : vv)
-    pvadd.reset().param(ws.first, ws.second).step();
+    pvadd.param(ws.first, ws.second).step().reset();
 }
 
 static void
