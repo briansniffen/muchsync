@@ -799,6 +799,36 @@ maildir_name ()
   return os.str();
 }
 
+static string
+receive_message (istream &in, const hash_info &hi, const string &maildir)
+{
+  string path (maildir + muchsync_tmpdir + maildir_name());
+  ofstream tmp (path, ios_base::out|ios_base::trunc);
+  if (!tmp.is_open())
+    throw runtime_error (path + ": " + strerror(errno));
+  cleanup _unlink (unlink, path.c_str());
+  i64 size = hi.size;
+  hash_ctx ctx;
+  while (size > 0) {
+    char buf[16384];
+    int n = min<i64>(sizeof(buf), size);
+    in.read(buf, n);
+    if (!in.good())
+      throw runtime_error ("premature EOF receiving message");
+    ctx.update(buf, n);
+    tmp.write(buf, n);
+    if (!tmp.good())
+      throw runtime_error (string("error writing mail file: ")
+			   + strerror(errno));
+    size -= n;
+  }
+  tmp.close();
+  if (ctx.final() != hi.hash)
+    throw runtime_error ("message received does not match hash");
+  _unlink.disable();
+  return path;
+}
+
 void
 muchsync_client (sqlite3 *db, const string &maildir,
 		 int ac, char *const *av)
@@ -853,32 +883,13 @@ muchsync_client (sqlite3 *db, const string &maildir,
   }
   out << "tsync " << show_sync_vector(localvv) << '\n';
 
-  ofstream tmp;
   hash_info hi;
   for (; pending > 0; pending--) {
     get_response (in, line);
     is.str(line.substr(4));
     if (!(is >> hi))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
-    string path = maildir + muchsync_tmpdir + "/" + maildir_name();
-    tmp.open(path);
-    if (!tmp.is_open())
-      throw runtime_error (path + ": " + strerror(errno));
-    cleanup _unlink (unlink, path.c_str());
-    i64 size = hi.size;
-    while (size > 0) {
-      char buf[16384];
-      int n = min<i64>(sizeof(buf), size);
-      in.read(buf, n);
-      if (!in.good())
-	throw runtime_error ("premature EOF");
-      tmp.write(buf, n);
-      if (!out.good())
-	throw runtime_error (string("error writing mail file: ")
-			     + strerror(errno));
-      size -= n;
-    }
-    tmp.close();
+    string path = receive_message(in, hi, maildir);
     getline (in, line);
     if (line.size() < 4 || line.at(0) != '2' || line.at(3) != ' '
 	|| line.substr(4) != hi.hash)

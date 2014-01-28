@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <openssl/rand.h>
+#include <notmuch.h>
 #include "muchsync.h"
 
 using namespace std;

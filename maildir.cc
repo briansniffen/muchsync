@@ -11,8 +11,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include <openssl/sha.h>
-
 #include "muchsync.h"
 
 using namespace std;
@@ -48,6 +46,14 @@ hexdump (const string &s)
 }
 
 string
+hash_ctx::final()
+{
+  unsigned char resbuf[SHA_DIGEST_LENGTH];
+  SHA1_Final (resbuf, &ctx_);
+  return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
+}
+
+string
 get_sha (int dfd, const char *direntry, i64 *sizep)
 {
   int fd = openat(dfd, direntry, O_RDONLY);
@@ -55,23 +61,19 @@ get_sha (int dfd, const char *direntry, i64 *sizep)
     throw runtime_error (string() + direntry + ": " + strerror (errno));
   cleanup _c (close, fd);
 
-  SHA_CTX ctx;
-  SHA1_Init (&ctx);
-
+  hash_ctx ctx;
   char buf[16384];
   int n;
   i64 sz = 0;
   while ((n = read (fd, buf, sizeof (buf))) > 0) {
-    SHA1_Update (&ctx, buf, n);
+    ctx.update (buf, n);
     sz += n;
   }
   if (n < 0)
     throw runtime_error (string() + direntry + ": " + strerror (errno));
-  unsigned char resbuf[SHA_DIGEST_LENGTH];
-  SHA1_Final (resbuf, &ctx);
   if (sizep)
     *sizep = sz;
-  return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
+  return ctx.final();
 }
 
 #if 0

@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <sqlite3.h>
-#include <notmuch.h>
+#include <openssl/sha.h>
 
 using std::string;
 
@@ -264,6 +264,14 @@ int spawn_infinite_input_buffer (int infd);
 void cmd_iofds (int fds[2], const string &cmd);
 
 /* maildir.cc */
+class hash_ctx {
+  SHA_CTX ctx_;
+public:
+  hash_ctx() { init(); }
+  void init() { SHA1_Init(&ctx_); }
+  void update(const void *buf, size_t n) { SHA1_Update (&ctx_, buf, n); }
+  string final();
+};
 string get_sha (int dfd, const char *direntry, i64 *sizep = nullptr);
 /* Maildirs place messages in directories called "new" and "dir" */
 inline bool
