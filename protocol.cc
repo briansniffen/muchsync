@@ -117,7 +117,10 @@ public:
 inline string
 trashname (const string &maildir, const string &hash)
 {
-  return maildir + muchsync_trashdir + "/" + hash;
+  if (hash.find('/') != string::npos || hash.size() < 3 || hash.at(0) == '.')
+    throw runtime_error ("illegal hash: " + hash);
+  return maildir + muchsync_trashdir + "/" +
+    hash.substr(0,2) + "/" + hash.substr(2);
 }
 
 static string

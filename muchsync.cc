@@ -160,8 +160,8 @@ dbcreate (const char *path)
 bool
 muchsync_init (const string &maildir, bool create = false)
 {
-  string msdir = maildir + muchsync_defdir;
-  if (!access (msdir.c_str(), 0))
+  string trashbase = maildir + muchsync_trashdir + "/";
+  if (!access ((trashbase + "ff").c_str(), 0))
     return true;
 
   if (create && mkdir (maildir.c_str(), 0777) && errno != EEXIST) {
@@ -176,10 +176,20 @@ muchsync_init (const string &maildir, bool create = false)
       notmuch_database_destroy (notmuch);
   }
 
+  string msdir = maildir + muchsync_defdir;
   for (string d : {msdir, maildir + muchsync_trashdir,
 	           maildir + muchsync_tmpdir}) {
     if (mkdir (d.c_str(), 0777) && errno != EEXIST) {
       perror (d.c_str());
+      return false;
+    }
+  }
+
+  for (int i = 0; i < 0x100; i++) {
+    ostringstream os;
+    os << trashbase << hex << setw(2) << i;
+    if (mkdir (os.str().c_str(), 0777) && errno != EEXIST) {
+      perror (os.str().c_str());
       return false;
     }
   }
