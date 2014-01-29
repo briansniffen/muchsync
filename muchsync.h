@@ -218,7 +218,6 @@ extern int opt_verbose;
 extern string opt_ssh;
 extern string opt_remote_muchsync_path;
 extern const char muchsync_trashdir[];
-extern const char muchsync_tmpdir[];
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
@@ -265,6 +264,7 @@ void cmd_iofds (int fds[2], const string &cmd);
 class hash_ctx {
   SHA_CTX ctx_;
 public:
+  static constexpr size_t output_bytes = SHA_DIGEST_LENGTH;
   hash_ctx() { init(); }
   void init() { SHA1_Init(&ctx_); }
   void update(const void *buf, size_t n) { SHA1_Update (&ctx_, buf, n); }

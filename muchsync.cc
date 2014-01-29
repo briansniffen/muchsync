@@ -17,7 +17,6 @@ const char dbvers[] = "muchsync 0";
 #define MUCHSYNC_DEFDIR "/.notmuch/muchsync"
 const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
 const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
-const char muchsync_tmpdir[] = MUCHSYNC_DEFDIR "/tmp";
 const char muchsync_trashdir[] = MUCHSYNC_DEFDIR "/trash";
 
 bool opt_fullscan;
@@ -89,6 +88,27 @@ CREATE TABLE maildir_links (
   dir_id INTEGER NOT NULL,
   link_count INTEGER,
   PRIMARY KEY (hash_id, dir_id));
+
+-- Operations from a pending transaction
+CREATE TABLE pending_message_ids (
+  pm_id INTEGER_PRIMARY KEY,
+  docid INTEGER UNIQUE,  -- note: might be NULL
+  message_id TEXT UNIQUE NOT NULL,
+  replica INTEGER,
+  version INTEGER);
+CREATE TABLE pending_tags (
+  pm_id INTEGER,
+  tag TEXT,
+  UNIQUE (pm_id, tag));
+CREATE TABLE pending_links (
+  source TEXT,
+  hash TEXT NOT NULL,
+  dir_id INTEGER,
+  adjustment INTEGER,
+  replica INTEGER,
+  version INTEGER,
+  UNIQUE(dir_id, hash));
+CREATE INDEX pending_links_order ON pending_links (hash, adjustment DESC);
 )";
 
 const char xapian_dirs_def[] =
@@ -177,8 +197,7 @@ muchsync_init (const string &maildir, bool create = false)
   }
 
   string msdir = maildir + muchsync_defdir;
-  for (string d : {msdir, maildir + muchsync_trashdir,
-	           maildir + muchsync_tmpdir}) {
+  for (string d : {msdir, maildir + muchsync_trashdir}) {
     if (mkdir (d.c_str(), 0777) && errno != EEXIST) {
       perror (d.c_str());
       return false;

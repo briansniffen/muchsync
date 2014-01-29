@@ -113,11 +113,21 @@ public:
   }
 };
 
+inline bool
+hash_ok (const string &hash)
+{
+  if (hash.size() != 2*hash_ctx::output_bytes)
+    return false;
+  for (char c : hash)
+    if (c < '0' || c > 'f' || (c > '9' && c < 'a'))
+      return false;
+  return true;
+}
 
 inline string
 trashname (const string &maildir, const string &hash)
 {
-  if (hash.find('/') != string::npos || hash.size() < 3 || hash.at(0) == '.')
+  if (!hash_ok(hash))
     throw runtime_error ("illegal hash: " + hash);
   return maildir + muchsync_trashdir + "/" +
     hash.substr(0,2) + "/" + hash.substr(2);
@@ -205,14 +215,16 @@ operator<< (ostream &os, const hash_info &hi)
 istream &
 operator>> (istream &is, hash_info &hi)
 {
-  {
-    string msgid;
-    input_match(is, 'L') >> hi.hash >> hi.size >> msgid;
-    hi.message_id = percent_decode (msgid);
-  }
-  read_writestamp(is, hi.hash_stamp);
+  string hash, msgid;
+  size_t size;
+  writestamp stamp;
+  decltype(hi.dirs) d;
+
+  input_match(is, 'L') >> hash >> size >> msgid;
+  if (is && !hash_ok(hash))
+    is.setstate (ios_base::failbit);
+  read_writestamp(is, stamp);
   input_match(is, '(');
-  hi.dirs.clear();
   char c;
   while ((is >> skipws >> c) && c != ')') {
     is.putback (c);
@@ -226,7 +238,15 @@ operator>> (istream &is, hash_info &hi)
       dir.resize(dir.size()-1);
     }
     if (!dir.empty())
-      hi.dirs.emplace (percent_decode (dir), nlinks);
+      d.emplace (percent_decode (dir), nlinks);
+  }
+
+  if (is.good()) {
+    hi.hash = hash;
+    hi.size = size;
+    hi.message_id = percent_decode (msgid);
+    hi.hash_stamp = stamp;
+    hi.dirs = move(d);
   }
   return is;
 }
@@ -419,7 +439,7 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
     tagdb (db_)
 {
   sqlstmt_t s (db, "SELECT dir_path, dir_id FROM maildir_dirs;");
-  for (s.step(); s.row(); s.step())
+  while (s.step().row())
     dir_ids_.emplace (s.str(0), s.integer(1));
 }
 
@@ -650,7 +670,7 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 static string
 receive_message (istream &in, const hash_info &hi, const string &maildir)
 {
-  string path (maildir + muchsync_tmpdir + "/" + maildir_name());
+  string path (trashname(maildir, hi.hash));
   ofstream tmp (path, ios_base::out|ios_base::trunc);
   if (!tmp.is_open())
     throw runtime_error (path + ": " + strerror(errno));

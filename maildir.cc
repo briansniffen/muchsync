@@ -48,7 +48,7 @@ hexdump (const string &s)
 string
 hash_ctx::final()
 {
-  unsigned char resbuf[SHA_DIGEST_LENGTH];
+  unsigned char resbuf[output_bytes];
   SHA1_Final (resbuf, &ctx_);
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
