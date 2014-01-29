@@ -88,27 +88,6 @@ CREATE TABLE maildir_links (
   dir_id INTEGER NOT NULL,
   link_count INTEGER,
   PRIMARY KEY (hash_id, dir_id));
-
--- Operations from a pending transaction
-CREATE TABLE pending_message_ids (
-  pm_id INTEGER_PRIMARY KEY,
-  docid INTEGER UNIQUE,  -- note: might be NULL
-  message_id TEXT UNIQUE NOT NULL,
-  replica INTEGER,
-  version INTEGER);
-CREATE TABLE pending_tags (
-  pm_id INTEGER,
-  tag TEXT,
-  UNIQUE (pm_id, tag));
-CREATE TABLE pending_links (
-  source TEXT,
-  hash TEXT NOT NULL,
-  dir_id INTEGER,
-  adjustment INTEGER,
-  replica INTEGER,
-  version INTEGER,
-  UNIQUE(dir_id, hash));
-CREATE INDEX pending_links_order ON pending_links (hash, adjustment DESC);
 )";
 
 const char xapian_dirs_def[] =

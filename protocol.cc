@@ -91,10 +91,12 @@ class msg_sync {
   sqlstmt_t add_tag_;
   sqlstmt_t update_message_id_stamp_;
   unordered_map<string,i64> dir_ids_;
+  unordered_map<i64,string> id_dirs_;
   writestamp mystamp_;
 
   static constexpr i64 bad_dir_id = -1;
   notmuch_database_t *notmuch();
+  void clear_pending();
   i64 get_dir_id (const string &dir, bool create);
 public:
   hash_lookup hashdb;
@@ -111,6 +113,7 @@ public:
       notmuch_database_destroy (notmuch_);
     notmuch_ = nullptr;
   }
+  void commit();
 };
 
 inline bool
@@ -371,17 +374,41 @@ hash_lookup::get_pathname(string *out, bool *from_trash) const
       return true;
     }
   }
+
   path = trashname(maildir, hi_.hash);
-  if (!stat(path.c_str(), &sb) && S_ISREG(sb.st_mode)
-      && sb.st_size == hi_.size
-      && hi_.hash == get_sha (AT_FDCWD, path.c_str(), nullptr)) {
-    if (out)
-      *out = move(path);
-    if (from_trash)
-      *from_trash = true;
-    return true;
+  int fd = open (path.c_str(), O_RDWR);
+  if (fd < 0)
+    return false;
+
+  // Check size [not really necessary]
+  if (fstat(fd, &sb) || sb.st_size != hi_.size) {
+    close (fd);
+    cerr << "deleting file with bad size " << path << '\n';
+    unlink(path.c_str());
+    return false;
   }
-  return false;
+
+  // Check hash
+  int n;
+  char buf[16384];
+  hash_ctx ctx;
+  while ((n = read(fd, buf, sizeof(buf))) > 0)
+    ctx.update(buf, n);
+  if (hi_.hash != ctx.final()) {
+    close(fd);
+    cerr << "deleting corrupt file " << path << '\n';
+    unlink(path.c_str());
+    return false;
+  }
+
+  // Found it in the trash
+  fsync(fd);			// Might just have downloaded it
+  close(fd);
+  if (out)
+    *out = move(path);
+  if (from_trash)
+    *from_trash = true;
+  return true;
 }
 
 streambuf *
@@ -438,9 +465,33 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
     hashdb (maildir, db_),
     tagdb (db_)
 {
-  sqlstmt_t s (db, "SELECT dir_path, dir_id FROM maildir_dirs;");
-  while (s.step().row())
-    dir_ids_.emplace (s.str(0), s.integer(1));
+  sqlstmt_t s (db_, "SELECT dir_path, dir_id FROM maildir_dirs;");
+  while (s.step().row()) {
+    string dir {s.str(0)};
+    i64 dir_id {s.integer(1)};
+    dir_ids_.emplace (dir, dir_id);
+    id_dirs_.emplace (dir_id, dir);
+  }
+  sqlexec(db_, R"(
+-- Operations from a pending transaction
+CREATE TABLE IF NOT EXISTS pending_message_ids (
+  pm_id INTEGER_PRIMARY KEY,
+  docid INTEGER UNIQUE,  -- note: might be NULL
+  message_id TEXT UNIQUE NOT NULL,
+  replica INTEGER,
+  version INTEGER);
+CREATE TABLE IF NOT EXISTS pending_tags (
+  pm_id INTEGER,
+  tag TEXT,
+  UNIQUE (pm_id, tag));
+CREATE TABLE IF NOT EXISTS pending_links (
+  hash_id INTEGER NOT NULL,
+  dir_id INTEGER NOT NULL,
+  adjustment INTEGER,
+  replica INTEGER,
+  version INTEGER,
+  PRIMARY KEY(hash_id, dir_id));
+)");
 }
 
 msg_sync::~msg_sync ()
@@ -460,6 +511,26 @@ msg_sync::notmuch ()
       throw runtime_error (hashdb.maildir + notmuch_status_to_string(err));
   }
   return notmuch_;
+}
+
+void
+msg_sync::clear_pending()
+{
+  sqlexec(db_,
+	  "DELETE FROM pending_message_ids; "
+	  "DELETE FROM pending_tags; "
+	  "DELETE FROM pending_links; "
+	  "DELETE FROM pending_unlinks; ");
+}
+
+void
+msg_sync::commit()
+{
+  setconfig(db_, "committing", 1);
+
+  //for (sqlstmt_t s ("SELECT source, ))
+
+  setconfig(db_, "committing", 0);
 }
 
 static bool
@@ -525,7 +596,8 @@ msg_sync::get_dir_id (const string &dir, bool create)
   sqlexec (db_, "INSERT INTO maildir_dirs (dir_path) VALUES (%Q);",
 	   dir.c_str());
   i64 dir_id = sqlite3_last_insert_rowid (db_);
-  dir_ids_.emplace (dir, dir_id);
+  dir_ids_.emplace(dir, dir_id);
+  id_dirs_.emplace(dir_id, dir);
   return dir_id;
 }
 
