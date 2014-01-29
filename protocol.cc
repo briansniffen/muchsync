@@ -61,32 +61,6 @@ public:
   streambuf *content();
 };
 
-class hash_sync {
-  sqlite3 *db_;
-  notmuch_database_t *notmuch_ = nullptr;
-  sqlstmt_t update_hash_stamp_;
-  sqlstmt_t set_link_count_;
-  sqlstmt_t delete_link_count_;
-  unordered_map<string,i64> dir_ids_;
-  writestamp mystamp_;
-
-  static constexpr i64 bad_dir_id = -1;
-  notmuch_database_t *notmuch();
-  i64 get_dir_id (const string &dir, bool create);
-public:
-  hash_lookup hashdb;
-  hash_sync(const string &maildir, sqlite3 *db);
-  ~hash_sync();
-  bool sync(const versvector &remote_sync_vector,
-	    const hash_info &remote_hash_info,
-	    const string *sourcefile);
-  void notmuch_close() {
-    if (notmuch_)
-      notmuch_database_destroy (notmuch_);
-    notmuch_ = nullptr;
-  }
-};
-
 struct tag_info {
   string message_id;
   writestamp tag_stamp = {-1, -1};
@@ -106,6 +80,39 @@ public:
   i64 docid() const { assert (ok()); return docid_; }
   const tag_info &info() const { assert (ok()); return ti_; }
 };
+
+class msg_sync {
+  sqlite3 *db_;
+  notmuch_database_t *notmuch_ = nullptr;
+  sqlstmt_t update_hash_stamp_;
+  sqlstmt_t set_link_count_;
+  sqlstmt_t delete_link_count_;
+  sqlstmt_t clear_tags_;
+  sqlstmt_t add_tag_;
+  sqlstmt_t update_message_id_stamp_;
+  unordered_map<string,i64> dir_ids_;
+  writestamp mystamp_;
+
+  static constexpr i64 bad_dir_id = -1;
+  notmuch_database_t *notmuch();
+  i64 get_dir_id (const string &dir, bool create);
+public:
+  hash_lookup hashdb;
+  tag_lookup tagdb;
+  msg_sync(const string &maildir, sqlite3 *db);
+  ~msg_sync();
+  bool hash_sync(const versvector &remote_sync_vector,
+		 const hash_info &remote_hash_info,
+		 const string *sourcefile);
+  bool tag_sync(const versvector &remote_sync_vector,
+		const tag_info &remote_tag_info);
+  void notmuch_close() {
+    if (notmuch_)
+      notmuch_database_destroy (notmuch_);
+    notmuch_ = nullptr;
+  }
+};
+
 
 inline string
 trashname (const string &maildir, const string &hash)
@@ -369,7 +376,30 @@ hash_lookup::content()
   return nullptr;
 }
 
-hash_sync::hash_sync (const string &maildir, sqlite3 *db)
+tag_lookup::tag_lookup (sqlite3 *db)
+  : getmsg_(db, "SELECT docid, replica, version"
+	    " FROM message_ids WHERE message_id = ?;"),
+    gettags_(db, "SELECT tag FROM tags WHERE docid = ?;")
+{
+}
+
+bool
+tag_lookup::lookup (const string &msgid)
+{
+  ok_ = false;
+  if (!getmsg_.reset().param(msgid).step().row())
+    return false;
+  ti_.message_id = msgid;
+  docid_ = getmsg_.integer(0);
+  ti_.tag_stamp.first = getmsg_.integer(1);
+  ti_.tag_stamp.second = getmsg_.integer(2);
+  ti_.tags.clear();
+  for (gettags_.reset().param(docid_).step(); gettags_.row(); gettags_.step())
+    ti_.tags.insert(gettags_.str(0));
+  return ok_ = true;
+}
+
+msg_sync::msg_sync (const string &maildir, sqlite3 *db)
   : db_(db),
     update_hash_stamp_(db_, "UPDATE maildir_hashes "
 		       "SET replica = ?, version = ? WHERE hash_id = ?;"),
@@ -377,21 +407,26 @@ hash_sync::hash_sync (const string &maildir, sqlite3 *db)
 		    " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
     delete_link_count_(db_, "DELETE FROM maildir_links"
 		       " WHERE hash_id = ? & dir_id = ?;"),
+    clear_tags_(db, "DELETE FROM tags WHERE docid = ?;"),
+    add_tag_(db, "INSERT OR IGNORE INTO tags (docid, tag) VALUES (?, ?);"),
+    update_message_id_stamp_(db, "UPDATE message_ids SET"
+			     " replica = ?, version = ? WHERE docid = ?;"),
     mystamp_(get_mystamp(db_)),
-    hashdb (maildir, db_)
+    hashdb (maildir, db_),
+    tagdb (db_)
 {
   sqlstmt_t s (db, "SELECT dir_path, dir_id FROM maildir_dirs;");
   for (s.step(); s.row(); s.step())
     dir_ids_.emplace (s.str(0), s.integer(1));
 }
 
-hash_sync::~hash_sync ()
+msg_sync::~msg_sync ()
 {
   notmuch_close();
 }
 
 notmuch_database_t *
-hash_sync::notmuch ()
+msg_sync::notmuch ()
 {
   if (!notmuch_) {
     notmuch_status_t err =
@@ -450,7 +485,7 @@ recursive_mkdir (string path)
 }
 
 i64
-hash_sync::get_dir_id (const string &dir, bool create)
+msg_sync::get_dir_id (const string &dir, bool create)
 {
   auto i = dir_ids_.find(dir);
   if (i != dir_ids_.end())
@@ -472,9 +507,9 @@ hash_sync::get_dir_id (const string &dir, bool create)
 }
 
 bool
-hash_sync::sync(const versvector &rvv,
-		const hash_info &rhi,
-		const string *sourcep)
+msg_sync::hash_sync(const versvector &rvv,
+		    const hash_info &rhi,
+		    const string *sourcep)
 {
   hash_info lhi;
   if (hashdb.lookup(rhi.hash)) {
@@ -580,27 +615,33 @@ hash_sync::sync(const versvector &rvv,
   return true;
 }
 
-tag_lookup::tag_lookup (sqlite3 *db)
-  : getmsg_(db, "SELECT docid, replica, version"
-	    " FROM message_ids WHERE message_id = ?;"),
-    gettags_(db, "SELECT tag FROM tags WHERE docid = ?;")
-{
-}
-
 bool
-tag_lookup::lookup (const string &msgid)
+msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 {
-  ok_ = false;
-  if (!getmsg_.reset().param(msgid).step().row())
+  if (!tagdb.lookup(rti.message_id))
     return false;
-  ti_.message_id = msgid;
-  docid_ = getmsg_.integer(0);
-  ti_.tag_stamp.first = getmsg_.integer(1);
-  ti_.tag_stamp.second = getmsg_.integer(2);
-  ti_.tags.clear();
-  for (gettags_.reset().param(docid_).step(); gettags_.row(); gettags_.step())
-    ti_.tags.insert(gettags_.str(0));
-  return ok_ = true;
+  const tag_info lhi = tagdb.info();
+
+#if 0
+  bool tags_conflict
+    = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
+       && rhi.tags != lhi.tags);
+  unordered_set<string> newtags (rhi.tags);
+  if (tags_conflict) {
+    // Logically OR most tags
+    for (auto i : lhi.tags)
+      newtags.insert(i);
+    // But logically AND new_tags
+    for (auto i : new_tags)
+      if (rhi.tags.find(i) == rhi.tags.end()
+	  || lhi.tags.find(i) == lhi.tags.end())
+	newtags.erase(i);
+  }
+
+  wsp = tags_conflict ? &mystamp_ : &rhi.tag_stamp;
+  update_hash_stamp_.reset()
+    .param(rhi.message_id, docid, wsp->first, wsp->second, hash_id).step();
+#endif
 }
 
 static string
@@ -734,8 +775,8 @@ muchsync_server (sqlite3 *db, const string &maildir)
     }
   }
 
-  hash_sync hsync(maildir, db);
-  hash_lookup &hashdb = hsync.hashdb;
+  msg_sync msync(maildir, db);
+  hash_lookup &hashdb = msync.hashdb;
   tag_lookup tagdb(db);
   bool remotevv_valid = false;
   versvector remotevv;
@@ -806,13 +847,13 @@ muchsync_server (sqlite3 *db, const string &maildir)
 	cout << "500 must follow vect command\n";
       else if (!(cmdstream >> hi))
 	cout << "500 could not parse hash_info\n";
-      else if (hsync.sync(remotevv, hi, nullptr))
+      else if (msync.hash_sync(remotevv, hi, nullptr))
 	cout << "220 " << hi.hash << " ok\n";
       else {
 	cout << "350 " << hi.hash << " upload content\n";
 	try {
 	  string path = receive_message (cin, hi, maildir);
-	  if (!hsync.sync(remotevv, hi, &path))
+	  if (!msync.hash_sync(remotevv, hi, &path))
 	    cout << "550 failed to synchronize message\n";
 	  else
 	    cout << "250 ok\n";
@@ -885,7 +926,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
   versvector localvv {get_sync_vector (db)}, remotevv;
   string line;
   istringstream is;
-  hash_sync hsync (maildir, db);
+  msg_sync msync (maildir, db);
   i64 pending = 0;
 
   get_response (in, line);
@@ -903,7 +944,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     hash_info hi;
     if (!(is >> hi))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
-    bool ok = hsync.sync (remotevv, hi, nullptr);
+    bool ok = msync.hash_sync (remotevv, hi, nullptr);
     if (opt_verbose >= 2) {
       if (ok)
 	cerr << hi << '\n';
@@ -929,13 +970,13 @@ muchsync_client (sqlite3 *db, const string &maildir,
     if (line.size() < 4 || line.at(0) != '2' || line.at(3) != ' '
 	|| line.substr(4) != hi.hash)
       throw runtime_error ("lost sync while receiving message: " + line);
-    if (!hsync.sync (remotevv, hi, &path))
-      throw runtime_error ("hash_sync::sync failed even with source");
+    if (!msync.hash_sync (remotevv, hi, &path))
+      throw runtime_error ("msg_sync::sync failed even with source");
     if (opt_verbose >= 2)
       cerr << hi << '\n';
   }
 
-  hsync.notmuch_close();
+  msync.notmuch_close();
   xapian_refresh_message_ids(db, maildir);
 
   while (get_response (in, line) && line.at(3) == '-') {
@@ -958,40 +999,3 @@ muchsync_client (sqlite3 *db, const string &maildir,
   sqlexec (db, "COMMIT;");
 }
 
-
-
-
-
-
-
-
-#if 0
-void
-crap()
-{
-    get_docid_(db, "SELECT docid FROM message_ids WHERE message_id = ?;"),
-    update_msgid_(db, "INSERT OR REPLACE INTO"
-		  " message_ids (message_id, docid, replica, version)"
-		  " VALUES (?, ?, ?, ?);"),
-    delete_msgid_(db, "DELETE FROM message_ids WHERE message_id = ?;"),
-
-  bool tags_conflict
-    = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
-       && rhi.tags != lhi.tags);
-  unordered_set<string> newtags (rhi.tags);
-  if (tags_conflict) {
-    // Logically OR most tags
-    for (auto i : lhi.tags)
-      newtags.insert(i);
-    // But logically AND new_tags
-    for (auto i : new_tags)
-      if (rhi.tags.find(i) == rhi.tags.end()
-	  || lhi.tags.find(i) == lhi.tags.end())
-	newtags.erase(i);
-  }
-
-  wsp = tags_conflict ? &mystamp_ : &rhi.tag_stamp;
-  update_hash_stamp_.reset()
-    .param(rhi.message_id, docid, wsp->first, wsp->second, hash_id).step();
-}
-#endif
