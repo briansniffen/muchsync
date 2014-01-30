@@ -732,14 +732,17 @@ msg_sync::hash_sync(const versvector &rvv,
 bool
 msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 {
-  sqlexec (db_, "SAVEPOINT tag_sync;");
-  cleanup c (sqlexec, db_, "ROLLBACK TO tag_sync;");
 
   if (!tagdb.lookup(rti.message_id)) {
     cerr << "warning: can't find " << rti.message_id << '\n';
     return false;
   }
   const tag_info &lti = tagdb.info();
+  if (lti.tag_stamp == rti.tag_stamp)
+    return true;
+
+  sqlexec (db_, "SAVEPOINT tag_sync;");
+  cleanup c (sqlexec, db_, "ROLLBACK TO tag_sync;");
 
   notmuch_message_t *message;
   notmuch_status_t err =

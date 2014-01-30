@@ -131,30 +131,31 @@ dbcreate (const char *path)
   }
   self &= ~(i64 (1) << 63);
 
-  sqlite3 *pDb = NULL;
-  int err = sqlite3_open_v2 (path, &pDb,
+  sqlite3 *db = NULL;
+  int err = sqlite3_open_v2 (path, &db,
 			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, NULL);
   if (err) {
     cerr << path << ": " << sqlite3_errstr (err);
     return NULL;
   }
+  sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
 
   try {
-    sqlexec (pDb, "BEGIN;");
-    sqlexec (pDb, schema_def);
-    sqlexec (pDb, xapian_dirs_def);
-    setconfig (pDb, "dbvers", dbvers);
-    setconfig (pDb, "self", self);
-    setconfig (pDb, "last_scan", 0.0);
-    sqlexec (pDb, "INSERT INTO sync_vector (replica, version)"
+    sqlexec (db, "BEGIN;");
+    sqlexec (db, schema_def);
+    sqlexec (db, xapian_dirs_def);
+    setconfig (db, "dbvers", dbvers);
+    setconfig (db, "self", self);
+    setconfig (db, "last_scan", 0.0);
+    sqlexec (db, "INSERT INTO sync_vector (replica, version)"
 	     " VALUES (%lld, 0);", self);
-    sqlexec (pDb, "COMMIT;");
+    sqlexec (db, "COMMIT;");
   } catch (sqlerr_t exc) {
-    sqlite3_close_v2 (pDb);
+    sqlite3_close_v2 (db);
     cerr << exc.what () << '\n';
     return NULL;
   }
-  return pDb;
+  return db;
 }
 
 bool
@@ -200,36 +201,38 @@ muchsync_init (const string &maildir, bool create = false)
 sqlite3 *
 dbopen (const char *path)
 {
-  sqlite3 *pDb = NULL;
+  sqlite3 *db = NULL;
   if (access (path, 0) && errno == ENOENT)
-    pDb = dbcreate (path);
-  else
-    sqlite3_open_v2 (path, &pDb, SQLITE_OPEN_READWRITE, NULL);
-  if (!pDb)
+    db = dbcreate (path);
+  else {
+    sqlite3_open_v2 (path, &db, SQLITE_OPEN_READWRITE, NULL);
+    sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
+  }
+  if (!db)
     return NULL;
 
-  sqlexec (pDb, "PRAGMA secure_delete = 0;");
+  sqlexec (db, "PRAGMA secure_delete = 0;");
 
   try {
-    if (getconfig<string> (pDb, "dbvers") != dbvers) {
+    if (getconfig<string> (db, "dbvers") != dbvers) {
       cerr << path << ": invalid database version\n";
-      sqlite3_close_v2 (pDb);
+      sqlite3_close_v2 (db);
       return NULL;
     }
-    getconfig<i64> (pDb, "self");
+    getconfig<i64> (db, "self");
   }
   catch (sqldone_t) {
     cerr << path << ": invalid configuration\n";
-    sqlite3_close_v2 (pDb);
+    sqlite3_close_v2 (db);
     return NULL;
   }
   catch (sqlerr_t &e) {
     cerr << path << ": " << e.what() << '\n';
-    sqlite3_close_v2 (pDb);
+    sqlite3_close_v2 (db);
     return NULL;
   }
 
-  return pDb;
+  return db;
 }
 
 versvector
