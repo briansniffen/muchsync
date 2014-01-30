@@ -752,8 +752,6 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 	newtags.erase(i);
   }
 
-  cerr << "message " << rti.message_id << '\n';
-
   clear_tags_.param(tagdb.docid()).step().reset();
   err = notmuch_message_freeze(message);
   if (err)
@@ -761,9 +759,6 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 			 + notmuch_status_to_string(err));
   err = notmuch_message_remove_all_tags(message);
   for (auto tag : newtags) {
-
-    cerr << "   +" << tag << '\n';
-
     add_tag_.param(tagdb.docid(), tag).step().reset();
     err = notmuch_message_add_tag(message, tag.c_str());
     if (err)
