@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <openssl/rand.h>
+#include <xapian.h>
 #include <notmuch.h>
 #include "muchsync.h"
 #include "fdstream.h"
@@ -90,13 +91,13 @@ class msg_sync {
   sqlstmt_t clear_tags_;
   sqlstmt_t add_tag_;
   sqlstmt_t update_message_id_stamp_;
+  sqlstmt_t record_docid_;
   unordered_map<string,i64> dir_ids_;
-  unordered_map<i64,string> id_dirs_;
   writestamp mystamp_;
 
   static constexpr i64 bad_dir_id = -1;
   notmuch_database_t *notmuch();
-  void clear_pending();
+  void clear_committing();
   i64 get_dir_id (const string &dir, bool create);
 public:
   hash_lookup hashdb;
@@ -457,10 +458,12 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
 		    " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
     delete_link_count_(db_, "DELETE FROM maildir_links"
 		       " WHERE hash_id = ? & dir_id = ?;"),
-    clear_tags_(db, "DELETE FROM tags WHERE docid = ?;"),
-    add_tag_(db, "INSERT OR IGNORE INTO tags (docid, tag) VALUES (?, ?);"),
-    update_message_id_stamp_(db, "UPDATE message_ids SET"
+    clear_tags_(db_, "DELETE FROM tags WHERE docid = ?;"),
+    add_tag_(db_, "INSERT OR IGNORE INTO tags (docid, tag) VALUES (?, ?);"),
+    update_message_id_stamp_(db_, "UPDATE message_ids SET"
 			     " replica = ?, version = ? WHERE docid = ?;"),
+    record_docid_(db_, "INSERT OR IGNORE INTO message_ids (message_id, docid)"
+		  " VALUES (?, ?);"),
     mystamp_(get_mystamp(db_)),
     hashdb (maildir, db_),
     tagdb (db_)
@@ -470,28 +473,7 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
     string dir {s.str(0)};
     i64 dir_id {s.integer(1)};
     dir_ids_.emplace (dir, dir_id);
-    id_dirs_.emplace (dir_id, dir);
   }
-  sqlexec(db_, R"(
--- Operations from a pending transaction
-CREATE TABLE IF NOT EXISTS pending_message_ids (
-  pm_id INTEGER_PRIMARY KEY,
-  docid INTEGER UNIQUE,  -- note: might be NULL
-  message_id TEXT UNIQUE NOT NULL,
-  replica INTEGER,
-  version INTEGER);
-CREATE TABLE IF NOT EXISTS pending_tags (
-  pm_id INTEGER,
-  tag TEXT,
-  UNIQUE (pm_id, tag));
-CREATE TABLE IF NOT EXISTS pending_links (
-  hash_id INTEGER NOT NULL,
-  dir_id INTEGER NOT NULL,
-  adjustment INTEGER,
-  replica INTEGER,
-  version INTEGER,
-  PRIMARY KEY(hash_id, dir_id));
-)");
 }
 
 msg_sync::~msg_sync ()
@@ -508,49 +490,16 @@ msg_sync::notmuch ()
 			     NOTMUCH_DATABASE_MODE_READ_WRITE,
 			     &notmuch_);
     if (err)
-      throw runtime_error (hashdb.maildir + notmuch_status_to_string(err));
+      throw runtime_error (hashdb.maildir + ": "
+			   + notmuch_status_to_string(err));
   }
   return notmuch_;
 }
 
 void
-msg_sync::clear_pending()
+msg_sync::clear_committing()
 {
-  sqlexec(db_,
-	  "DELETE FROM pending_message_ids; "
-	  "DELETE FROM pending_tags; "
-	  "DELETE FROM pending_links; "
-	  "DELETE FROM pending_unlinks; ");
-}
-
-void
-msg_sync::commit()
-{
-  setconfig(db_, "committing", 1);
-
-  //for (sqlstmt_t s ("SELECT source, ))
-
-  print_time ("commiting synchronization");
-  sqlexec(db_, R"(
-UPDATE pending_message_ids
-SET docid = (SELECT docid FROM message_ids
-             WHERE message_ids = pending_message_ids.message_id)
-WHERE docid IS NULL;)");
-  print_time ("retrieved ids of changed messages");
-  sqlexec(db_, R"(
-REPLACE INTO message_ids (message_id, docid, replica version)
-SELECT message_id, docid, replica, version
-       FROM pending_message_ids WHERE docid IS NOT NULL;)");
-  print_time ("updated message stamps");
-  sqlexec(db_, R"(
-DELETE FROM tags
-WHERE docid IN (SELECT docid FROM pending_message_ids);)");
-  sqlexec(db_, R"(
-INSERT INTO tags
-SELECT docid, tag FROM pending_message_ids JOIN pending_tags USING (pm_id);)");
-  print_time ("updated tags in database");
-
-  setconfig(db_, "committing", 0);
+  sqlexec(db_, "DELETE FROM committing_fsops; DELETE FROM committing_tags; ");
 }
 
 static bool
@@ -617,8 +566,19 @@ msg_sync::get_dir_id (const string &dir, bool create)
 	   dir.c_str());
   i64 dir_id = sqlite3_last_insert_rowid (db_);
   dir_ids_.emplace(dir, dir_id);
-  id_dirs_.emplace(dir_id, dir);
   return dir_id;
+}
+
+inline Xapian::docid
+notmuch_message_get_doc_id (const notmuch_message_t *message)
+{
+  struct fake_message {
+    notmuch_database_t *notmuch;
+    Xapian::docid doc_id;
+  };
+  /* This is massively evil, but looking through git history, doc_id
+   * has been the second element of the structure for a long time. */
+  return reinterpret_cast<const fake_message *>(message)->doc_id;
 }
 
 bool
@@ -627,17 +587,19 @@ msg_sync::hash_sync(const versvector &rvv,
 		    const string *sourcep)
 {
   hash_info lhi;
+  i64 docid = -1;
+  bool docid_valid = false;
+  bool new_msgid = false;
+
   if (hashdb.lookup(rhi.hash)) {
     /* We might already be up to date from a previous sync that never
-     * completed (meaning some hashes got ahead of the global sync
-     * vector). */
+     * completed, in which case there is nothing to do. */
     if (hashdb.info().hash_stamp == rhi.hash_stamp)
       return true;
     lhi = hashdb.info();
   }
   else
     lhi.hash = rhi.hash;
-
 
   bool links_conflict =
     lhi.hash_stamp.second > find_default (-1, rvv, lhi.hash_stamp.first);
@@ -694,11 +656,17 @@ msg_sync::hash_sync(const versvector &rvv,
       if (link (source.c_str(), target.c_str()))
 	throw runtime_error (string("link (\"") + source + "\", \""
 			     + target + "\"): " + strerror(errno));
+      notmuch_message_t *message = nullptr;
       notmuch_status_t err =
 	notmuch_database_add_message (notmuch(), target.c_str(), nullptr);
       if (err && err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
 	throw runtime_error (hashdb.maildir + ": "
 			     + notmuch_status_to_string(err));
+      docid = notmuch_message_get_doc_id (message);
+      docid_valid = true;
+      if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
+	new_msgid = true;
+      notmuch_message_destroy (message);
     }
   /* remove extra links */
   if (!links_conflict)
@@ -723,6 +691,9 @@ msg_sync::hash_sync(const versvector &rvv,
       }
     }
 
+  if (new_msgid && docid_valid)
+    record_docid_.param(rhi.message_id, docid).step().reset();
+
   c.disable();
   sqlexec (db_, "RELEASE hash_sync;");
   if (clean_trash)
@@ -733,30 +704,58 @@ msg_sync::hash_sync(const versvector &rvv,
 bool
 msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 {
-  if (!tagdb.lookup(rti.message_id))
-    return false;
-  const tag_info lhi = tagdb.info();
+  sqlexec (db_, "SAVEPOINT tag_sync;");
+  cleanup c (sqlexec, db_, "ROLLBACK TO tag_sync;");
 
-#if 0
+  if (!tagdb.lookup(rti.message_id)) {
+    cerr << "warning: can't find " << rti.message_id << '\n';
+    return false;
+  }
+  const tag_info &lti = tagdb.info();
+
+  notmuch_message_t *message;
+  notmuch_status_t err =
+    notmuch_database_find_message (notmuch(), rti.message_id.c_str(), &message);
+  if (err)
+    throw runtime_error (rti.message_id + ": "
+			 + notmuch_status_to_string(err));
+  if (!message)
+    return false;
+  cleanup _c (notmuch_message_destroy, message);
+
+  assert (tagdb.docid() == notmuch_message_get_doc_id(message));
+
   bool tags_conflict
-    = (lhi.tag_stamp.second > lookup_version (rvv, lhi.tag_stamp.first)
-       && rhi.tags != lhi.tags);
-  unordered_set<string> newtags (rhi.tags);
+    = lti.tag_stamp.second > find_default (-1, rvv, lti.tag_stamp.first);
+  unordered_set<string> newtags (rti.tags);
   if (tags_conflict) {
     // Logically OR most tags
-    for (auto i : lhi.tags)
+    for (auto i : lti.tags)
       newtags.insert(i);
     // But logically AND new_tags
     for (auto i : new_tags)
-      if (rhi.tags.find(i) == rhi.tags.end()
-	  || lhi.tags.find(i) == lhi.tags.end())
+      if (rti.tags.find(i) == rti.tags.end()
+	  || lti.tags.find(i) == lti.tags.end())
 	newtags.erase(i);
   }
 
-  wsp = tags_conflict ? &mystamp_ : &rhi.tag_stamp;
-  update_hash_stamp_.reset()
-    .param(rhi.message_id, docid, wsp->first, wsp->second, hash_id).step();
-#endif
+  clear_tags_.param(tagdb.docid()).step().reset();
+  notmuch_message_freeze(message);
+  notmuch_message_remove_all_tags(message);
+  for (auto tag : newtags) {
+    add_tag_.param(tagdb.docid(), tag).step().reset();
+    notmuch_message_add_tag(message, tag.c_str());
+  }
+  notmuch_message_thaw(message);
+
+  const writestamp *wsp = tags_conflict ? &mystamp_ : &rti.tag_stamp;
+  update_message_id_stamp_.reset()
+    .param(wsp->first, wsp->second, tagdb.docid())
+    .step();
+
+  c.disable();
+  sqlexec (db_, "RELEASE tag_sync;");
+  return true;
 }
 
 static string
@@ -1091,8 +1090,8 @@ muchsync_client (sqlite3 *db, const string &maildir,
       cerr << hi << '\n';
   }
 
-  msync.notmuch_close();
-  xapian_refresh_message_ids(db, maildir);
+  // msync.notmuch_close();
+  // xapian_refresh_message_ids(db, maildir);
 
   while (get_response (in, line) && line.at(3) == '-') {
     is.str(line.substr(4));

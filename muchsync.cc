@@ -293,6 +293,7 @@ read_sync_vector (istream &in, versvector &vv)
 void
 sync_local_data (sqlite3 *sqldb, const string &maildir)
 {
+  print_time ("synchronizing muchsync database with Xapian");
   sqlexec (sqldb, "SAVEPOINT localsync;");
 
   try {
@@ -316,6 +317,7 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
     throw;
   }
   sqlexec (sqldb, "RELEASE localsync;");
+  print_time ("finished synchronizing muchsync database with Xapian");
 }
 
 string
