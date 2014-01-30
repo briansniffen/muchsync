@@ -408,23 +408,23 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
   while (maildir.size() && maildir.back() == '/')
     maildir.resize (maildir.size() - 1);
 
+  print_time ("starting scan of mail directory");
   int rootfd = open (maildir.c_str(), O_RDONLY);
   if (rootfd < 0)
     throw runtime_error (maildir + ": " + strerror (errno));
   cleanup _c (close, rootfd);
 
   sqlexec (sqldb, maildir_triggers);
-  print_time ("finding new subdirectories of maildir");
   find_new_directories (sqldb, maildir, rootfd);
-  print_time ("finding modified directories in maildir");
+  print_time ("searched for new subdirectories of maildir");
   find_modified_directories (sqldb, maildir, rootfd);
   sqlexec (sqldb, "UPDATE maildir_dirs SET dir_docid = "
 	   "(SELECT xapian_dirs.dir_docid FROM xapian_dirs WHERE"
 	   " xapian_dirs.dir_path = maildir_dirs.dir_path);");
-  print_time (opt_fullscan ? "scanning files in all directories"
-	      : "scanning files in modified directories");
+  print_time ("search for modified directories in maildir");
   scan_files (sqldb, maildir, rootfd, ws);
-  print_time ("updating message ids");
+  print_time (opt_fullscan ? "scanned files in all directories"
+	      : "scanned files in modified directories");
   if (opt_fullscan)
     sqlexec (sqldb, R"(
 UPDATE maildir_hashes SET message_id =
@@ -441,7 +441,7 @@ UPDATE maildir_hashes SET message_id =
    WHERE maildir_files.hash_id = maildir_hashes.hash_id)
   WHERE message_id IS NULL;
 )");
-  print_time ("updating version stamps");
+  print_time ("updated message ids");
   sync_maildir_ws (sqldb, ws);
-  print_time ("done");
+  print_time ("updated version stamps");
 }

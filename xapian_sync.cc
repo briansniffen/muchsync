@@ -16,7 +16,7 @@ const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 
 const char xapian_triggers[] =
-R"(CREATE TABLE IF NOT EXISTS modified_docids (
+R"(CREATE TEMP TABLE IF NOT EXISTS modified_docids (
   docid INTEGER PRIMARY KEY);
 DELETE FROM modified_docids;
 CREATE TEMP TRIGGER tag_delete AFTER DELETE ON main.tags
@@ -302,20 +302,20 @@ xapian_refresh_message_ids (sqlite3 *sqldb, const string &maildir)
 void
 xapian_scan (sqlite3 *sqldb, writestamp ws, const string &maildir)
 {
-  print_time ("opening Xapian");
+  print_time ("starting scan of Xapian database");
   Xapian::Database xdb (maildir + "/.notmuch/xapian");
   sqlexec (sqldb, xapian_triggers);
-  print_time ("scanning message IDs");
+  print_time ("opened Xapian");
   xapian_scan_message_ids (sqldb, xdb);
-  print_time ("scanning tags");
+  print_time ("scanned message IDs");
   xapian_scan_tags (sqldb, xdb);
-  print_time ("updating version stamps");
+  print_time ("scanned tags");
   sqlexec (sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
 	   " WHERE docid IN (SELECT docid FROM modified_docids);",
 	   ws.first, ws.second);
-  print_time ("scanning directories in xapian");
+  print_time ("updated version stamps");
   xapian_scan_directories (sqldb, xdb);
-  print_time ("scanning filenames in xapian");
+  print_time ("scanned directories in xapian");
   xapian_scan_filenames (sqldb, xdb);
-  print_time ("closing Xapian");
+  print_time ("scanned filenames in xapian");
 }
