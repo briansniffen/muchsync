@@ -530,6 +530,26 @@ msg_sync::commit()
 
   //for (sqlstmt_t s ("SELECT source, ))
 
+  print_time ("commiting synchronization");
+  sqlexec(db_, R"(
+UPDATE pending_message_ids
+SET docid = (SELECT docid FROM message_ids
+             WHERE message_ids = pending_message_ids.message_id)
+WHERE docid IS NULL;)");
+  print_time ("retrieved ids of changed messages");
+  sqlexec(db_, R"(
+REPLACE INTO message_ids (message_id, docid, replica version)
+SELECT message_id, docid, replica, version
+       FROM pending_message_ids WHERE docid IS NOT NULL;)");
+  print_time ("updated message stamps");
+  sqlexec(db_, R"(
+DELETE FROM tags
+WHERE docid IN (SELECT docid FROM pending_message_ids);)");
+  sqlexec(db_, R"(
+INSERT INTO tags
+SELECT docid, tag FROM pending_message_ids JOIN pending_tags USING (pm_id);)");
+  print_time ("updated tags in database");
+
   setconfig(db_, "committing", 0);
 }
 
