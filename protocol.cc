@@ -462,7 +462,7 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
     set_link_count_(db_, "INSERT OR REPLACE INTO maildir_links"
 		    " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
     delete_link_count_(db_, "DELETE FROM maildir_links"
-		       " WHERE hash_id = ? & dir_id = ?;"),
+		       " WHERE (hash_id = ?) & (dir_id = ?);"),
     clear_tags_(db_, "DELETE FROM tags WHERE docid = ?;"),
     add_tag_(db_, "INSERT OR IGNORE INTO tags (docid, tag) VALUES (?, ?);"),
     update_message_id_stamp_(db_, "UPDATE message_ids SET"

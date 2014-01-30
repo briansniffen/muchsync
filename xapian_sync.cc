@@ -138,7 +138,7 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
   sqlstmt_t
     scan (sqldb, "SELECT docid FROM tags WHERE tag = ? ORDER BY docid ASC;"),
     add_tag (sqldb, "INSERT INTO tags (docid, tag) VALUES (?, ?);"),
-    del_tag (sqldb, "DELETE FROM tags WHERE docid = ? & tag = ?;");
+    del_tag (sqldb, "DELETE FROM tags WHERE (docid = ?) & (tag = ?);");
 
   for (Xapian::TermIterator ti = xdb.allterms_begin(notmuch_tag_prefix),
 	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
