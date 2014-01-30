@@ -357,6 +357,7 @@ hash_lookup::create (const hash_info &rhi)
   hi_.message_id = rhi.message_id;
   hi_.hash_stamp = rhi.hash_stamp;
   hi_.dirs.clear();
+  hash_id_ = sqlite3_last_insert_rowid(sqlite3_db_handle(makehash_.get()));
   ok_ = true;
 }
 
