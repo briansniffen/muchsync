@@ -18,6 +18,7 @@ const char dbvers[] = "muchsync 0";
 const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
 const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
 const char muchsync_trashdir[] = MUCHSYNC_DEFDIR "/trash";
+const char muchsync_tmpdir[] = MUCHSYNC_DEFDIR "/tmp";
 
 bool opt_fullscan;
 int opt_verbose;
@@ -160,7 +161,8 @@ bool
 muchsync_init (const string &maildir, bool create = false)
 {
   string trashbase = maildir + muchsync_trashdir + "/";
-  if (!access ((trashbase + "ff").c_str(), 0))
+  if (!access ((maildir + muchsync_tmpdir).c_str(), 0)
+      && !access ((trashbase + "ff").c_str(), 0))
     return true;
 
   if (create && mkdir (maildir.c_str(), 0777) && errno != EEXIST) {
@@ -176,7 +178,8 @@ muchsync_init (const string &maildir, bool create = false)
   }
 
   string msdir = maildir + muchsync_defdir;
-  for (string d : {msdir, maildir + muchsync_trashdir}) {
+  for (string d : {msdir, maildir + muchsync_trashdir,
+	maildir + muchsync_tmpdir}) {
     if (mkdir (d.c_str(), 0777) && errno != EEXIST) {
       perror (d.c_str());
       return false;
@@ -185,7 +188,7 @@ muchsync_init (const string &maildir, bool create = false)
 
   for (int i = 0; i < 0x100; i++) {
     ostringstream os;
-    os << trashbase << hex << setw(2) << i;
+    os << trashbase << hex << setfill('0') << setw(2) << i;
     if (mkdir (os.str().c_str(), 0777) && errno != EEXIST) {
       perror (os.str().c_str());
       return false;

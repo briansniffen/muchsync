@@ -86,6 +86,7 @@ class msg_sync {
   sqlite3 *db_;
   notmuch_database_t *notmuch_ = nullptr;
   sqlstmt_t update_hash_stamp_;
+  sqlstmt_t add_link_;
   sqlstmt_t set_link_count_;
   sqlstmt_t delete_link_count_;
   sqlstmt_t clear_tags_;
@@ -454,6 +455,9 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
   : db_(db),
     update_hash_stamp_(db_, "UPDATE maildir_hashes "
 		       "SET replica = ?, version = ? WHERE hash_id = ?;"),
+    add_link_(db_, "INSERT INTO maildir_files"
+	      " (dir_id, name, mtime, inode, hash_id)"
+	      " VALUES (?, ?, ?, ?, ?);"),
     set_link_count_(db_, "INSERT OR REPLACE INTO maildir_links"
 		    " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
     delete_link_count_(db_, "DELETE FROM maildir_links"
@@ -615,10 +619,13 @@ msg_sync::hash_sync(const versvector &rvv,
   /* find copy of content, if needed */
   string source;
   bool clean_trash = false;
+  struct stat sb;
   if (needsource) {
     if (sourcep)
       source = *sourcep;
     else if (!hashdb.ok() || !hashdb.get_pathname (&source, &clean_trash))
+      return false;
+    if (stat(source.c_str(), &sb))
       return false;
   }
 
@@ -651,14 +658,20 @@ msg_sync::hash_sync(const versvector &rvv,
   /* add missing links */
   for (auto li : needlinks)
     for (; li.second > 0; --li.second) {
-      string newname = li.first + "/" + maildir_name();
-      string target = hashdb.maildir + "/" + newname;
+      i64 dir_id = get_dir_id (li.first, true);
+      if (dir_id == bad_dir_id)
+	throw runtime_error ("no dir_id for " + li.first);
+      string newname (maildir_name());
+      string target = hashdb.maildir + "/" + li.first + "/" + newname;
       if (link (source.c_str(), target.c_str()))
 	throw runtime_error (string("link (\"") + source + "\", \""
 			     + target + "\"): " + strerror(errno));
-      notmuch_message_t *message = nullptr;
+      add_link_.reset().param(dir_id, newname, ts_to_double(sb.st_mtim),
+			      i64(sb.st_ino), hashdb.hash_id()).step();
+
+      notmuch_message_t *message;
       notmuch_status_t err =
-	notmuch_database_add_message (notmuch(), target.c_str(), nullptr);
+	notmuch_database_add_message (notmuch(), target.c_str(), &message);
       if (err && err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
 	throw runtime_error (hashdb.maildir + ": "
 			     + notmuch_status_to_string(err));
@@ -739,14 +752,28 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 	newtags.erase(i);
   }
 
+  cerr << "message " << rti.message_id << '\n';
+
   clear_tags_.param(tagdb.docid()).step().reset();
-  notmuch_message_freeze(message);
-  notmuch_message_remove_all_tags(message);
+  err = notmuch_message_freeze(message);
+  if (err)
+    throw runtime_error ("freeze " + rti.message_id + ": "
+			 + notmuch_status_to_string(err));
+  err = notmuch_message_remove_all_tags(message);
   for (auto tag : newtags) {
+
+    cerr << "   +" << tag << '\n';
+
     add_tag_.param(tagdb.docid(), tag).step().reset();
-    notmuch_message_add_tag(message, tag.c_str());
+    err = notmuch_message_add_tag(message, tag.c_str());
+    if (err)
+      cerr << "warning: add tag " << tag << ": "
+	   << notmuch_status_to_string(err) << '\n';
   }
-  notmuch_message_thaw(message);
+  err = notmuch_message_thaw(message);
+  if (err)
+    throw runtime_error ("thaw " + rti.message_id + ": "
+			 + notmuch_status_to_string(err));
 
   const writestamp *wsp = tags_conflict ? &mystamp_ : &rti.tag_stamp;
   update_message_id_stamp_.reset()
@@ -761,7 +788,7 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 static string
 receive_message (istream &in, const hash_info &hi, const string &maildir)
 {
-  string path (trashname(maildir, hi.hash));
+  string path (maildir + muchsync_tmpdir + "/" + maildir_name());
   ofstream tmp (path, ios_base::out|ios_base::trunc);
   if (!tmp.is_open())
     throw runtime_error (path + ": " + strerror(errno));
@@ -1050,9 +1077,10 @@ muchsync_client (sqlite3 *db, const string &maildir,
   is.str(line.substr(4));
   if (!read_sync_vector(is, remotevv))
     throw runtime_error ("cannot parse version vector " + line.substr(4));
+  print_time ("received server's version vector");
 
+  out << "lsync\n";
   sqlexec (db, "BEGIN;");
-  out << "lsync " << show_sync_vector(localvv) << '\n';
   while (get_response (in, line) && line.at(3) == '-') {
     is.str(line.substr(4));
     hash_info hi;
@@ -1070,7 +1098,8 @@ muchsync_client (sqlite3 *db, const string &maildir,
       pending++;
     }
   }
-  out << "tsync " << show_sync_vector(localvv) << '\n';
+  out << "tsync\n";
+  print_time ("received hashes of new files");
 
   hash_info hi;
   for (; pending > 0; pending--) {
@@ -1089,9 +1118,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     if (opt_verbose >= 2)
       cerr << hi << '\n';
   }
-
-  // msync.notmuch_close();
-  // xapian_refresh_message_ids(db, maildir);
+  print_time ("received content of missing messages");
 
   while (get_response (in, line) && line.at(3) == '-') {
     is.str(line.substr(4));
@@ -1100,7 +1127,9 @@ muchsync_client (sqlite3 *db, const string &maildir,
       throw runtime_error ("could not parse tag_info: " + line.substr(4));
     if (opt_verbose >= 2)
       cerr << ti << '\n';
+    msync.tag_sync(remotevv, ti);
   }
+  print_time ("received tags of new and modified messages");
 
   {
     sqlstmt_t udvv(db, "INSERT OR REPLACE INTO sync_vector (replica, version)"
@@ -1111,5 +1140,6 @@ muchsync_client (sqlite3 *db, const string &maildir,
   }
 
   sqlexec (db, "COMMIT;");
+  print_time ("commited changes to local database");
 }
 

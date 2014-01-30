@@ -32,7 +32,7 @@ static string
 hexdump (const string &s)
 {
   ostringstream os;
-  os << hex << setfill ('0');
+  os << hex << setfill('0');
   for (auto c : s)
     os << setw(2) << (int (c) & 0xff);
   string ret = os.str();
