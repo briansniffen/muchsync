@@ -689,11 +689,25 @@ msg_sync::hash_sync(const versvector &rvv,
       if (n < 0) {
 	string path = hashdb.link_path(i);
 	bool err;
-	if (deleting)
-	  err = rename (path.c_str(),
-			trashname(hashdb.maildir, rhi.hash).c_str());
-	else
+	if (deleting) {
+	  string dest = trashname(hashdb.maildir, rhi.hash);
+	  err = rename (path.c_str(), dest.c_str());
+	  if (err)
+	    cerr << "rename " << path << ' '
+		 << trashname(hashdb.maildir, rhi.hash)
+		 << ": " << strerror (errno) << '\n';
+	  /* You can't rename a file onto itself, so if the trash
+	   * already contains a hard link to the same inode, we need
+	   * to delete the original. */
+	  else
+	    err = unlink (path.c_str());
+	}
+	else {
 	  err = unlink (path.c_str());
+	  if (err)
+	    cerr << "unlink " << path << ' '
+		 << ": " << strerror (errno) << '\n';
+	}
 	if (!err) {
 	  ++n;
 	  notmuch_status_t err =
