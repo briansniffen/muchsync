@@ -13,63 +13,87 @@
 
 using namespace std;
 
-class chan {
+class infinibuf {
   static constexpr int chunksize_ = 0x10000;
-  using buf_type = array<char,chunksize_>;
 
-  mutex lock_;
-  condition_variable nonempty_;
-  deque<buf_type *> data_;
+  deque<char *> data_;
   bool eof_{false};
   const int startpos_;		// For putback
   int gpos_;
   int ppos_;
 
-  bool empty_() { return data_.size() <= 1 && gpos_ >= ppos_; }
-  char *gbufptr() { return data_.front()->data() + gpos_; }
-  int gsize() { return (data_.size() > 1 ? chunksize_ : ppos_) - gpos_; }
-  char *pbufptr() { return data_.back()->data() + ppos_; }
-  int psize() { return chunksize_ - gpos_; }
-
 public:
-  explicit chan(int sp = 8)
+  explicit infinibuf(int sp = 8)
     : startpos_(sp), gpos_(startpos_), ppos_(startpos_) {
-    data_.push_back (new buf_type);
+    data_.push_back (new char[chunksize_]);
   }
-  chan(const chan &) = delete;
-  ~chan() { for (buf_type *p : data_) delete p; }
-  chan &operator= (const chan &) = delete;
+  infinibuf(const infinibuf &) = delete;
+  ~infinibuf() { for (char *p : data_) delete[] p; }
+  infinibuf &operator= (const infinibuf &) = delete;
 		   
-  // These return false if the chan has been drained and peof() called
+  bool empty() { return data_.size() == 1 && gpos_ == ppos_; }
+  bool eof() { return eof_; }
+
+  char *eback() { return data_.front(); }
+  char *gptr() { return eback() + gpos_; }
+  int gsize() { return (data_.size() > 1 ? chunksize_ : ppos_) - gpos_; }
+  char *egptr() { return gptr() + gsize(); }
+  void gbump(int n);
+
+  char *pbase() { return data_.back(); }
+  char *pptr() { return pbase() + ppos_; }
+  int psize() { return chunksize_ - gpos_; }
+  char *epptr() { return pptr() + psize(); }
+  bool pbump(int n);
+  void peof() { eof_ = true; }
+
+#if 0
+  // These return false if the infinibuf has been drained and peof() called
   bool gwait();
   bool gparms(char **bufp, size_t *np);
   bool gparms(char **gbegp, char **gcurrp, char **gendp);
-  void gbump(int n);
   void gsetp(char *p);
   bool output(int fd);
 
   void pparms(char **bufp, size_t *np);
   void pparms(char **pbegp, char **pendp);
-  void pbump(int n);
   void psetp(char *p);
-  void peof();
   bool input(int fd);		// returns false if fd returns EOF
+#endif
 };
 
-class chanbuf : public streambuf {
-protected:
-  shared_ptr<chan> c_;
-  int_type underflow() override;
-  int_type overflow(int_type ch) override;
-  int sync() override;
-public:
-  explicit chanbuf (shared_ptr<chan> c);
-  chanbuf() : chanbuf(shared_ptr<chan>(new chan)) {}
-  shared_ptr<chan> getchan() { return c_; }
-};
+void
+infinibuf::gbump(int n)
+{
+  gpos_ += n;
+  assert (gpos_ > 0 && gpos_ <= chunksize_);
+  if (gpos_ == chunksize_) {
+    assert (data_.size() > 1);
+    delete[] data_.front();
+    data_.pop_front();
+    gpos_ = startpos_;
+  }
+}
 
 bool
-chan::gwait()
+infinibuf::pbump(int n)
+{
+  assert (n >= 0 && n <= psize() && !eof_);
+  bool wasempty (empty());
+  ppos_ += n;
+  if (ppos_ == chunksize_) {
+    char *chunk = new char[chunksize_];
+    memcpy(chunk, data_.back() + chunksize_ - startpos_, startpos_);
+    data_.push_back(chunk);
+    ppos_ = startpos_;
+  }
+  return wasempty;
+}
+
+
+#if 0
+bool
+infinibuf::gwait()
 {
   unique_lock<mutex> lock (lock_);
   while (empty_() && !eof_)
@@ -78,7 +102,7 @@ chan::gwait()
 }
 
 bool
-chan::gparms(char **bufp, size_t *np)
+infinibuf::gparms(char **bufp, size_t *np)
 {
   lock_guard<mutex> _lock (lock_);
   *bufp = gbufptr();
@@ -87,7 +111,7 @@ chan::gparms(char **bufp, size_t *np)
 }
 
 bool
-chan::gparms(char **gbegp, char **gcurrp, char **gendp)
+infinibuf::gparms(char **gbegp, char **gcurrp, char **gendp)
 {
   lock_guard<mutex> _lock (lock_);
   *gbegp = data_.front()->data();
@@ -97,21 +121,7 @@ chan::gparms(char **gbegp, char **gcurrp, char **gendp)
 }
 
 void
-chan::gbump(int n)
-{
-  lock_guard<mutex> _lock (lock_);
-  gpos_ += n;
-  assert (gpos_ > 0 && gpos_ <= chunksize_);
-  if (gpos_ == chunksize_) {
-    assert (data_.size() > 1);
-    delete data_.front();
-    data_.pop_front();
-    gpos_ = startpos_;
-  }
-}
-
-void
-chan::gsetp(char *p)
+infinibuf::gsetp(char *p)
 {
   lock_guard<mutex> _lock (lock_);
   gpos_ = p - data_.front()->data();
@@ -125,7 +135,7 @@ chan::gsetp(char *p)
 }
 
 bool
-chan::output(int fd)
+infinibuf::output(int fd)
 {
   for (;;) {
     char *p;
@@ -139,12 +149,12 @@ chan::output(int fd)
     else if (errno == EAGAIN)
       return true;
     else
-      throw runtime_error (string("chan::output: ") + strerror(errno));
+      throw runtime_error (string("infinibuf::output: ") + strerror(errno));
   }
 }
 
 void
-chan::pparms(char **bufp, size_t *np)
+infinibuf::pparms(char **bufp, size_t *np)
 {
   lock_guard<mutex> _lock (lock_);
   *bufp = pbufptr();
@@ -152,7 +162,7 @@ chan::pparms(char **bufp, size_t *np)
 }
 
 void
-chan::pparms(char **pbegp, char **pendp)
+infinibuf::pparms(char **pbegp, char **pendp)
 {
   lock_guard<mutex> _lock (lock_);
   char *pbeg = pbufptr();
@@ -161,25 +171,7 @@ chan::pparms(char **pbegp, char **pendp)
 }
 
 void
-chan::pbump(int n)
-{
-  lock_guard<mutex> _lock (lock_);
-  assert (n >= 0 && n <= psize() && !eof_);
-  bool wasempty (empty_());
-  ppos_ += n;
-  if (ppos_ == chunksize_) {
-    buf_type *chunk = new buf_type;
-    memcpy(chunk->data(), data_.back()->data() + chunksize_ - startpos_,
-	   startpos_);
-    data_.push_back(chunk);
-    ppos_ = startpos_;
-  }
-  if (wasempty)
-    nonempty_.notify_all();
-}
-
-void
-chan::psetp(char *p)
+infinibuf::psetp(char *p)
 {
   lock_guard<mutex> _lock (lock_);
   bool wasempty (empty_());
@@ -197,7 +189,7 @@ chan::psetp(char *p)
 }
 
 void
-chan::peof()
+infinibuf::peof()
 {
   unique_lock<mutex> lock (lock_);
   eof_ = true;
@@ -205,7 +197,7 @@ chan::peof()
 }
 
 bool
-chan::input(int fd)
+infinibuf::input(int fd)
 {
   char *p;
   size_t nmax;
@@ -222,8 +214,22 @@ chan::input(int fd)
   if (errno == EAGAIN)
     return true;
   peof();
-  throw runtime_error (string("chan::input: ") + strerror(errno));
+  throw runtime_error (string("infinibuf::input: ") + strerror(errno));
 }
+#endif
+
+#if 0
+class chanbuf : public streambuf {
+protected:
+  shared_ptr<chan> c_;
+  int_type underflow() override;
+  int_type overflow(int_type ch) override;
+  int sync() override;
+public:
+  explicit chanbuf (shared_ptr<chan> c);
+  chanbuf() : chanbuf(shared_ptr<chan>(new chan)) {}
+  shared_ptr<chan> getchan() { return c_; }
+};
 
 chanbuf::int_type
 chanbuf::underflow()
@@ -285,7 +291,7 @@ writer(shared_ptr<chan> c, int fd)
 }
 
 int
-main (int argc, char **argv)
+omain (int argc, char **argv)
 {
   chanbuf icb;
   thread it (reader, icb.getchan(), 0);
@@ -310,3 +316,16 @@ main (int argc, char **argv)
 
   return 0;
 }
+#endif
+
+int
+main (int argc, char **argv)
+{
+  return 0;
+}
+
+/*
+
+c++ -std=c++11 -Wall -Werror -pthread chanbuf.cc
+
+*/
