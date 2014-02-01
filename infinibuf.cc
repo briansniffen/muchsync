@@ -326,6 +326,6 @@ main (int argc, char **argv)
 
 /*
 
-c++ -std=c++11 -Wall -Werror -pthread chanbuf.cc
+c++ -std=c++11 -Wall -Werror -pthread infinibuf.cc
 
 */
