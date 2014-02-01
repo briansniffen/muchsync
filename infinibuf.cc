@@ -8,31 +8,37 @@
 #include <mutex>
 #include <streambuf>
 #include <unistd.h>
+#include <sys/socket.h>
 
 #include <thread>
 
 using namespace std;
 
 class infinibuf {
+protected:
   static constexpr int chunksize_ = 0x10000;
 
   deque<char *> data_;
-  bool eof_{false};
-  const int startpos_;		// For putback
   int gpos_;
   int ppos_;
+  bool eof_{false};
+  int errno_{0};
+  const int startpos_;		// For putback
 
 public:
   explicit infinibuf(int sp = 8)
-    : startpos_(sp), gpos_(startpos_), ppos_(startpos_) {
+    : gpos_(sp), ppos_(sp), startpos_(sp) {
     data_.push_back (new char[chunksize_]);
   }
   infinibuf(const infinibuf &) = delete;
   ~infinibuf() { for (char *p : data_) delete[] p; }
   infinibuf &operator= (const infinibuf &) = delete;
 		   
+  // These functions are not thread safe
   bool empty() { return data_.size() == 1 && gpos_ == ppos_; }
   bool eof() { return eof_; }
+  int err() { return errno_; }
+  void err(int num) { eof_ = num; errno_ = num; }
 
   char *eback() { return data_.front(); }
   char *gptr() { return eback() + gpos_; }
@@ -47,19 +53,14 @@ public:
   bool pbump(int n);
   void peof() { eof_ = true; }
 
-#if 0
-  // These return false if the infinibuf has been drained and peof() called
-  bool gwait();
-  bool gparms(char **bufp, size_t *np);
-  bool gparms(char **gbegp, char **gcurrp, char **gendp);
-  void gsetp(char *p);
-  bool output(int fd);
+  // These functions are thread safe
+  virtual void lock() {}
+  virtual void unlock() {}
+  virtual void notempty() = 0;
+  virtual void gwait() = 0;
 
-  void pparms(char **bufp, size_t *np);
-  void pparms(char **pbegp, char **pendp);
-  void psetp(char *p);
-  bool input(int fd);		// returns false if fd returns EOF
-#endif
+  bool output(int fd);
+  bool input(int fd);
 };
 
 void
@@ -90,133 +91,72 @@ infinibuf::pbump(int n)
   return wasempty;
 }
 
-
-#if 0
-bool
-infinibuf::gwait()
-{
-  unique_lock<mutex> lock (lock_);
-  while (empty_() && !eof_)
-    nonempty_.wait(lock);
-  return !eof_;
-}
-
-bool
-infinibuf::gparms(char **bufp, size_t *np)
-{
-  lock_guard<mutex> _lock (lock_);
-  *bufp = gbufptr();
-  *np = gsize();
-  return !eof_ || !empty_();
-}
-
-bool
-infinibuf::gparms(char **gbegp, char **gcurrp, char **gendp)
-{
-  lock_guard<mutex> _lock (lock_);
-  *gbegp = data_.front()->data();
-  *gcurrp = gbufptr();
-  *gendp = gbufptr() + gsize();
-  return !eof_ || !empty_();
-}
-
-void
-infinibuf::gsetp(char *p)
-{
-  lock_guard<mutex> _lock (lock_);
-  gpos_ = p - data_.front()->data();
-  assert (gpos_ > 0 && gpos_ <= chunksize_);
-  if (gpos_ == chunksize_) {
-    assert (data_.size() > 1);
-    delete data_.front();
-    data_.pop_front();
-    gpos_ = startpos_;
-  }
-}
-
 bool
 infinibuf::output(int fd)
 {
   for (;;) {
-    char *p;
-    size_t nmax;
-    bool alive = gparms(&p, &nmax);
-    if (!nmax)
-      return alive;
+    lock();
+    char *p = gptr();
+    size_t nmax = gsize();
+    bool iseof = eof();
+    int error = err();
+    unlock();
+
+    if (error)
+      throw runtime_error (string("infinibuf::output: ") + strerror(error));
+    else if (!nmax && iseof) {
+      shutdown(fd, SHUT_WR);
+      return false;
+    }
     ssize_t n = write(fd, p, nmax);
-    if (n > 0)
+    if (n > 0) {
+      lock();
       gbump(n);
-    else if (errno == EAGAIN)
-      return true;
-    else
-      throw runtime_error (string("infinibuf::output: ") + strerror(errno));
+      unlock();
+    }
+    else {
+      if (errno == EAGAIN)
+	return true;
+      lock();
+      err(error = errno);
+      unlock();
+    }
   }
-}
-
-void
-infinibuf::pparms(char **bufp, size_t *np)
-{
-  lock_guard<mutex> _lock (lock_);
-  *bufp = pbufptr();
-  *np = psize();
-}
-
-void
-infinibuf::pparms(char **pbegp, char **pendp)
-{
-  lock_guard<mutex> _lock (lock_);
-  char *pbeg = pbufptr();
-  *pbegp = pbeg;
-  *pendp = pbeg + psize();
-}
-
-void
-infinibuf::psetp(char *p)
-{
-  lock_guard<mutex> _lock (lock_);
-  bool wasempty (empty_());
-  assert (p >= data_.back()->data() && p <= data_.back()->data() + chunksize_);
-  ppos_ = p - data_.back()->data();
-  if (ppos_ == chunksize_) {
-    buf_type *chunk = new buf_type;
-    memcpy(chunk->data(), data_.back()->data() + chunksize_ - startpos_,
-	   startpos_);
-    data_.push_back(chunk);
-    ppos_ = startpos_;
-  }
-  if (wasempty)
-    nonempty_.notify_all();
-}
-
-void
-infinibuf::peof()
-{
-  unique_lock<mutex> lock (lock_);
-  eof_ = true;
-  nonempty_.notify_all();
 }
 
 bool
-infinibuf::input(int fd)
+infinibuf::input (int fd)
 {
-  char *p;
-  size_t nmax;
-  pparms(&p, &nmax);
-  ssize_t n = read (fd, p, nmax);
-  if (n > 0) {
+  lock();
+  char *p = pptr();
+  size_t nmax = psize();
+  int error = err();
+  unlock();
+
+  if (error)
+    throw runtime_error (string("infinibuf::input: ") + strerror(error));
+  ssize_t n = read(fd, p, nmax);
+  if (n < 0) {
+    if (errno == EAGAIN)
+      return true;
+    lock();
+    err(errno);
+    unlock();
+    throw runtime_error (string("infinibuf::input: ") + strerror(errno));
+  }
+
+  lock();
+  bool wasempty = empty();
+  if (n > 0)
     pbump(n);
-    return true;
-  }
-  if (n == 0) {
+  else
     peof();
-    return false;
-  }
-  if (errno == EAGAIN)
-    return true;
-  peof();
-  throw runtime_error (string("infinibuf::input: ") + strerror(errno));
+  if (wasempty)
+    notempty();
+  unlock();
+  return n > 0;
 }
-#endif
+
 
 #if 0
 class chanbuf : public streambuf {
@@ -321,6 +261,8 @@ omain (int argc, char **argv)
 int
 main (int argc, char **argv)
 {
+  int x{};
+  cout << x << '\n';
   return 0;
 }
 
