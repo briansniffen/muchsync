@@ -56,11 +56,27 @@ public:
   // These functions are thread safe
   virtual void lock() {}
   virtual void unlock() {}
-  virtual void notempty() = 0;
-  virtual void gwait() = 0;
+  virtual void notempty() {}
+  virtual void gwait() {}
 
   bool output(int fd);
   bool input(int fd);
+};
+
+class infinibuf_infd : public infinibuf {
+  const int fd_;
+public:
+  explicit infinibuf_infd (int fd, int sp = 8)
+    : infinibuf(sp), fd_(fd) {}
+  void gwait() override { input(fd_); }
+};
+
+class infinibuf_outfd : public infinibuf {
+  const int fd_;
+public:
+  explicit infinibuf_outfd (int fd, int sp = 8)
+    : infinibuf(sp), fd_(fd) {}
+  void notempty() override { output(fd_); }
 };
 
 void
@@ -157,35 +173,32 @@ infinibuf::input (int fd)
   return n > 0;
 }
 
-
-#if 0
-class chanbuf : public streambuf {
+class infinistreambuf : public streambuf {
 protected:
-  shared_ptr<chan> c_;
+  infinibuf *ib_;
   int_type underflow() override;
   int_type overflow(int_type ch) override;
   int sync() override;
 public:
-  explicit chanbuf (shared_ptr<chan> c);
-  chanbuf() : chanbuf(shared_ptr<chan>(new chan)) {}
-  shared_ptr<chan> getchan() { return c_; }
+  explicit infinistreambuf (infinibuf *ib);
+  infinibuf *get_infinibuf() { return ib_; }
 };
 
-chanbuf::int_type
-chanbuf::underflow()
+infinistreambuf::int_type
+infinistreambuf::underflow()
 {
-  c_->gsetp(gptr());
-  char *begp, *currp, *endp;
-  bool alive;
-  do {
-    alive = c_->gparms(&begp, &currp, &endp);
-  } while (alive && currp == endp && (alive = c_->gwait()));
-  setg(begp, currp, endp);
-  return alive ? traits_type::to_int_type (*currp) : traits_type::eof();
+  ib_->lock();
+  ib_->gbump(gptr() - ib_->gptr());
+  while (ib_->gsize() == 0 && !ib_->eof())
+    ib_->gwait();
+  setg(ib_->eback(), ib_->gptr(), ib_->egptr());
+  bool eof = ib_->eof();
+  ib_->unlock();
+  return eof ? traits_type::eof() : traits_type::to_int_type (*gptr());
 }
 
-chanbuf::int_type
-chanbuf::overflow(int_type ch)
+infinistreambuf::int_type
+infinistreambuf::overflow(int_type ch)
 {
   sync();
   *pptr() = ch;
@@ -194,26 +207,27 @@ chanbuf::overflow(int_type ch)
 }
 
 int
-chanbuf::sync()
+infinistreambuf::sync()
 {
-  c_->psetp(pptr());
-  char *begp, *endp;
-  c_->pparms(&begp, &endp);
-  setp(begp, endp);
-  return 0;
+  ib_->lock();
+  ib_->pbump(pptr() - ib_->pptr());
+  setp(ib_->pptr(), ib_->epptr());
+  int err = ib_->err();
+  ib_->unlock();
+  return err ? -1 : 0;
 }
 
-chanbuf::chanbuf (shared_ptr<chan> c)
-  : c_ (c)
+infinistreambuf::infinistreambuf (infinibuf *ib)
+  : ib_(ib)
 {
-  char *begp, *currp, *endp;
-  c_->gparms(&begp, &currp, &endp);
-  setg(begp, currp, endp);
-  c_->pparms(&begp, &endp);
-  setp(begp, endp);
+  ib->lock();
+  setg(ib_->eback(), ib_->gptr(), ib_->egptr());
+  setp(ib_->pptr(), ib_->epptr());
+  ib->unlock();
 }
 
 
+#if 0
 
 
 void
@@ -261,9 +275,19 @@ omain (int argc, char **argv)
 int
 main (int argc, char **argv)
 {
-  int x{};
-  cout << x << '\n';
-  return 0;
+  infinibuf_infd iib(0);
+  infinistreambuf inb (&iib);
+  istream xin (&inb);
+
+  infinibuf_outfd oib(1);
+  infinistreambuf outb (&oib);
+  ostream xout (&outb);
+
+  string x;
+  while ((xin >> x).good()) {
+    cout << "word: " << x << '\n';
+  }
+  oib.peof();
 }
 
 /*
