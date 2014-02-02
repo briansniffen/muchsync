@@ -1,106 +1,21 @@
 #include <array>
 #include <cassert>
-#include <condition_variable>
 #include <cstring>
-#include <deque>
 #include <iostream>
-#include <memory>
-#include <mutex>
 #include <streambuf>
 #include <unistd.h>
 #include <sys/socket.h>
+
+#include "infinibuf.h"
 
 #include <thread>
 
 using namespace std;
 
-class infinibuf {
-protected:
-  static constexpr int default_startpos_ = 8;
-  static constexpr int chunksize_ = 0x10000;
-
-  deque<char *> data_;
-  int gpos_;
-  int ppos_;
-  bool eof_{false};
-  int errno_{0};
-  const int startpos_;		// For putback
-
-  virtual void notempty() {}
-
-public:
-  explicit infinibuf(int sp = default_startpos_)
-    : gpos_(sp), ppos_(sp), startpos_(sp) {
-    data_.push_back (new char[chunksize_]);
-  }
-  infinibuf(const infinibuf &) = delete;
-  virtual ~infinibuf() { for (char *p : data_) delete[] p; }
-  infinibuf &operator= (const infinibuf &) = delete;
-		   
-  // These functions are never thread safe:
-
-  bool empty() { return data_.size() == 1 && gpos_ == ppos_; }
-  bool eof() { return eof_; }
-  int err() { return errno_; }
-  void err(int num) { errno_ = num; peof(); }
-
-  char *eback() { return data_.front(); }
-  char *gptr() { return eback() + gpos_; }
-  int gsize() { return (data_.size() > 1 ? chunksize_ : ppos_) - gpos_; }
-  char *egptr() { return gptr() + gsize(); }
-  void gbump(int n);
-  virtual void gwait() {}
-
-  char *pbase() { return data_.back(); }
-  char *pptr() { return pbase() + ppos_; }
-  int psize() { return chunksize_ - gpos_; }
-  char *epptr() { return pptr() + psize(); }
-  void pbump(int n);
-  void peof() { eof_ = true; if (empty()) notempty(); }
-
-  // These functions are thread safe for some subtypes:
-
-  virtual void lock() {}
-  virtual void unlock() {}
-  bool output(int fd);
-  bool input(int fd);
-
-  static void output_loop(shared_ptr<infinibuf> ib, int fd);
-  static void input_loop(shared_ptr<infinibuf> ib, int fd);
-};
-
-class infinibuf_infd : public infinibuf {
-  const int fd_;
-public:
-  explicit infinibuf_infd (int fd, int sp = default_startpos_)
-    : infinibuf(sp), fd_(fd) {}
-  void gwait() override { input(fd_); }
-};
-
-class infinibuf_outfd : public infinibuf {
-  const int fd_;
-public:
-  explicit infinibuf_outfd (int fd, int sp = default_startpos_)
-    : infinibuf(sp), fd_(fd) {}
-  void notempty() override { output(fd_); }
-};
-
-class infinibuf_mt : public infinibuf {
-  mutex m_;
-  condition_variable cv_;
-public:
-  explicit infinibuf_mt (int sp = default_startpos_) : infinibuf(sp) {}
-  void lock() override { m_.lock(); }
-  void unlock() override { m_.unlock(); }
-  void notempty() override { cv_.notify_all(); }
-  void gwait() override {
-    if (empty() && !eof()) {
-      unique_lock<mutex> ul (m_, adopt_lock);
-      cv_.wait(ul);
-      ul.release();
-    }
-  }
-};
+infinibuf::~infinibuf()
+{
+  for (char *p : data_) delete[] p;
+}
 
 void
 infinibuf::gbump(int n)
@@ -167,7 +82,7 @@ infinibuf::output(int fd)
 }
 
 bool
-infinibuf::input (int fd)
+infinibuf::input(int fd)
 {
   unique_lock<infinibuf> lk (*this);
   char *p = pptr();
@@ -195,7 +110,7 @@ infinibuf::input (int fd)
 }
 
 void
-infinibuf::output_loop (shared_ptr<infinibuf> ib, int fd)
+infinibuf::output_loop(shared_ptr<infinibuf> ib, int fd)
 {
   while (ib->output(fd)) {
     lock_guard<infinibuf> _lk (*ib);
@@ -204,24 +119,21 @@ infinibuf::output_loop (shared_ptr<infinibuf> ib, int fd)
 }
 
 void
-infinibuf::input_loop (shared_ptr<infinibuf> ib, int fd)
+infinibuf::input_loop(shared_ptr<infinibuf> ib, int fd)
 {
   while (ib->input(fd))
     ;
 }
 
-class infinistreambuf : public streambuf {
-protected:
-  shared_ptr<infinibuf> ib_;
-  int_type underflow() override;
-  int_type overflow(int_type ch) override;
-  int sync() override;
-public:
-  explicit infinistreambuf (shared_ptr<infinibuf> ib);
-  explicit infinistreambuf (infinibuf *ib)
-    : infinistreambuf(shared_ptr<infinibuf>(ib)) {}
-  shared_ptr<infinibuf> get_infinibuf() { return ib_; }
-};
+infinibuf_infd::~infinibuf_infd()
+{
+  close(fd_);
+}
+
+infinibuf_outfd::~infinibuf_outfd()
+{
+  close(fd_);
+}
 
 infinistreambuf::int_type
 infinistreambuf::underflow()
@@ -255,7 +167,7 @@ infinistreambuf::sync()
   return err ? -1 : 0;
 }
 
-infinistreambuf::infinistreambuf (shared_ptr<infinibuf> ib)
+infinistreambuf::infinistreambuf(shared_ptr<infinibuf> ib)
   : ib_(ib)
 {
   lock_guard<infinibuf> _lk (*ib_);
