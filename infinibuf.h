@@ -8,7 +8,7 @@
 
 
 /** \file infinibuf.h
- *  \brief iostreams-friendly buffers that can grow without bounds
+ *  \brief iostreams-friendly buffers that can grow without bounds.
  */
 
 /**
