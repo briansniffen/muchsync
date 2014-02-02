@@ -37,11 +37,12 @@ public:
   virtual ~infinibuf() { for (char *p : data_) delete[] p; }
   infinibuf &operator= (const infinibuf &) = delete;
 		   
-  // These functions are never thread safe
+  // These functions are never thread safe:
+
   bool empty() { return data_.size() == 1 && gpos_ == ppos_; }
   bool eof() { return eof_; }
   int err() { return errno_; }
-  void err(int num) { eof_ = num; errno_ = num; }
+  void err(int num) { errno_ = num; peof(); }
 
   char *eback() { return data_.front(); }
   char *gptr() { return eback() + gpos_; }
@@ -57,14 +58,15 @@ public:
   void pbump(int n);
   void peof() { eof_ = true; if (empty()) notempty(); }
 
-  // These functions are thread safe for some subtypes
+  // These functions are thread safe for some subtypes:
+
   virtual void lock() {}
   virtual void unlock() {}
   bool output(int fd);
   bool input(int fd);
 
-  static void output_loop(infinibuf *ib, int fd);
-  static void input_loop(infinibuf *ib, int fd);
+  static void output_loop(shared_ptr<infinibuf> ib, int fd);
+  static void input_loop(shared_ptr<infinibuf> ib, int fd);
 };
 
 class infinibuf_infd : public infinibuf {
@@ -92,7 +94,7 @@ public:
   void unlock() override { m_.unlock(); }
   void notempty() override { cv_.notify_all(); }
   void gwait() override {
-    if (empty()) {
+    if (empty() && !eof()) {
       unique_lock<mutex> ul (m_, adopt_lock);
       cv_.wait(ul);
       ul.release();
@@ -193,7 +195,7 @@ infinibuf::input (int fd)
 }
 
 void
-infinibuf::output_loop (infinibuf *ib, int fd)
+infinibuf::output_loop (shared_ptr<infinibuf> ib, int fd)
 {
   while (ib->output(fd)) {
     lock_guard<infinibuf> _lk (*ib);
@@ -202,7 +204,7 @@ infinibuf::output_loop (infinibuf *ib, int fd)
 }
 
 void
-infinibuf::input_loop (infinibuf *ib, int fd)
+infinibuf::input_loop (shared_ptr<infinibuf> ib, int fd)
 {
   while (ib->input(fd))
     ;
@@ -210,13 +212,15 @@ infinibuf::input_loop (infinibuf *ib, int fd)
 
 class infinistreambuf : public streambuf {
 protected:
-  infinibuf *ib_;
+  shared_ptr<infinibuf> ib_;
   int_type underflow() override;
   int_type overflow(int_type ch) override;
   int sync() override;
 public:
-  explicit infinistreambuf (infinibuf *ib);
-  infinibuf *get_infinibuf() { return ib_; }
+  explicit infinistreambuf (shared_ptr<infinibuf> ib);
+  explicit infinistreambuf (infinibuf *ib)
+    : infinistreambuf(shared_ptr<infinibuf>(ib)) {}
+  shared_ptr<infinibuf> get_infinibuf() { return ib_; }
 };
 
 infinistreambuf::int_type
@@ -251,7 +255,7 @@ infinistreambuf::sync()
   return err ? -1 : 0;
 }
 
-infinistreambuf::infinistreambuf (infinibuf *ib)
+infinistreambuf::infinistreambuf (shared_ptr<infinibuf> ib)
   : ib_(ib)
 {
   lock_guard<infinibuf> _lk (*ib_);
@@ -264,15 +268,13 @@ infinistreambuf::infinistreambuf (infinibuf *ib)
 int
 main (int argc, char **argv)
 {
-  infinibuf_mt iib;
-  infinistreambuf inb (&iib);
+  infinistreambuf inb (new infinibuf_mt);
   istream xin (&inb);
-  thread it (infinibuf::input_loop, &iib, 0);
+  thread it (infinibuf::input_loop, inb.get_infinibuf(), 0);
 
-  infinibuf_mt oib;
-  infinistreambuf outb (&oib);
+  infinistreambuf outb (new infinibuf_mt);
   ostream xout (&outb);
-  thread ot (infinibuf::output_loop, &oib, 1);
+  thread ot (infinibuf::output_loop, outb.get_infinibuf(), 1);
   xin.tie (&xout);
 
 #if 0
@@ -295,9 +297,10 @@ main (int argc, char **argv)
   xout << "got " << x << "\n" << flush;
   */
   
-  oib.lock();
-  oib.peof();
-  oib.unlock();
+  auto oib = outb.get_infinibuf();
+  oib->lock();
+  oib->peof();
+  oib->unlock();
   ot.join();
 
   it.join();
