@@ -16,6 +16,7 @@ using namespace std;
 
 class infinibuf {
 protected:
+  static constexpr int default_startpos_ = 8;
   static constexpr int chunksize_ = 0x10000;
 
   deque<char *> data_;
@@ -25,16 +26,24 @@ protected:
   int errno_{0};
   const int startpos_;		// For putback
 
+  long icount=0;
+  long ocount=0;
+
 public:
-  explicit infinibuf(int sp = 8)
+  explicit infinibuf(int sp = default_startpos_)
     : gpos_(sp), ppos_(sp), startpos_(sp) {
     data_.push_back (new char[chunksize_]);
   }
   infinibuf(const infinibuf &) = delete;
-  ~infinibuf() { for (char *p : data_) delete[] p; }
+  virtual ~infinibuf() { for (char *p : data_) delete[] p; }
   infinibuf &operator= (const infinibuf &) = delete;
 		   
   // These functions are not thread safe
+  size_t size() {
+    return data_.size() <= 1 ? ppos_ - gpos_
+      : ((chunksize_ - gpos_) + (ppos_ - startpos_)
+	 + chunksize_ * (data_.size() - 2));
+  }
   bool empty() { return data_.size() == 1 && gpos_ == ppos_; }
   bool eof() { return eof_; }
   int err() { return errno_; }
@@ -50,15 +59,14 @@ public:
   char *pptr() { return pbase() + ppos_; }
   int psize() { return chunksize_ - gpos_; }
   char *epptr() { return pptr() + psize(); }
-  bool pbump(int n);
-  void peof() { eof_ = true; }
+  void pbump(int n);
+  void peof() { eof_ = true; if (empty()) notempty(); }
 
-  // These functions are thread safe
+  // These functions may be thread safe in some derived classes
   virtual void lock() {}
   virtual void unlock() {}
   virtual void notempty() {}
   virtual void gwait() {}
-
   bool output(int fd);
   bool input(int fd);
 };
@@ -66,7 +74,7 @@ public:
 class infinibuf_infd : public infinibuf {
   const int fd_;
 public:
-  explicit infinibuf_infd (int fd, int sp = 8)
+  explicit infinibuf_infd (int fd, int sp = default_startpos_)
     : infinibuf(sp), fd_(fd) {}
   void gwait() override { input(fd_); }
 };
@@ -74,14 +82,32 @@ public:
 class infinibuf_outfd : public infinibuf {
   const int fd_;
 public:
-  explicit infinibuf_outfd (int fd, int sp = 8)
+  explicit infinibuf_outfd (int fd, int sp = default_startpos_)
     : infinibuf(sp), fd_(fd) {}
   void notempty() override { output(fd_); }
+};
+
+class infinibuf_mt : public infinibuf {
+  mutex m_;
+  condition_variable cv_;
+public:
+  explicit infinibuf_mt (int sp = default_startpos_) : infinibuf(sp) {}
+  void lock() override { m_.lock(); }
+  void unlock() override { m_.unlock(); }
+  void notempty() override { cv_.notify_all(); }
+  void gwait() override {
+    if (empty()) {
+      unique_lock<mutex> ul (m_, adopt_lock);
+      cv_.wait(ul);
+      ul.release();
+    }
+  }
 };
 
 void
 infinibuf::gbump(int n)
 {
+  icount += n;
   gpos_ += n;
   assert (gpos_ > 0 && gpos_ <= chunksize_);
   if (gpos_ == chunksize_) {
@@ -92,19 +118,23 @@ infinibuf::gbump(int n)
   }
 }
 
-bool
+void
 infinibuf::pbump(int n)
 {
-  assert (n >= 0 && n <= psize() && !eof_);
+  assert (n >= 0);
+  assert (n <= psize());
+  assert (!eof_);
   bool wasempty (empty());
   ppos_ += n;
+  ocount += n;
   if (ppos_ == chunksize_) {
     char *chunk = new char[chunksize_];
     memcpy(chunk, data_.back() + chunksize_ - startpos_, startpos_);
     data_.push_back(chunk);
     ppos_ = startpos_;
   }
-  return wasempty;
+  if (wasempty)
+    notempty();
 }
 
 bool
@@ -121,9 +151,12 @@ infinibuf::output(int fd)
     if (error)
       throw runtime_error (string("infinibuf::output: ") + strerror(error));
     else if (!nmax && iseof) {
+      assert (empty());
       shutdown(fd, SHUT_WR);
       return false;
     }
+    if (!nmax)
+      return true;
     ssize_t n = write(fd, p, nmax);
     if (n > 0) {
       lock();
@@ -162,13 +195,10 @@ infinibuf::input (int fd)
   }
 
   lock();
-  bool wasempty = empty();
   if (n > 0)
     pbump(n);
   else
     peof();
-  if (wasempty)
-    notempty();
   unlock();
   return n > 0;
 }
@@ -192,7 +222,7 @@ infinistreambuf::underflow()
   while (ib_->gsize() == 0 && !ib_->eof())
     ib_->gwait();
   setg(ib_->eback(), ib_->gptr(), ib_->egptr());
-  bool eof = ib_->eof();
+  bool eof = ib_->eof() && ib_->gsize() == 0;
   ib_->unlock();
   return eof ? traits_type::eof() : traits_type::to_int_type (*gptr());
 }
@@ -200,7 +230,8 @@ infinistreambuf::underflow()
 infinistreambuf::int_type
 infinistreambuf::overflow(int_type ch)
 {
-  sync();
+  if (sync() == -1)
+    return traits_type::eof();
   *pptr() = ch;
   pbump(1);
   return traits_type::not_eof(ch);
@@ -227,51 +258,70 @@ infinistreambuf::infinistreambuf (infinibuf *ib)
 }
 
 
-#if 0
-
-
+#if 1
 void
-reader(shared_ptr<chan> c, int fd)
+reader(infinibuf_mt *_ib, int fd)
 {
-  while (c->input(fd))
+  while (_ib->input(fd))
     ;
 }
 
 void
-writer(shared_ptr<chan> c, int fd)
+writer(infinibuf_mt *_ib, int fd)
 {
-  while (c->output(fd))
-    c->gwait();
+  while (_ib->output(fd)) {
+    _ib->lock();
+    _ib->gwait();
+    _ib->unlock();
+  }
 }
 
 int
-omain (int argc, char **argv)
+main (int argc, char **argv)
 {
-  chanbuf icb;
-  thread it (reader, icb.getchan(), 0);
-  istream xin(&icb);
+  infinibuf_mt iib;
+  infinistreambuf inb (&iib);
+  istream xin (&inb);
+  thread it (reader, &iib, 0);
 
-  chanbuf ocb;
-  thread ot (writer, ocb.getchan(), 1);
-  ostream xout(&ocb);
-
+  infinibuf_mt oib;
+  infinistreambuf outb (&oib);
+  ostream xout (&outb);
+  thread ot (writer, &oib, 1);
   xin.tie (&xout);
 
-  string x;
-  while ((xin >> x).good()) {
-    cout << "word: " << x << '\n';
+#if 0
+  char c;
+  long count = 0;
+  while (xin.get (c)) {
+    count++;
+    xout.put (c);
   }
+  cerr << "flushing " << count << " bytes\n";
+  xout.flush();
+#endif
 
-  ocb.getchan()->peof();
+  xout << xin.rdbuf() << flush;
 
-  //writer (c, 1);
-  it.join();
+  /*
+  xout << "waiting for input\n";
+  string x;
+  xin >> x;
+  xout << "got " << x << "\n" << flush;
+  */
+  
+  oib.lock();
+  oib.peof();
+  oib.unlock();
   ot.join();
+
+  it.join();
 
   return 0;
 }
 #endif
 
+#if 0
 int
 main (int argc, char **argv)
 {
@@ -282,16 +332,26 @@ main (int argc, char **argv)
   infinibuf_outfd oib(1);
   infinistreambuf outb (&oib);
   ostream xout (&outb);
+  xin.tie(&xout);
 
-  string x;
-  while ((xin >> x).good()) {
-    cout << "word: " << x << '\n';
+  xout << xin.rdbuf();
+#if 0
+  long count = 0;
+  char c;
+  while (xin.get (c)) {
+    xout.put (c);
+    count++;
   }
+  cerr << "Total count " << count << '\n';
+#endif
+
+  outb.pubsync();
   oib.peof();
 }
+#endif
 
 /*
 
-c++ -std=c++11 -Wall -Werror -pthread infinibuf.cc
+c++ -g -std=c++11 -Wall -Werror -pthread infinibuf.cc
 
 */
