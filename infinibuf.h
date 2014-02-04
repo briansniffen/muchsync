@@ -1,12 +1,12 @@
 // -*- C++ -*-
 
-#include <condition_variable>
-#include <deque>
-#include <memory>
-
 /** \file infinibuf.h
  *  \brief iostreams-friendly buffers that can grow without bounds.
  */
+
+#include <condition_variable>
+#include <list>
+#include <memory>
 
 /**
  * \brief Abstract buffer-management class for unbounded buffers.
@@ -21,7 +21,7 @@ protected:
   static constexpr int default_startpos_ = 8;
   static constexpr int chunksize_ = 0x10000;
 
-  std::deque<char *> data_;
+  std::list<char *> data_;
   int gpos_;
   int ppos_;
   bool eof_{false};
@@ -43,14 +43,16 @@ public:
 		   
   // These functions are never thread safe:
 
-  bool empty() { return data_.size() == 1 && gpos_ == ppos_; }
+  bool empty() { return data_.front() == data_.back() && gpos_ == ppos_; }
   bool eof() { return eof_; }
   int err() { return errno_; }
   void err(int num) { errno_ = num; peof(); }
 
   char *eback() { return data_.front(); }
   char *gptr() { return eback() + gpos_; }
-  int gsize() { return (data_.size() > 1 ? chunksize_ : ppos_) - gpos_; }
+  int gsize() {
+    return (data_.front() != data_.back() ? chunksize_ : ppos_) - gpos_;
+  }
   char *egptr() { return gptr() + gsize(); }
   void gbump(int n);
   /** Called to wait for the buffer to be non-empty. */
@@ -71,7 +73,12 @@ public:
   /** See comment at unlock. */
   virtual void unlock() {}
 
-  /** Drain the current contents of the buffer.
+  /** \brief Drain the current contents of the buffer.
+   *
+   * This function is thread safe and must be called *without* locking
+   * the `infinibuf`.  If the `infinibuf` is already locked, deadlock
+   * will ensue.
+   *
    * \param fd The file descriptor to write to.
    * \return `false` at EOF if there is no point in ever calling
    * `output` again.
@@ -80,6 +87,10 @@ public:
   bool output(int fd);
 
   /** Fill the buffer from a file descriptor.
+   *
+   * This function is thread safe and must be called *without* locking
+   * the `infinibuf`.
+   *
    * \param fd The file descriptor to read from.
    * \return `false` at EOF if there is no point in ever calling
    * `output` again.
