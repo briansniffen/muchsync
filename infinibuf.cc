@@ -118,18 +118,22 @@ void
 infinibuf::output_loop(shared_ptr<infinibuf> ib, int fd)
 {
   fd_closer _c(fd);
-  while (ib->output(fd)) {
-    lock_guard<infinibuf> _lk (*ib);
-    ib->gwait();
-  }
+  try {
+    while (ib->output(fd)) {
+      lock_guard<infinibuf> _lk (*ib);
+      ib->gwait();
+    }
+  } catch (runtime_error) {}
 }
 
 void
 infinibuf::input_loop(shared_ptr<infinibuf> ib, int fd)
 {
   fd_closer _c(fd);
-  while (ib->input(fd))
-    ;
+  try {
+    while (ib->input(fd))
+      ;
+  } catch (runtime_error) {}
 }
 
 infinibuf_infd::~infinibuf_infd()

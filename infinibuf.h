@@ -223,8 +223,13 @@ public:
     t_ = std::move(t);
   }
   ~ofdinfinistream() {
-    std::lock_guard<infinibuf> _lk (*isb.get_infinibuf());
+    std::unique_lock<infinibuf> lk (*isb.get_infinibuf());
     isb.sputeof();
+    lk.unlock();
     t_.join();
+    lk.lock();
+    if (isb.get_infinibuf()->err())
+      throw std::runtime_error (std::string("~ofdinfinistream: ") +
+				strerror(isb.get_infinibuf()->err()));
   }
 };
