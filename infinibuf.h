@@ -188,6 +188,21 @@ public:
   }
   ~ifdinfinistream() {
     std::lock_guard<infinibuf> _lk (*isb.get_infinibuf());
+    // Sadly, there appears to be no portable way of waking up the
+    // thread waiting in read.  I tried using dup2 to replace the file
+    // descriptor with /dev/null, or using fcntl to set the O_NONBLOCK
+    // flag after the read has already started, and neither works on
+    // linux.  What does work is setting an empty function (not
+    // SIG_IGN) as the signal handler on SIGCONT, then setting
+    // O_NONBLOCK on the file descriptor, and finally calling
+    // pthread_kill(t.native_handle(), SIGCONT)--but that could have
+    // unintended consequences on other parts of the program following
+    // a Ctrl-Z.  The only truly clean solution is to use a
+    // "self-pipe" to wake up a poll call, thereby using three file
+    // descriptors for the job of one (yuck).  Since we don't really
+    // need to clean up the file descriptor, I'm not going to add the
+    // complexity and cost of polling a second "self-pipe" file
+    // descriptor or dropping down to native_handle.
     isb.get_infinibuf()->err(EPIPE);
   }
 };
