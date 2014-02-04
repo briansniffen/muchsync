@@ -28,6 +28,52 @@ CREATE TEMP TRIGGER maildir_files_del AFTER DELETE ON main.maildir_files
   END;
 )";
 
+#if 0
+class file_dbops {
+  sqlstmt_t del_file_;
+  sqlstmt_t add_file_;
+  sqlstmt_t upd_file_;
+  sqlstmt_t mod_hash_;
+  sqlstmt_t get_hash_;
+  sqlstmt_t add_hash_;
+
+public:
+  file_dbops(sqlite3 *db, writestamp ws)
+    : del_file_(db, "DELETE FROM maildir_files WHERE rowid = ?;"),
+      add_file_(db, "INSERT INTO "
+		"maildir_files (name, mtime, inode, hash_id, dir_id)"
+		" VALUES (?, ?, ?, ?, ?);"),
+      upd_file_(db, "UPDATE maildir_files"
+		" SET mtime = ?, inode = ? WHERE rowid = ?;"),
+      mod_hash_(db, "INSERT OR IGNORE INTO modified_maildir_hashes (hash_id)"
+		" VALUES(?);"),
+      get_hash_(db, "SELECT hash_id, replica, version, message_id"
+		" FROM maildir_hashes WHERE hash = ?;"),
+      add_hash_(db, "INSERT INTO maildir_hashes (hash, size, replica, version)"
+		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second)
+  {}
+
+  i64 get_hash_id(const string &hash, i64 sz) {
+    if (get_hash_.reset().param(hash).step().row())
+      return get_hash_.integer(0);
+    add_hash_.reset().param(hash, sz).step();
+    return sqlite3_last_insert_rowid (sqlite3_db_handle(add_hash_.get()));
+  }
+  void del_file(i64 rowid, i64 hash_id) {
+    del_file_.reset().param(rowid).step();
+    mod_hash_.reset().param(hash_id).step();
+  }
+  void add_file(const string &name, double mtime, i64 inode,
+		i64 hash_id, i64 dir_id) {
+    add_file_.reset().param(name, mtime, inode, hash_id, dir_id).step();
+    mod_hash_.reset().param(hash_id).step();
+  }
+  void upd_file(i64 rowid, double mtime, i64 inode) {
+    upd_file_.reset().param(mtime, inode, rowid).step();
+  }
+};
+#endif
+
 static string
 hexdump (const string &s)
 {
