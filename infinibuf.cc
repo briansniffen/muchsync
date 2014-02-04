@@ -87,8 +87,7 @@ infinibuf::input(int fd)
   unique_lock<infinibuf> lk (*this);
   char *p = pptr();
   size_t nmax = psize();
-  int error = err();
-  if (error)
+  if (int error = err())
     throw runtime_error (string("infinibuf::input: ") + strerror(error));
 
   lk.unlock();
@@ -109,9 +108,16 @@ infinibuf::input(int fd)
   return n > 0;
 }
 
+struct fd_closer {
+  int fd_;
+  fd_closer(int fd) : fd_(fd) {}
+  ~fd_closer() { close(fd_); }
+};
+
 void
 infinibuf::output_loop(shared_ptr<infinibuf> ib, int fd)
 {
+  fd_closer _c(fd);
   while (ib->output(fd)) {
     lock_guard<infinibuf> _lk (*ib);
     ib->gwait();
@@ -121,6 +127,7 @@ infinibuf::output_loop(shared_ptr<infinibuf> ib, int fd)
 void
 infinibuf::input_loop(shared_ptr<infinibuf> ib, int fd)
 {
+  fd_closer _c(fd);
   while (ib->input(fd))
     ;
 }

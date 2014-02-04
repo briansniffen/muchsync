@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <list>
 #include <memory>
+#include <thread>
 
 /**
  * \brief Abstract buffer-management class for unbounded buffers.
@@ -46,7 +47,7 @@ public:
   bool empty() { return data_.front() == data_.back() && gpos_ == ppos_; }
   bool eof() { return eof_; }
   int err() { return errno_; }
-  void err(int num) { errno_ = num; peof(); }
+  void err(int num) { if (!errno_) errno_ = num; peof(); }
 
   char *eback() { return data_.front(); }
   char *gptr() { return eback() + gpos_; }
@@ -109,8 +110,7 @@ public:
 class infinibuf_infd : public infinibuf {
   const int fd_;
 public:
-  explicit infinibuf_infd (int fd, bool closeit = true,
-			 int sp = default_startpos_)
+  explicit infinibuf_infd (int fd, int sp = default_startpos_)
     : infinibuf(sp), fd_(fd) {}
   ~infinibuf_infd();
   void gwait() override { input(fd_); }
@@ -170,4 +170,46 @@ public:
     : infinistreambuf(std::shared_ptr<infinibuf>(ib)) {}
   std::shared_ptr<infinibuf> get_infinibuf() { return ib_; }
   void sputeof();
+};
+
+/** \brief `istream` from file descriptor with unbounded buffer.
+ *
+ * Continously reads from and buffers input from a file descriptor in
+ * another thread.  Closes the file descriptor after receiving EOF.
+ * Kill the input thread if any further input is received, but the
+ * input thread could get stuck if no input and no EOF happens.
+ */
+class ifdinfinistream : public std::istream {
+  infinistreambuf isb { new infinibuf_mt() };
+public:
+  ifdinfinistream (int fd) {
+    std::thread t (infinibuf::input_loop, isb.get_infinibuf(), fd);
+    t.detach();
+  }
+  ~ifdinfinistream() {
+    std::lock_guard<infinibuf> _lk (*isb.get_infinibuf());
+    isb.get_infinibuf()->err(EPIPE);
+  }
+};
+
+/** \brief `ostream` from file descriptor with unbounded buffer.
+ *
+ * Buffers unbounded amounts of data which are drained to a file
+ * descriptor in another thread.  The file descriptor is closed when
+ * the draining thread exits.  The class destructor waits for the
+ * writer thread to flush the buffer and exit.
+ */
+class ofdinfinistream : public std::istream {
+  infinistreambuf isb { new infinibuf_mt(0) };
+  std::thread t_;
+public:
+  ofdinfinistream (int fd) {
+    std::thread t (infinibuf::output_loop, isb.get_infinibuf(), fd);
+    t_ = std::move(t);
+  }
+  ~ofdinfinistream() {
+    std::lock_guard<infinibuf> _lk (*isb.get_infinibuf());
+    isb.sputeof();
+    t_.join();
+  }
 };
