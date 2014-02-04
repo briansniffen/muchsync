@@ -1,12 +1,11 @@
 // -*- C++ -*-
 
-#include <cassert>
 #include <memory>
-#include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <sqlite3.h>
 #include <openssl/sha.h>
+
+#include "sqlstmt.h"
 
 using std::string;
 
@@ -35,174 +34,6 @@ public:
   void disable() { action_ = [] () {}; }
   ~cleanup() { action_(); }
 };
-
-/* sqlite.cc */
-using i64 = sqlite3_int64;
-
-struct sqlerr_t : public std::runtime_error {
-  sqlerr_t (const string &msg) : std::runtime_error (msg) {}
-};
-/* A sqldone_t is thrown if you ask for data when no rows are left */
-struct sqldone_t : public std::runtime_error {
-  sqldone_t (const string &msg) : std::runtime_error (msg) {}
-};
-
-class sqlstmt_t {
-  sqlite3_stmt *stmt_;
-  int status_ = SQLITE_OK;
-  sqlstmt_t &set_status (int status);
-  void fail ();
-  void ensure_row () { if (status_ != SQLITE_ROW) fail(); }
-
- public:
-  explicit sqlstmt_t(sqlite3_stmt *stmt) : stmt_ (stmt) {}
-  explicit sqlstmt_t(sqlite3 *db, const char *fmt, ...);
-  sqlstmt_t(const sqlstmt_t &r) = delete;
-  sqlstmt_t(sqlstmt_t &&r) : stmt_ (r.stmt_) { r.stmt_ = nullptr; }
-  ~sqlstmt_t() { sqlite3_finalize (stmt_); }
-
-  sqlite3_stmt *get() { return stmt_; }
-  int status() const { return status_; }
-  bool row() {
-    if (status_ == SQLITE_ROW)
-      return true;
-    // Something like SQLITE_OK indicates row() not used after step()
-    assert (status_ == SQLITE_DONE);
-    return false;
-  }
-  bool done() { return !row(); }
-  sqlstmt_t &step() { return set_status(sqlite3_step (stmt_)); }
-  sqlstmt_t &reset() { return set_status(sqlite3_reset (stmt_)); }
-
-  /* Access columns */
-  template<typename T> T column (int);
-  bool null(int iCol) {
-    ensure_row();
-    return sqlite3_column_type (stmt_, iCol) == SQLITE_NULL;
-  }
-  sqlite3_int64 integer(int iCol) {
-    ensure_row();
-    return sqlite3_column_int64 (stmt_, iCol);
-  }
-  double real(int iCol) {
-    ensure_row();
-    return sqlite3_column_double (stmt_, iCol);
-  }
-  string str(int iCol) {
-    ensure_row();
-    return { static_cast<const char *> (sqlite3_column_blob (stmt_, iCol)),
-	size_t (sqlite3_column_bytes (stmt_, iCol)) };
-  }
-  const char *c_str(int iCol) {
-    ensure_row();
-    return reinterpret_cast<const char *> (sqlite3_column_text (stmt_, iCol));
-  }
-  sqlite3_value *value(int iCol) {
-    ensure_row();
-    return sqlite3_column_value(stmt_, iCol);
-  }
-
-  /* Bind parameters */
-  sqlstmt_t &bind_null(int i) {
-    return set_status (sqlite3_bind_null(stmt_, i));
-  }
-  sqlstmt_t &bind_int(int i, sqlite3_int64 v) {
-    return set_status (sqlite3_bind_int64(stmt_, i, v));
-  }
-  sqlstmt_t &bind_real(int i, double v) {
-    return set_status (sqlite3_bind_double(stmt_, i, v));
-  }
-  sqlstmt_t &bind_text(int i, const string &v) {
-    return set_status (sqlite3_bind_text(stmt_, i, v.data(), v.size(),
-					 SQLITE_STATIC));
-  }
-  sqlstmt_t &bind_text(int i, string &&v) {
-    return set_status (sqlite3_bind_text(stmt_, i, v.data(), v.size(),
-					 SQLITE_TRANSIENT));
-  }
-  sqlstmt_t &bind_text(int i, const char *p, int len = -1) {
-    return set_status (sqlite3_bind_text(stmt_, i, p, len, SQLITE_STATIC));
-  }
-  sqlstmt_t &bind_blob(int i, const void *p, int len) {
-    return set_status (sqlite3_bind_blob(stmt_, i, p, len, SQLITE_STATIC));
-  }
-  sqlstmt_t &bind_value(int i, const sqlite3_value *v) {
-    return set_status (sqlite3_bind_value (stmt_, i, v));
-  }
-
-  sqlstmt_t &_param(int) { return *this; }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, sqlite3_int64 v, Rest... rest) {
-    return this->bind_int(i, v)._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, unsigned v, Rest... rest) {
-    return this->bind_int(i, v)._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, int v, Rest... rest) {
-    return this->bind_int(i, v)._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, const string &v, Rest... rest) {
-    return this->bind_text(i, v)._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, string &&v, Rest... rest) {
-    return this->bind_text(i, move (v))._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, const char *v, Rest... rest) {
-    return this->bind_text(i, v)._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, double v, Rest... rest) {
-    return this->bind_real(i, v)._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, std::nullptr_t, Rest... rest) {
-    return this->bind_null(i)._param(i+1, rest...);
-  }
-  template<typename... Rest>
-    sqlstmt_t &_param(int i, const sqlite3_value *v, Rest... rest) {
-    return this->bind_value(i, v)._param(i+1, rest...);
-  }
-  template<typename... Args> sqlstmt_t &param(Args&&... args) {
-    return _param (1, std::forward<Args> (args)...);
-  }
-};
-
-template<> inline bool
-sqlstmt_t::column (int iCol)
-{
-  return null (iCol);
-}
-template<> inline i64
-sqlstmt_t::column (int iCol)
-{
-  return integer (iCol);
-}
-template<> inline double
-sqlstmt_t::column (int iCol)
-{
-  return real (iCol);
-}
-template<> inline string
-sqlstmt_t::column (int iCol)
-{
-  return str (iCol);
-}
-template<> inline const char *
-sqlstmt_t::column (int iCol)
-{
-  return c_str (iCol);
-}
-
-void dbthrow (sqlite3 *db, const char *query);
-void sqlexec (sqlite3 *db, const char *fmt, ...);
-sqlstmt_t fmtstmt (sqlite3 *db, const char *fmt, ...);
-int fmtstep (sqlite3 *db, sqlite3_stmt **stmtpp, const char *fmt, ...);
-void save_old_table (sqlite3 *sqldb, const string &table, const char *create);
 
 /* protocol.cc */
 string permissive_percent_encode (const string &raw);
