@@ -11,6 +11,9 @@ AC_PROG_CXX
 AX_CXX_COMPILE_STDCXX_11(noext,mandatory)
 CXXFLAGS="$CXXFLAGS -Wall"
 dnl AC_USE_SYSTEM_EXTENSIONS
+AC_LANG(C++)
+# -pthread Seems to be required by g++ -stc=c++11
+AX_APPEND_COMPILE_FLAGS([-pthread])
 
 PKG_CHECK_MODULES([sqlite3], [sqlite3])
 PKG_CHECK_MODULES([libcrypto], [libcrypto])
@@ -23,9 +26,6 @@ if ! xapian_CPPFLAGS=$($XAPIAN_CONFIG --cxxflags) \
 fi
 AC_SUBST(xapian_CPPFLAGS)
 AC_SUBST(xapian_LIBS)
-
-dnl AX_BOOST_BASE
-dnl AX_BOOST_IOSTREAMS
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
