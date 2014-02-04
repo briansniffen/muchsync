@@ -15,20 +15,6 @@
 
 using namespace std;
 
-const char maildir_triggers[] = R"(
-CREATE TEMP TABLE modified_maildir_hashes (
-  hash_id INTEGER PRIMARY KEY);
-CREATE TEMP TRIGGER maildir_files_add AFTER INSERT ON main.maildir_files
-  WHEN new.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
-  BEGIN INSERT INTO modified_maildir_hashes (hash_id) VALUES (new.hash_id);
-  END;
-CREATE TEMP TRIGGER maildir_files_del AFTER DELETE ON main.maildir_files
-  WHEN old.hash_id NOT IN (SELECT hash_id FROM modified_maildir_hashes)
-  BEGIN INSERT INTO modified_maildir_hashes (hash_id) VALUES (old.hash_id);
-  END;
-)";
-
-#if 0
 class file_dbops {
   sqlstmt_t del_file_;
   sqlstmt_t add_file_;
@@ -36,6 +22,14 @@ class file_dbops {
   sqlstmt_t mod_hash_;
   sqlstmt_t get_hash_;
   sqlstmt_t add_hash_;
+
+  static sqlstmt_t make_mod_hash(sqlite3 *db) {
+    sqlexec(db, "CREATE TEMP TABLE IF NOT EXISTS modified_maildir_hashes ("
+	    "hash_id INTEGER PRIMARY KEY);");
+    return sqlstmt_t(db,
+		     "INSERT OR IGNORE INTO modified_maildir_hashes (hash_id)"
+		     " VALUES(?);");
+  }
 
 public:
   file_dbops(sqlite3 *db, writestamp ws)
@@ -45,13 +39,13 @@ public:
 		" VALUES (?, ?, ?, ?, ?);"),
       upd_file_(db, "UPDATE maildir_files"
 		" SET mtime = ?, inode = ? WHERE rowid = ?;"),
-      mod_hash_(db, "INSERT OR IGNORE INTO modified_maildir_hashes (hash_id)"
-		" VALUES(?);"),
+      mod_hash_(make_mod_hash(db)),
       get_hash_(db, "SELECT hash_id, replica, version, message_id"
 		" FROM maildir_hashes WHERE hash = ?;"),
       add_hash_(db, "INSERT INTO maildir_hashes (hash, size, replica, version)"
 		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second)
-  {}
+  {
+  }
 
   i64 get_hash_id(const string &hash, i64 sz) {
     if (get_hash_.reset().param(hash).step().row())
@@ -63,16 +57,16 @@ public:
     del_file_.reset().param(rowid).step();
     mod_hash_.reset().param(hash_id).step();
   }
-  void add_file(const string &name, double mtime, i64 inode,
+  void add_file(const char *name, const timespec &mtime, i64 inode,
 		i64 hash_id, i64 dir_id) {
-    add_file_.reset().param(name, mtime, inode, hash_id, dir_id).step();
+    add_file_.reset().param(name, ts_to_double(mtime), inode,
+			    hash_id, dir_id).step();
     mod_hash_.reset().param(hash_id).step();
   }
-  void upd_file(i64 rowid, double mtime, i64 inode) {
-    upd_file_.reset().param(mtime, inode, rowid).step();
+  void upd_file(i64 rowid, const timespec &mtime, i64 inode) {
+    upd_file_.reset().param(ts_to_double(mtime), inode, rowid).step();
   }
 };
-#endif
 
 static string
 hexdump (const string &s)
@@ -99,7 +93,7 @@ hash_ctx::final()
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
 
-string
+static string
 get_sha (int dfd, const char *direntry, i64 *sizep)
 {
   int fd = openat(dfd, direntry, O_RDONLY);
@@ -262,13 +256,10 @@ check_file (sqlstmt_t &scan, const struct stat *sbp)
 }
 
 static void
-scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
-		sqlstmt_t &scan, sqlstmt_t &del_file, sqlstmt_t &add_file,
-		sqlstmt_t &upd_file, int dfd,
-		function<i64(const char *)> gethash)
+scan_directory (const string &path, int dfd, i64 dir_id,
+		sqlstmt_t &scan, file_dbops &fdb)
 {
   struct stat sbuf;		// Just storage in case !opt_fullscan
-  string path = maildir.size() ? maildir + "/" + subdir : subdir;
   char *paths[] {const_cast<char *> (path.c_str()), nullptr};
   unique_ptr<FTS, decltype (&fts_close)>
     ftsp {fts_open (paths, FTS_LOGICAL, &compare_fts_name), fts_close};
@@ -282,7 +273,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
     throw runtime_error (path + ": " + strerror (f->fts_errno));
 
   if (opt_verbose > 1)
-    cout << "  " << subdir << '\n';
+    cout << "  " << path << '\n';
 
   scan.step();
   while (scan.row() && f) {
@@ -292,7 +283,7 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
     }
     int cmp = strcmp (scan.c_str(0), f->fts_name);
     if (cmp < 0) {
-      del_file.reset().param(scan.value(5)).step();
+      fdb.del_file(scan.integer(5), scan.integer(4));
       scan.step();
       continue;
     }
@@ -306,48 +297,50 @@ scan_directory (sqlite3 *sqldb, const string &maildir, const string &subdir,
      * regular file, we must compute a full hash of its contents. */
     const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
     if (!S_ISREG (sbp->st_mode)) {
-      del_file.reset().param(scan.value(5)).step();
+      fdb.del_file(scan.integer(5), scan.integer(4));
       scan.step();
       f = f->fts_link;
     }
     if (opt_verbose > 2)
       cout << "    " << f->fts_name << "\n";
-    i64 hashid = gethash (f->fts_name);
+    i64 sz;
+    string hash = get_sha(dfd, f->fts_name, &sz);
+    i64 hashid = fdb.get_hash_id(hash, sz);
     if (cmp == 0) {
       /* metadata changed suspiciously */
       if (hashid == scan.integer(4)) {
 	/* file unchanged; update metadata so we don't re-hash next time */
-	upd_file.reset().param(ts_to_double(sbp->st_mtim), i64(sbp->st_ino),
-			       scan.value(5)).step();
+	fdb.upd_file(scan.integer(5), sbp->st_mtim, sbp->st_ino);
 	scan.step();
 	f = f->fts_link;
 	continue;
       }
-      cerr << "warning: " << subdir + "/" + f->fts_name << " was modified\n";
+      cerr << "warning: " << path + "/" + f->fts_name << " was modified\n";
       /* file changed; delete old entry and consider it a new file */
-      del_file.reset().param(scan.value(5)).step();
+      fdb.del_file(scan.integer(5), scan.integer(4));
     }
-    add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),
-			   i64(sbp->st_ino), hashid).step();
+    fdb.add_file(f->fts_name, sbp->st_mtim, sbp->st_ino, hashid, dir_id);
     scan.step();
     f = f->fts_link;
   }
   for (; scan.row(); scan.step())
-    del_file.reset().param(scan.value(5)).step();
+    fdb.del_file(scan.integer(5), scan.integer(4));
   for (; f; f = f->fts_link) {
     const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
     if (!S_ISREG (sbp->st_mode))
       continue;
     if (opt_verbose > 2)
       cout << "    " << f->fts_name << "\n";
-    i64 hashid = gethash (f->fts_name);
-    add_file.reset().param(f->fts_name, ts_to_double(sbp->st_mtim),
-			   i64(sbp->st_ino), hashid).step();
+    i64 sz;
+    string hash = get_sha(dfd, f->fts_name, &sz);
+    i64 hashid = fdb.get_hash_id(hash, sz);
+    fdb.add_file(f->fts_name, sbp->st_mtim, sbp->st_ino, hashid, dir_id);
   }
 }
 
 static void
-scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
+scan_directories (sqlite3 *sqldb, const string &maildir,
+		  int rootfd, writestamp ws)
 {
   sqlstmt_t
     scandirs (sqldb, "SELECT dir_id, dir_path FROM %s ORDER BY dir_path;",
@@ -356,39 +349,25 @@ scan_files (sqlite3 *sqldb, const string &maildir, int rootfd, writestamp ws)
     scanfiles (sqldb, "SELECT name, mtime, inode, size, hash_id,"
 	       " maildir_files.rowid"
 	       " FROM maildir_files JOIN maildir_hashes USING (hash_id)"
-	       " WHERE dir_id = ? ORDER BY name;"),
-    del_file (sqldb, "DELETE FROM maildir_files WHERE rowid = ?;"),
-    add_file (sqldb, "INSERT INTO maildir_files"
-	      " (name, mtime, inode, hash_id, dir_id)"
-	      " VALUES (?, ?, ?, ?, ?);"),
-    upd_file (sqldb, "UPDATE maildir_files"
-	      " SET mtime = ?, inode = ? WHERE rowid = ?;"),
-    get_hash (sqldb, "SELECT hash_id, replica, version, message_id"
-	      " FROM maildir_hashes WHERE hash = ?;"),
-    add_hash (sqldb, "INSERT INTO maildir_hashes "
-	      "(hash, size, replica, version) VALUES (?, ?, %lld, %lld);",
-	      ws.first, ws.second);
-
+	       " WHERE dir_id = ? ORDER BY name;");
+  file_dbops fdb (sqldb, ws);
   int dfd;
-  auto gethash = [sqldb,ws,&get_hash,&add_hash,&dfd] (const char *path) -> i64 {
-    i64 sz;
-    string h = get_sha (dfd, path, &sz);
-    if (get_hash.reset().param(h).step().row())
-      return get_hash.integer(0);
-    add_hash.reset().param(h, sz).step();
-    return sqlite3_last_insert_rowid (sqldb);
-  };
 
   while (scandirs.step().row()) {
-    string dir {scandirs.str(1)};
-    dfd = openat(rootfd, dir.c_str(), O_RDONLY);
+    i64 dir_id {scandirs.integer(0)};
+    string subdir {scandirs.str(1)};
+    dfd = openat(rootfd, subdir.c_str(), O_RDONLY);
     if (dfd < 0)
-      throw runtime_error (dir + ": " + strerror (errno));
+      throw runtime_error (subdir + ": " + strerror (errno));
     cleanup _c (close, dfd);
     scanfiles.reset().bind_value(1, scandirs.value(0));
-    add_file.reset().bind_value(5, scandirs.value(0));
-    scan_directory (sqldb, maildir, dir,
-		    scanfiles, del_file, add_file, upd_file, dfd, gethash);
+
+    string dir = maildir
+      + (subdir.size() && maildir.size() && maildir.back() != '/' ? "/" : "")
+      + subdir;
+    if (dir.empty())
+      dir = ".";
+    scan_directory (dir, dfd, dir_id, scanfiles, fdb);
   }
 }
 
@@ -451,7 +430,7 @@ sync_maildir_ws (sqlite3 *sqldb, writestamp ws)
 void
 scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
 {
-  while (maildir.size() && maildir.back() == '/')
+  while (maildir.size() > 1 && maildir.back() == '/')
     maildir.resize (maildir.size() - 1);
 
   print_time ("starting scan of mail directory");
@@ -460,7 +439,6 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
     throw runtime_error (maildir + ": " + strerror (errno));
   cleanup _c (close, rootfd);
 
-  sqlexec (sqldb, maildir_triggers);
   find_new_directories (sqldb, maildir, rootfd);
   print_time ("searched for new subdirectories of maildir");
   find_modified_directories (sqldb, maildir, rootfd);
@@ -468,7 +446,7 @@ scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir)
 	   "(SELECT xapian_dirs.dir_docid FROM xapian_dirs WHERE"
 	   " xapian_dirs.dir_path = maildir_dirs.dir_path);");
   print_time ("search for modified directories in maildir");
-  scan_files (sqldb, maildir, rootfd, ws);
+  scan_directories (sqldb, maildir, rootfd, ws);
   print_time (opt_fullscan ? "scanned files in all directories"
 	      : "scanned files in modified directories");
   if (opt_fullscan)

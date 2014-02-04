@@ -102,7 +102,6 @@ public:
   void update(const void *buf, size_t n) { SHA1_Update (&ctx_, buf, n); }
   string final();
 };
-string get_sha (int dfd, const char *direntry, i64 *sizep = nullptr);
 /* Maildirs place messages in directories called "new" and "dir" */
 inline bool
 dir_contains_messages (const string &dir)
