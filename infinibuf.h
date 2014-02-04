@@ -169,4 +169,5 @@ public:
   explicit infinistreambuf (infinibuf *ib)
     : infinistreambuf(std::shared_ptr<infinibuf>(ib)) {}
   std::shared_ptr<infinibuf> get_infinibuf() { return ib_; }
+  void sputeof();
 };

@@ -175,6 +175,12 @@ infinistreambuf::infinistreambuf(shared_ptr<infinibuf> ib)
   setp(ib_->pptr(), ib_->epptr());
 }
 
+void
+infinistreambuf::sputeof()
+{
+  lock_guard<infinibuf> _lk (*ib_);
+  ib_->peof();
+}
 
 #if 0
 int
