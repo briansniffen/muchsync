@@ -3,9 +3,6 @@
 #include <condition_variable>
 #include <deque>
 #include <memory>
-#include <mutex>
-
-
 
 /** \file infinibuf.h
  *  \brief iostreams-friendly buffers that can grow without bounds.
