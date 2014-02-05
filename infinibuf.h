@@ -172,6 +172,28 @@ public:
   void sputeof();
 };
 
+class ifdstream : public std::istream {
+  infinistreambuf isb_;
+public:
+  ifdstream(int fd) : isb_(new infinibuf_infd(fd)) { rdbuf(&isb_); }
+  ~ifdstream() {
+    std::lock_guard<infinibuf> _lk (*isb_.get_infinibuf());
+    isb_.get_infinibuf()->err(EPIPE);
+  }
+};
+
+class ofdstream : public std::ostream {
+  infinistreambuf isb_;
+public:
+  ofdstream(int fd) : isb_(new infinibuf_outfd(fd)) { rdbuf(&isb_); }
+  ~ofdstream() {
+    if (std::uncaught_exception())
+      try { isb_.sputeof();} catch(...) {}
+    else
+      isb_.sputeof();
+  }
+};
+
 /** \brief `istream` from file descriptor with unbounded buffer.
  *
  * Continously reads from and buffers input from a file descriptor in
@@ -180,14 +202,15 @@ public:
  * input thread could get stuck if no input and no EOF happens.
  */
 class ifdinfinistream : public std::istream {
-  infinistreambuf isb { new infinibuf_mt() };
+  infinistreambuf isb_ { new infinibuf_mt() };
 public:
   ifdinfinistream (int fd) {
-    std::thread t (infinibuf::input_loop, isb.get_infinibuf(), fd);
+    std::thread t (infinibuf::input_loop, isb_.get_infinibuf(), fd);
     t.detach();
+    rdbuf(&isb_);
   }
   ~ifdinfinistream() {
-    std::lock_guard<infinibuf> _lk (*isb.get_infinibuf());
+    std::lock_guard<infinibuf> _lk (*isb_.get_infinibuf());
     // Sadly, there appears to be no portable way of waking up the
     // thread waiting in read.  I tried using dup2 to replace the file
     // descriptor with /dev/null, or using fcntl to set the O_NONBLOCK
@@ -203,7 +226,7 @@ public:
     // need to clean up the file descriptor, I'm not going to add the
     // complexity and cost of polling a second "self-pipe" file
     // descriptor or dropping down to native_handle.
-    isb.get_infinibuf()->err(EPIPE);
+    isb_.get_infinibuf()->err(EPIPE);
   }
 };
 
@@ -214,22 +237,23 @@ public:
  * the draining thread exits.  The class destructor waits for the
  * writer thread to flush the buffer and exit.
  */
-class ofdinfinistream : public std::istream {
-  infinistreambuf isb { new infinibuf_mt(0) };
+class ofdinfinistream : public std::ostream {
+  infinistreambuf isb_ { new infinibuf_mt(0) };
   std::thread t_;
 public:
   ofdinfinistream (int fd) {
-    std::thread t (infinibuf::output_loop, isb.get_infinibuf(), fd);
+    std::thread t (infinibuf::output_loop, isb_.get_infinibuf(), fd);
     t_ = std::move(t);
+    rdbuf(&isb_);
   }
   ~ofdinfinistream() {
-    std::unique_lock<infinibuf> lk (*isb.get_infinibuf());
-    isb.sputeof();
-    lk.unlock();
-    t_.join();
-    lk.lock();
-    if (isb.get_infinibuf()->err())
-      throw std::runtime_error (std::string("~ofdinfinistream: ") +
-				strerror(isb.get_infinibuf()->err()));
+    isb_.sputeof();
+    if (!std::uncaught_exception()) {
+      t_.join();
+      std::lock_guard<infinibuf> lk (*isb_.get_infinibuf());
+      if (isb_.get_infinibuf()->err())
+	throw std::runtime_error (std::string("~ofdinfinistream: ") +
+				  strerror(isb_.get_infinibuf()->err()));
+    }
   }
 };

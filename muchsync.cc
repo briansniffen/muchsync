@@ -10,6 +10,7 @@
 #include <openssl/rand.h>
 #include <notmuch.h>
 #include "muchsync.h"
+#include "infinibuf.h"
 
 using namespace std;
 
@@ -25,6 +26,7 @@ int opt_verbose;
 bool opt_no_maildir, opt_no_xapian;
 string opt_ssh = "ssh -CTaxq";
 string opt_remote_muchsync_path = "muchsync";
+unordered_set<string> new_tags = notmuch_new_tags();
 
 const char schema_def[] = R"(
 -- General table
@@ -362,6 +364,10 @@ usage ()
 static void
 server (int argc, char **argv)
 {
+  //ifdinfinistream ibin(0);
+  //cin.rdbuf(ibin.rdbuf());
+  cleanup _cb ([](){ cin.rdbuf(nullptr); });
+
   /* If same client opens multiple connections, opt_nosync avoids
    * re-scanning all messages. */
   bool opt_nosync = false;

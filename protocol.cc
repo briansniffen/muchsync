@@ -17,11 +17,9 @@
 #include <xapian.h>
 #include <notmuch.h>
 #include "muchsync.h"
-#include "fdstream.h"
+#include "infinibuf.h"
 
 using namespace std;
-
-static unordered_set<string> new_tags = notmuch_new_tags();
 
 struct hash_info {
   string hash;
@@ -916,19 +914,6 @@ FROM (peer_vector p JOIN message_ids m
 void
 muchsync_server (sqlite3 *db, const string &maildir)
 {
-  {
-    int ifd = spawn_infinite_input_buffer (0);
-    switch (ifd) {
-    case -1:
-      exit (1);
-    case 0:
-      break;
-    default:
-      dup2 (ifd, 0);
-      close (ifd);
-    }
-  }
-
   msg_sync msync(maildir, db);
   hash_lookup &hashdb = msync.hashdb;
   tag_lookup tagdb(db);
@@ -1071,7 +1056,8 @@ muchsync_client (sqlite3 *db, const string &maildir,
   int fds[2];
   cmd_iofds (fds, cmd);
   ofdstream out (fds[1]);
-  ifdstream in (spawn_infinite_input_buffer (fds[0]));
+  //ifdinfinistream in (fds[0]);
+  ifdstream in (fds[0]);
   in.tie (&out);
   close (fds[0]);
 

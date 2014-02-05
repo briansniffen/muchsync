@@ -50,6 +50,7 @@ extern string opt_ssh;
 extern string opt_remote_muchsync_path;
 extern const char muchsync_trashdir[];
 extern const char muchsync_tmpdir[];
+extern std::unordered_set<string> new_tags;
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
@@ -86,10 +87,8 @@ void xapian_refresh_message_ids (sqlite3 *sqldb, const string &maildir);
 string percent_encode (const string &raw);
 string percent_decode (const string &escaped);
 
-/* fdstream.cc */
+/* spawn.cc */
 string cmd_output (const string &cmd);
-void infinite_buffer (int infd, int outfd);
-int spawn_infinite_input_buffer (int infd);
 void cmd_iofds (int fds[2], const string &cmd);
 
 /* maildir.cc */
