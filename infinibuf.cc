@@ -189,6 +189,7 @@ infinistreambuf::infinistreambuf(shared_ptr<infinibuf> ib)
 void
 infinistreambuf::sputeof()
 {
+  sync();
   lock_guard<infinibuf> _lk (*ib_);
   ib_->peof();
 }
@@ -242,17 +243,12 @@ main (int argc, char **argv)
 int
 main (int argc, char **argv)
 {
-  infinibuf_infd iib(0);
-  infinistreambuf inb (&iib);
-  istream xin (&inb);
-
-  infinibuf_outfd oib(1);
-  infinistreambuf outb (&oib);
-  ostream xout (&outb);
+  ifdstream xin (0);
+  ofdstream xout (1);
   xin.tie(&xout);
 
-  xout << xin.rdbuf();
-#if 0
+  //xout << xin.rdbuf();
+#if 1
   long count = 0;
   char c;
   while (xin.get (c)) {
@@ -261,9 +257,7 @@ main (int argc, char **argv)
   }
   cerr << "Total count " << count << '\n';
 #endif
-
-  outb.pubsync();
-  oib.peof();
+  xout << flush;
 }
 #endif
 

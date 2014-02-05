@@ -188,7 +188,7 @@ public:
   ofdstream(int fd) : isb_(new infinibuf_outfd(fd)) { rdbuf(&isb_); }
   ~ofdstream() {
     if (std::uncaught_exception())
-      try { isb_.sputeof();} catch(...) {}
+      try { isb_.sputeof(); } catch(...) {}
     else
       isb_.sputeof();
   }

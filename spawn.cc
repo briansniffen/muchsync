@@ -14,7 +14,7 @@
 
 using namespace std;
 
-const string shell = "/bin/sh";
+constexpr char shell[] = "/bin/sh";
 
 void
 cmd_iofds (int fds[2], const string &cmd)
@@ -48,7 +48,7 @@ cmd_iofds (int fds[2], const string &cmd)
       dup2 (ifds[1], 1);
       close (ifds[1]);
     }
-    execl (shell.c_str(), shell.c_str(), "-c", cmd.c_str(), nullptr);
+    execl (shell, shell, "-c", cmd.c_str(), nullptr);
     cerr << shell << ": " << strerror (errno) << '\n';
     _exit (1);
     break;
@@ -81,7 +81,7 @@ cmd_output (const string &cmd)
       dup2 (fds[1], 1);
       close (fds[1]);
     }
-    execl (shell.c_str(), shell.c_str(), "-c", cmd.c_str(), nullptr);
+    execl (shell, shell, "-c", cmd.c_str(), nullptr);
     cerr << shell << ": " << strerror (errno) << '\n';
     _exit (1);
     break;
