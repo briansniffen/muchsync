@@ -182,7 +182,7 @@ find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
     throw runtime_error (maildir + ": " + strerror (errno));
   while (FTSENT *f = fts_read (ftsp.get())) {
     if (f->fts_info == FTS_D) {
-      string dirpath (f->fts_path + dirlen);
+      string dirpath (f->fts_pathlen > dirlen ? f->fts_path + dirlen : "");
       if (dirpath == ".notmuch") {
 	fts_set (ftsp.get(), f, FTS_SKIP);
 	continue;
