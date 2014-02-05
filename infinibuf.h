@@ -52,7 +52,7 @@ public:
   char *eback() { return data_.front(); }
   char *gptr() { return eback() + gpos_; }
   int gsize() {
-    return (data_.front() != data_.back() ? chunksize_ : ppos_) - gpos_;
+    return (data_.front() == data_.back() ? ppos_ : chunksize_) - gpos_;
   }
   char *egptr() { return gptr() + gsize(); }
   void gbump(int n);
@@ -61,7 +61,7 @@ public:
 
   char *pbase() { return data_.back(); }
   char *pptr() { return pbase() + ppos_; }
-  int psize() { return chunksize_ - gpos_; }
+  int psize() { return chunksize_ - ppos_; }
   char *epptr() { return pptr() + psize(); }
   void pbump(int n);
   void peof() { eof_ = true; if (empty()) notempty(); }

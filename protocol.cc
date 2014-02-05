@@ -1031,9 +1031,8 @@ get_response (istream &in, string &line)
 {
   if (!getline (in, line))
     throw runtime_error ("premature EOF");
-  //cerr << "read " << line << '\n';
   if (opt_verbose >= 3)
-    cerr << line;
+    cerr << line << '\n';
   if (line.empty())
     throw runtime_error ("unexpected empty line");
   if (line.size() < 4)
