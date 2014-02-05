@@ -78,11 +78,11 @@ sqlexec (sqlite3 *db, const char *fmt, ...)
   va_list ap;
   va_start (ap, fmt);
   query = sqlite3_vmprintf (fmt, ap);
+  unique_ptr<char, decltype(&sqlite3_free)> _c (query, sqlite3_free);
   va_end (ap);
   if (!query)
     throw sqlerr_t ("sqlite3_vmprintf: out of memory in sqlexec");
   int err = sqlite3_exec (db, query, NULL, NULL, NULL);
   if (err != SQLITE_OK && err != SQLITE_DONE && err != SQLITE_ROW)
     dbthrow (db, query);
-  sqlite3_free (query);
 }

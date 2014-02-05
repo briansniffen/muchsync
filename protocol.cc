@@ -1056,10 +1056,8 @@ muchsync_client (sqlite3 *db, const string &maildir,
   int fds[2];
   cmd_iofds (fds, cmd);
   ofdstream out (fds[1]);
-  //ifdinfinistream in (fds[0]);
-  ifdstream in (fds[0]);
+  ifdinfinistream in (fds[0]);
   in.tie (&out);
-  close (fds[0]);
 
   /* Any work done here gets overlapped with server */
   sync_local_data (db, maildir);

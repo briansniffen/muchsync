@@ -364,9 +364,9 @@ usage ()
 static void
 server (int argc, char **argv)
 {
-  //ifdinfinistream ibin(0);
-  //cin.rdbuf(ibin.rdbuf());
-  cleanup _cb ([](){ cin.rdbuf(nullptr); });
+  ifdinfinistream ibin(0);
+  cleanup _fixbuf ([](streambuf *sb){ cin.rdbuf(sb); },
+		   cin.rdbuf(ibin.rdbuf()));
 
   /* If same client opens multiple connections, opt_nosync avoids
    * re-scanning all messages. */
