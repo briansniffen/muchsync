@@ -126,19 +126,20 @@ print_time (string msg)
 sqlite3 *
 dbcreate (const char *path)
 {
-  i64 self;
-  if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1) {
+  i64 self = 0;
+  if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1
+      || self == 0) {
     cerr << "RAND_pseudo_bytes failed\n";
-    return NULL;
+    return nullptr;
   }
   self &= ~(i64 (1) << 63);
 
-  sqlite3 *db = NULL;
+  sqlite3 *db = nullptr;
   int err = sqlite3_open_v2 (path, &db,
-			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, NULL);
+			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, nullptr);
   if (err) {
     cerr << path << ": " << sqlite3_errstr (err);
-    return NULL;
+    return nullptr;
   }
   sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
 
@@ -155,7 +156,7 @@ dbcreate (const char *path)
   } catch (sqlerr_t exc) {
     sqlite3_close_v2 (db);
     cerr << exc.what () << '\n';
-    return NULL;
+    return nullptr;
   }
   return db;
 }
@@ -203,15 +204,15 @@ muchsync_init (const string &maildir, bool create = false)
 sqlite3 *
 dbopen (const char *path)
 {
-  sqlite3 *db = NULL;
+  sqlite3 *db = nullptr;
   if (access (path, 0) && errno == ENOENT)
     db = dbcreate (path);
   else {
-    sqlite3_open_v2 (path, &db, SQLITE_OPEN_READWRITE, NULL);
+    sqlite3_open_v2 (path, &db, SQLITE_OPEN_READWRITE, nullptr);
     sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
   }
   if (!db)
-    return NULL;
+    return nullptr;
 
   sqlexec (db, "PRAGMA secure_delete = 0;");
 
@@ -219,19 +220,19 @@ dbopen (const char *path)
     if (getconfig<string> (db, "dbvers") != dbvers) {
       cerr << path << ": invalid database version\n";
       sqlite3_close_v2 (db);
-      return NULL;
+      return nullptr;
     }
     getconfig<i64> (db, "self");
   }
   catch (sqldone_t) {
     cerr << path << ": invalid configuration\n";
     sqlite3_close_v2 (db);
-    return NULL;
+    return nullptr;
   }
   catch (sqlerr_t &e) {
     cerr << path << ": " << e.what() << '\n';
     sqlite3_close_v2 (db);
-    return NULL;
+    return nullptr;
   }
 
   return db;
