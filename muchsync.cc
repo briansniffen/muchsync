@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <sys/stat.h>
 #include <openssl/rand.h>
 #include <notmuch.h>
@@ -22,11 +23,14 @@ const char muchsync_trashdir[] = MUCHSYNC_DEFDIR "/trash";
 const char muchsync_tmpdir[] = MUCHSYNC_DEFDIR "/tmp";
 
 bool opt_fullscan;
+bool opt_noscan;
+bool opt_server;
 int opt_verbose;
-bool opt_no_maildir, opt_no_xapian;
 string opt_ssh = "ssh -CTaxq";
 string opt_remote_muchsync_path = "muchsync";
-unordered_set<string> new_tags = notmuch_new_tags();
+string opt_notmuch_config;
+
+unordered_set<string> new_tags; // = notmuch_new_tags();
 
 const char schema_def[] = R"(
 -- General table
@@ -116,6 +120,8 @@ print_time (string msg)
   if (opt_verbose > 0) {
     auto oldFlags = cerr.flags();
     cerr.setf (ios::fixed, ios::floatfield);
+    if (opt_server)
+      msg = "[SERVER] " + msg;
     cerr << msg << "... " << now - start_time_stamp
 	 << " (+" << now - last_time_stamp << ")\n";
     cerr.flags (oldFlags);
@@ -316,10 +322,8 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
     i64 vers = vv.at(self);
     writestamp ws { self, vers };
 
-    if (!opt_no_xapian)
-      xapian_scan (sqldb, ws, maildir);
-    if (!opt_no_maildir)
-      scan_maildir (sqldb, ws, maildir);
+    xapian_scan (sqldb, ws, maildir);
+    scan_maildir (sqldb, ws, maildir);
   }
   catch (...) {
     sqlexec (sqldb, "ROLLBACK TO localsync;");
@@ -342,7 +346,7 @@ notmuch_maildir_location()
 }
 
 unordered_set<string>
-notmuch_new_tags ()
+notmuch_new_tags()
 {
   istringstream is (cmd_output ("notmuch config get new.tags"));
   string line;
@@ -350,6 +354,19 @@ notmuch_new_tags ()
   while (getline (is, line))
     ret.insert(line);
   return ret;
+}
+
+static string
+get_notmuch_config()
+{
+  char *p = getenv("NOTMUCH_CONFIG");
+  if (p && *p)
+    return p;
+  p = getenv("HOME");
+  if (p && *p)
+    return string(p) + "/.notmuch-config";
+  cerr << "Cannot find HOME directory\n";
+  exit(1);
 }
 
 [[noreturn]] void
@@ -363,78 +380,63 @@ usage ()
 }
 
 static void
-server (int argc, char **argv)
+server (const string &maildir, const string &dbpath)
 {
   ifdinfinistream ibin(0);
   cleanup _fixbuf ([](streambuf *sb){ cin.rdbuf(sb); },
 		   cin.rdbuf(ibin.rdbuf()));
 
-  /* If same client opens multiple connections, opt_nosync avoids
-   * re-scanning all messages. */
-  bool opt_nosync = false;
-  int i = 2;
-  if (i < argc && !strcmp (argv[i], "--nosync")) {
-    opt_nosync = true;
-    i++;
-  }
-
-  string maildir;
-  if (i < argc)
-    maildir = argv[i++];
-  else
-    try { maildir = notmuch_maildir_location(); }
-    catch (exception e) { cerr << e.what() << '\n'; exit (1); }
-  string dbpath = maildir + muchsync_dbpath;
-  if (i != argc)
-    usage ();
-
   if (!muchsync_init (maildir))
     exit (1);
-  sqlite3 *db = dbopen (dbpath.c_str());
+  sqlite3 *db = dbopen(dbpath.c_str());
   if (!db)
-    exit (1);
+    exit(1);
   cleanup _c (sqlite3_close_v2, db);
 
   try {
-    if (!opt_nosync)
-      sync_local_data (db, maildir);
-    muchsync_server (db, maildir);
+    if (!opt_noscan)
+      sync_local_data(db, maildir);
+    muchsync_server(db, maildir);
   }
   catch (const exception &e) {
     cerr << e.what() << '\n';
-    exit (1);
+    exit(1);
   }
 }
+
+enum opttag {
+  OPT_VERSION = 0x100,
+  OPT_SERVER,
+  OPT_NOSCAN
+};
+
+static const struct option muchsync_options[] = {
+  { "version", no_argument, nullptr, OPT_VERSION },
+  { "server", no_argument, nullptr, OPT_SERVER },
+  { "noscan", no_argument, nullptr, OPT_NOSCAN },
+  { "config", required_argument, nullptr, 'C' },
+  { nullptr, 0, nullptr, 0 }
+};
 
 int
 main (int argc, char **argv)
 {
   umask (077);
 
-  if (argc >= 2 && !strcmp (argv[1], "--server")) {
-    server (argc, argv);
-    exit (0);
-  }
-
-  string maildir, dbpath;
+  opt_notmuch_config = get_notmuch_config();
 
   int opt;
-  while ((opt = getopt(argc, argv, "FMXm:d:r:s:v")) != -1)
+  while ((opt = getopt_long(argc, argv, "+C:Fr:s:v",
+			    muchsync_options, nullptr)) != -1)
     switch (opt) {
+    case 0:
+      break;
+    case 'C':
+      opt_notmuch_config = optarg;
+      setenv("NOTMUCH_CONFIG", optarg, 1);
+      break;
     case 'F':
       opt_fullscan = true;
-      break;
-    case 'M':
-      opt_no_maildir = true;
-      break;
-    case 'X':
-      opt_no_xapian = true;
-      break;
-    case 'd':			// for testing
-      dbpath = optarg;
-      break;
-    case 'm':
-      maildir = optarg;
       break;
     case 'r':
       opt_remote_muchsync_path = optarg;
@@ -445,23 +447,38 @@ main (int argc, char **argv)
     case 'v':
       opt_verbose++;
       break;
+    case OPT_VERSION:
+      cout << PACKAGE_STRING << '\n';
+      exit (0);
+    case OPT_SERVER:
+      opt_server = true;
+      break;
+    case OPT_NOSCAN:
+      opt_noscan = true;
+      break;
     default:
       usage ();
     }
 
-  if (maildir.empty())
-    try { maildir = notmuch_maildir_location(); }
-    catch (exception e) { cerr << e.what() << '\n'; exit (1); }
-  if (dbpath.empty())
-    dbpath = maildir + muchsync_dbpath;
+  string maildir;
+  try { maildir = notmuch_maildir_location(); }
+  catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+  string dbpath = maildir + muchsync_dbpath;
 
-  if (!muchsync_init (maildir, true))
+  if (opt_server) {
+    if (optind == argc) {
+      server(maildir, dbpath);
+      exit(0);
+    }
+    usage();
+  }
+
+  if (!muchsync_init(maildir, true))
     exit (1);
-  sqlite3 *db = dbopen (dbpath.c_str());
+  sqlite3 *db = dbopen(dbpath.c_str());
   if (!db)
     exit (1);
   cleanup _c (sqlite3_close_v2, db);
-
 
 #if 0
   try {
