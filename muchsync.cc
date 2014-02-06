@@ -30,7 +30,7 @@ string opt_ssh = "ssh -CTaxq";
 string opt_remote_muchsync_path = "muchsync";
 string opt_notmuch_config;
 
-unordered_set<string> new_tags; // = notmuch_new_tags();
+unordered_set<string> new_tags;
 
 const char schema_def[] = R"(
 -- General table
@@ -407,13 +407,15 @@ server (const string &maildir, const string &dbpath)
 enum opttag {
   OPT_VERSION = 0x100,
   OPT_SERVER,
-  OPT_NOSCAN
+  OPT_NOSCAN,
+  OPT_CLONE
 };
 
 static const struct option muchsync_options[] = {
   { "version", no_argument, nullptr, OPT_VERSION },
   { "server", no_argument, nullptr, OPT_SERVER },
   { "noscan", no_argument, nullptr, OPT_NOSCAN },
+  { "clone", no_argument, nullptr, OPT_CLONE },
   { "config", required_argument, nullptr, 'C' },
   { nullptr, 0, nullptr, 0 }
 };
@@ -459,6 +461,8 @@ main (int argc, char **argv)
     default:
       usage ();
     }
+
+  new_tags = notmuch_new_tags();
 
   string maildir;
   try { maildir = notmuch_maildir_location(); }

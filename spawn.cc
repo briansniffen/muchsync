@@ -3,6 +3,7 @@
 #include <iostream>
 #include <iterator>
 #include <queue>
+#include <sstream>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -88,8 +89,9 @@ cmd_output (const string &cmd)
   default:
     close (fds[1]);
     ifdstream stream{fds[0]};
-    string ret{ istream_iterator<char>(stream), istream_iterator<char>() };
+    ostringstream os;
+    os << stream.rdbuf();
     waitpid (pid, NULL, 0);
-    return ret;
+    return os.str();
   }
 }

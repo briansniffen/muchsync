@@ -42,12 +42,13 @@ void muchsync_client (sqlite3 *db, const string &maildir,
 		      int ac, char *const *av);
 
 /* muchsync.cc */
-extern const char xapian_dirs_def[];
 extern bool opt_fullscan;
-extern bool opt_maildir_only, opt_xapian_only;
+extern bool opt_noscan;
 extern int opt_verbose;
 extern string opt_ssh;
 extern string opt_remote_muchsync_path;
+extern string opt_notmuch_config;
+extern const char xapian_dirs_def[];
 extern const char muchsync_trashdir[];
 extern const char muchsync_tmpdir[];
 extern std::unordered_set<string> new_tags;
