@@ -7,8 +7,8 @@ LDADD = $(BOOST_LDFLAGS) $(BOOST_IOSTREAMS_LIB) $(sqlite3_LIBS)	\
 bin_PROGRAMS = muchsync
 
 muchsync_SOURCES = infinibuf.cc maildir.cc muchsync.cc protocol.cc	\
-	spawn.cc sqlstmt.cc xapian_sync.cc chan.h muchsync.h		\
-	infinibuf.h sqlstmt.h
+	spawn.cc sqlstmt.cc work_queue.cc xapian_sync.cc chan.h		\
+	muchsync.h infinibuf.h sqlstmt.h work_queue.h
 
 CLEANFILES = *~
 maintainer-clean-local:

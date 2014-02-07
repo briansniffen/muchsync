@@ -3,7 +3,6 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <mutex>
 #include <sstream>
 
 #include <errno.h>
@@ -13,6 +12,7 @@
 #include <sys/stat.h>
 
 #include "muchsync.h"
+#include "work_queue.h"
 
 using namespace std;
 
@@ -121,56 +121,6 @@ get_sha (int dfd, const char *direntry, i64 *sizep)
     *sizep = sz;
   return ctx.final();
 }
-
-#if 0
-bool
-get_header (istream &in, string &name, string &value)
-{
-  string line;
-  getline (in, line);
-  string::size_type idx = line.find (':');
-  if (idx == string::npos)
-    return false;
-  name.resize (idx);
-  for (string::size_type i = 0; i < idx; i++)
-    name[i] = tolower (line[i]);
-  value = line.substr (idx+1, string::npos);
-  while (in.peek() == ' ' || in.peek() == '\t') {
-    getline (in, line);
-    value += line;
-  }
-  return true;
-}
-
-bool
-get_msgid (ifstream &msg, string &msgid)
-{
-  msg.seekg (0, ios_base::beg);
-  string name, val;
-  while (get_header (msg, name, val))
-    if (name == "message-id") {
-      string::size_type b{0}, e{val.size()};
-      while (b < e && isspace(val[b]))
-	++b;
-      if (b < e && val[b] == '<')
-	++b;
-      while (b < e && isspace(val[e-1]))
-	--e;
-      if (b < e && val[e-1] == '>')
-	--e;
-      msgid = val.substr (b, e-b);
-      return true;
-    }
-  return false;
-}
-
-bool
-get_msgid (const string &file, string &msgid)
-{
-  ifstream msg (file);
-  return get_msgid (msg, msgid);
-}
-#endif
 
 void
 find_new_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
@@ -360,6 +310,7 @@ scan_directories (sqlite3 *sqldb, const string &maildir,
 	       " WHERE dir_id = ? ORDER BY name;");
   file_dbops fdb (sqldb, ws);
   int dfd;
+  //work_queue wq;
 
   while (scandirs.step().row()) {
     i64 dir_id {scandirs.integer(0)};
