@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 
 #include <errno.h>
@@ -16,6 +17,7 @@
 using namespace std;
 
 class file_dbops {
+  mutex m_;
   sqlstmt_t del_file_;
   sqlstmt_t add_file_;
   sqlstmt_t upd_file_;
@@ -48,22 +50,26 @@ public:
   }
 
   i64 get_hash_id(const string &hash, i64 sz) {
+    lock_guard<mutex> _lk (m_);
     if (get_hash_.reset().param(hash).step().row())
       return get_hash_.integer(0);
     add_hash_.reset().param(hash, sz).step();
     return sqlite3_last_insert_rowid (sqlite3_db_handle(add_hash_.get()));
   }
   void del_file(i64 rowid, i64 hash_id) {
+    lock_guard<mutex> _lk (m_);
     del_file_.reset().param(rowid).step();
     mod_hash_.reset().param(hash_id).step();
   }
   void add_file(const char *name, const timespec &mtime, i64 inode,
 		i64 hash_id, i64 dir_id) {
+    lock_guard<mutex> _lk (m_);
     add_file_.reset().param(name, ts_to_double(mtime), inode,
 			    hash_id, dir_id).step();
     mod_hash_.reset().param(hash_id).step();
   }
   void upd_file(i64 rowid, const timespec &mtime, i64 inode) {
+    lock_guard<mutex> _lk (m_);
     upd_file_.reset().param(ts_to_double(mtime), inode, rowid).step();
   }
 };
@@ -296,8 +302,10 @@ scan_directory (const string &path, int dfd, i64 dir_id,
      * changed suspiciously.  Either way, assuming it's still a
      * regular file, we must compute a full hash of its contents. */
     const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
+    i64 old_hash_id = scan.integer(4), rowid = scan.integer(5);
+
     if (!S_ISREG (sbp->st_mode)) {
-      fdb.del_file(scan.integer(5), scan.integer(4));
+      fdb.del_file(rowid, old_hash_id);
       scan.step();
       f = f->fts_link;
     }
@@ -308,16 +316,16 @@ scan_directory (const string &path, int dfd, i64 dir_id,
     i64 hashid = fdb.get_hash_id(hash, sz);
     if (cmp == 0) {
       /* metadata changed suspiciously */
-      if (hashid == scan.integer(4)) {
+      if (hashid == old_hash_id) {
 	/* file unchanged; update metadata so we don't re-hash next time */
-	fdb.upd_file(scan.integer(5), sbp->st_mtim, sbp->st_ino);
+	fdb.upd_file(rowid, sbp->st_mtim, sbp->st_ino);
 	scan.step();
 	f = f->fts_link;
 	continue;
       }
       cerr << "warning: " << path + "/" + f->fts_name << " was modified\n";
       /* file changed; delete old entry and consider it a new file */
-      fdb.del_file(scan.integer(5), scan.integer(4));
+      fdb.del_file(rowid, old_hash_id);
     }
     fdb.add_file(f->fts_name, sbp->st_mtim, sbp->st_ino, hashid, dir_id);
     scan.step();
