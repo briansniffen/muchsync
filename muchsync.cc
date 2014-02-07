@@ -150,7 +150,7 @@ dbcreate (const char *path)
   int err = sqlite3_open_v2 (path, &db,
 			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, nullptr);
   if (err) {
-    cerr << path << ": " << sqlite3_errstr (err);
+    cerr << path << ": " << sqlite3_errstr (err) << '\n';
     return nullptr;
   }
   sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
@@ -489,7 +489,6 @@ client(int ac, char **av)
     exit (1);
   }
   else {
-    string maildir;
     try { maildir = notmuch_maildir_location(); }
     catch (exception e) { cerr << e.what() << '\n'; exit (1); }
   }
@@ -606,6 +605,12 @@ main (int argc, char **argv)
     default:
       usage ();
     }
+
+  if (int err = sqlite3_config(SQLITE_CONFIG_SERIALIZED)) {
+    cerr << "Initializing sqlite threading: "
+	 << sqlite3_errstr(err) << '\n';
+    exit(1);
+  }
 
   if (opt_server) {
     if (opt_init || optind != argc)
