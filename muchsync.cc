@@ -24,13 +24,13 @@ const char muchsync_tmpdir[] = MUCHSYNC_DEFDIR "/tmp";
 
 bool opt_fullscan;
 bool opt_noscan;
-bool opt_clone;
+bool opt_init;
 bool opt_server;
 int opt_verbose;
 string opt_ssh = "ssh -CTaxq";
 string opt_remote_muchsync_path = "muchsync";
 string opt_notmuch_config;
-string opt_clone_dest;
+string opt_init_dest;
 
 unordered_set<string> new_tags;
 
@@ -417,10 +417,38 @@ client(int ac, char **av)
 {
   new_tags = notmuch_new_tags();
 
+  struct stat sb;
+  int err = stat(opt_notmuch_config.c_str(), &sb);
+  if (opt_init) {
+    if (!err) {
+      cerr << opt_notmuch_config << " should not exist with --init option\n";
+      exit (1);
+    }
+    else if (errno != ENOENT) {
+      cerr << opt_notmuch_config << ": " << strerror(errno) << '\n';
+      exit (1);
+    }
+  }
+  else if (err) {
+    cerr << opt_notmuch_config << ": " << strerror(errno) << '\n';
+    exit (1);
+  }
+
   string maildir;
   try { maildir = notmuch_maildir_location(); }
   catch (exception e) { cerr << e.what() << '\n'; exit (1); }
   string dbpath = maildir + muchsync_dbpath;
+
+  if (ac == 0) {
+    if (opt_init)
+      usage();
+    sqlite3 *db = dbopen(dbpath.c_str());
+    if (!db)
+      exit (1);
+    cleanup _c (sqlite3_close_v2, db);
+    sync_local_data (db, notmuch_maildir_location());
+    exit(0);
+  }
 
   if (!muchsync_init(maildir, true))
     exit (1);
@@ -449,14 +477,14 @@ enum opttag {
   OPT_VERSION = 0x100,
   OPT_SERVER,
   OPT_NOSCAN,
-  OPT_CLONE
+  OPT_INIT
 };
 
 static const struct option muchsync_options[] = {
   { "version", no_argument, nullptr, OPT_VERSION },
   { "server", no_argument, nullptr, OPT_SERVER },
   { "noscan", no_argument, nullptr, OPT_NOSCAN },
-  { "init", required_argument, nullptr, OPT_CLONE },
+  { "init", required_argument, nullptr, OPT_INIT },
   { "config", required_argument, nullptr, 'C' },
   { nullptr, 0, nullptr, 0 }
 };
@@ -499,16 +527,16 @@ main (int argc, char **argv)
     case OPT_NOSCAN:
       opt_noscan = true;
       break;
-    case OPT_CLONE:
-      opt_clone = true;
-      opt_clone_dest = optarg;
+    case OPT_INIT:
+      opt_init = true;
+      opt_init_dest = optarg;
       break;
     default:
       usage ();
     }
 
   if (opt_server) {
-    if (opt_clone || optind != argc)
+    if (opt_init || optind != argc)
       usage();
     server();
   }
