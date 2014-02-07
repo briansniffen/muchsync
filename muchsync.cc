@@ -24,11 +24,13 @@ const char muchsync_tmpdir[] = MUCHSYNC_DEFDIR "/tmp";
 
 bool opt_fullscan;
 bool opt_noscan;
+bool opt_clone;
 bool opt_server;
 int opt_verbose;
 string opt_ssh = "ssh -CTaxq";
 string opt_remote_muchsync_path = "muchsync";
 string opt_notmuch_config;
+string opt_clone_dest;
 
 unordered_set<string> new_tags;
 
@@ -380,14 +382,20 @@ usage ()
 }
 
 static void
-server (const string &maildir, const string &dbpath)
+server ()
 {
   ifdinfinistream ibin(0);
   cleanup _fixbuf ([](streambuf *sb){ cin.rdbuf(sb); },
 		   cin.rdbuf(ibin.rdbuf()));
 
+  string maildir;
+  try { maildir = notmuch_maildir_location(); }
+  catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+  string dbpath = maildir + muchsync_dbpath;
+
   if (!muchsync_init (maildir))
     exit (1);
+  new_tags = notmuch_new_tags();
   sqlite3 *db = dbopen(dbpath.c_str());
   if (!db)
     exit(1);
@@ -404,6 +412,39 @@ server (const string &maildir, const string &dbpath)
   }
 }
 
+static void
+client(int ac, char **av)
+{
+  new_tags = notmuch_new_tags();
+
+  string maildir;
+  try { maildir = notmuch_maildir_location(); }
+  catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+  string dbpath = maildir + muchsync_dbpath;
+
+  if (!muchsync_init(maildir, true))
+    exit (1);
+  sqlite3 *db = dbopen(dbpath.c_str());
+  if (!db)
+    exit (1);
+  cleanup _c (sqlite3_close_v2, db);
+
+#if 0
+  try {
+#endif
+    if (ac > 0)
+      muchsync_client (db, maildir, ac, av);
+    else
+      sync_local_data (db, maildir);
+#if 0
+  }
+  catch (const exception &e) {
+    cerr << e.what() << '\n';
+    exit (1);
+  }
+#endif
+}
+
 enum opttag {
   OPT_VERSION = 0x100,
   OPT_SERVER,
@@ -415,7 +456,7 @@ static const struct option muchsync_options[] = {
   { "version", no_argument, nullptr, OPT_VERSION },
   { "server", no_argument, nullptr, OPT_SERVER },
   { "noscan", no_argument, nullptr, OPT_NOSCAN },
-  { "clone", no_argument, nullptr, OPT_CLONE },
+  { "init", required_argument, nullptr, OPT_CLONE },
   { "config", required_argument, nullptr, 'C' },
   { nullptr, 0, nullptr, 0 }
 };
@@ -458,46 +499,21 @@ main (int argc, char **argv)
     case OPT_NOSCAN:
       opt_noscan = true;
       break;
+    case OPT_CLONE:
+      opt_clone = true;
+      opt_clone_dest = optarg;
+      break;
     default:
       usage ();
     }
 
-  new_tags = notmuch_new_tags();
-
-  string maildir;
-  try { maildir = notmuch_maildir_location(); }
-  catch (exception e) { cerr << e.what() << '\n'; exit (1); }
-  string dbpath = maildir + muchsync_dbpath;
-
   if (opt_server) {
-    if (optind == argc) {
-      server(maildir, dbpath);
-      exit(0);
-    }
-    usage();
+    if (opt_clone || optind != argc)
+      usage();
+    server();
   }
-
-  if (!muchsync_init(maildir, true))
-    exit (1);
-  sqlite3 *db = dbopen(dbpath.c_str());
-  if (!db)
-    exit (1);
-  cleanup _c (sqlite3_close_v2, db);
-
-#if 0
-  try {
-#endif
-    if (optind < argc)
-      muchsync_client (db, maildir, argc - optind, argv + optind);
-    else
-      sync_local_data (db, maildir);
-#if 0
-  }
-  catch (const exception &e) {
-    cerr << e.what() << '\n';
-    exit (1);
-  }
-#endif
-
+  else
+    client(argc - optind, argv + optind);
   return 0;
 }
+
