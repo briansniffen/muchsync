@@ -273,7 +273,7 @@ scan_directory (const string &path, int dfd, i64 dir_id,
     throw runtime_error (path + ": " + strerror (f->fts_errno));
 
   if (opt_verbose > 1)
-    cout << "  " << path << '\n';
+    cerr << "  " << path << '\n';
 
   scan.step();
   while (scan.row() && f) {
@@ -302,7 +302,7 @@ scan_directory (const string &path, int dfd, i64 dir_id,
       f = f->fts_link;
     }
     if (opt_verbose > 2)
-      cout << "    " << f->fts_name << "\n";
+      cerr << "    " << f->fts_name << "\n";
     i64 sz;
     string hash = get_sha(dfd, f->fts_name, &sz);
     i64 hashid = fdb.get_hash_id(hash, sz);
@@ -330,7 +330,7 @@ scan_directory (const string &path, int dfd, i64 dir_id,
     if (!S_ISREG (sbp->st_mode))
       continue;
     if (opt_verbose > 2)
-      cout << "    " << f->fts_name << "\n";
+      cerr << "    " << f->fts_name << "\n";
     i64 sz;
     string hash = get_sha(dfd, f->fts_name, &sz);
     i64 hashid = fdb.get_hash_id(hash, sz);

@@ -1045,7 +1045,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
 }
 
 
-static istream &
+istream &
 get_response (istream &in, string &line)
 {
   if (!getline (in, line))
@@ -1063,20 +1063,8 @@ get_response (istream &in, string &line)
 
 void
 muchsync_client (sqlite3 *db, const string &maildir,
-		 int ac, char *const *av)
+		 istream &in, ostream &out)
 {
-  ostringstream os;
-  os << opt_ssh << ' ' << av[0] << ' ' << opt_remote_muchsync_path
-     << " --server";
-  for (int i = 1; i < ac; i++)
-    os << ' ' << av[i];
-  string cmd (os.str());
-  int fds[2];
-  cmd_iofds (fds, cmd);
-  ofdstream out (fds[1]);
-  ifdinfinistream in (fds[0]);
-  in.tie (&out);
-
   /* Any work done here gets overlapped with server */
   sync_local_data (db, maildir);
   versvector localvv {get_sync_vector (db)}, remotevv;

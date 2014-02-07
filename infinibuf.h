@@ -165,9 +165,11 @@ protected:
   int_type overflow(int_type ch) override;
   int sync() override;
 public:
-  explicit infinistreambuf (std::shared_ptr<infinibuf> ib);
-  explicit infinistreambuf (infinibuf *ib)
+  explicit infinistreambuf(std::shared_ptr<infinibuf> ib);
+  explicit infinistreambuf(infinibuf *ib)
     : infinistreambuf(std::shared_ptr<infinibuf>(ib)) {}
+  infinistreambuf(infinistreambuf &&isb)
+    : infinistreambuf(isb.ib_) {}
   std::shared_ptr<infinibuf> get_infinibuf() { return ib_; }
   void sputeof();
 };

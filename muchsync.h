@@ -39,7 +39,9 @@ public:
 string permissive_percent_encode (const string &raw);
 void muchsync_server (sqlite3 *db, const string &maildir);
 void muchsync_client (sqlite3 *db, const string &maildir,
-		      int ac, char *const *av);
+		      std::istream &in, std::ostream &out);
+std::istream &get_response (std::istream &in, string &line);
+
 
 /* muchsync.cc */
 extern bool opt_fullscan;

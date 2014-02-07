@@ -1,13 +1,17 @@
 
 #include <cstring>
+#include <istream>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
-#include <stdio.h>
+#include <vector>
 #include <stdlib.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <openssl/rand.h>
 #include <notmuch.h>
 #include "muchsync.h"
@@ -413,9 +417,59 @@ server ()
 }
 
 static void
+create_config(istream &in, ostream &out, const string &maildir)
+{
+  if (!maildir.size() || !maildir.front())
+    throw runtime_error ("illegal empty maildir path\n");
+  string line;
+  out << "conffile\n";
+  get_response(in, line);
+  get_response(in, line);
+  size_t len = stoul(line.substr(4));
+  if (len <= 0)
+    throw runtime_error ("server did not return configuration file\n");
+  string conf;
+  conf.resize(len);
+  if (!in.read(&conf.front(), len))
+    throw runtime_error ("cannot read configuration file from server\n");
+
+  int fd = open(opt_notmuch_config.c_str(), O_CREAT|O_TRUNC|O_WRONLY|O_EXCL,
+		0666);
+  if (fd < 0)
+    throw runtime_error (opt_notmuch_config + ": " + strerror (errno));
+  write(fd, conf.c_str(), conf.size());
+  close(fd);
+
+  conf = maildir;
+  if (conf[0] != '/') {
+    const char *p = getenv("PWD");
+    if (!p)
+      throw runtime_error ("no PWD in environment\n");
+    conf = p + ("/" + maildir);
+  }
+
+  vector<const char *> av;
+  av.push_back("notmuch");
+  av.push_back("config");
+  av.push_back("set");
+  av.push_back("database.path");
+  av.push_back(conf.c_str());
+  av.push_back(nullptr);
+
+  pid_t pid = fork();
+  if (pid < 0)
+    throw runtime_error (string("fork: ") + strerror (errno));
+  else if (pid == 0) {
+    execvp(av[0], const_cast<char *const *> (av.data()));
+    _exit(1);
+  }
+  waitpid(pid, nullptr, 0);
+}
+
+static void
 client(int ac, char **av)
 {
-  new_tags = notmuch_new_tags();
+  string maildir;
 
   struct stat sb;
   int err = stat(opt_notmuch_config.c_str(), &sb);
@@ -428,15 +482,17 @@ client(int ac, char **av)
       cerr << opt_notmuch_config << ": " << strerror(errno) << '\n';
       exit (1);
     }
+    maildir = opt_init_dest;
   }
   else if (err) {
     cerr << opt_notmuch_config << ": " << strerror(errno) << '\n';
     exit (1);
   }
-
-  string maildir;
-  try { maildir = notmuch_maildir_location(); }
-  catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+  else {
+    string maildir;
+    try { maildir = notmuch_maildir_location(); }
+    catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+  }
   string dbpath = maildir + muchsync_dbpath;
 
   if (ac == 0) {
@@ -450,18 +506,34 @@ client(int ac, char **av)
     exit(0);
   }
 
-  if (!muchsync_init(maildir, true))
+  ostringstream os;
+  os << opt_ssh << ' ' << av[0] << ' ' << opt_remote_muchsync_path
+     << " --server";
+  for (int i = 1; i < ac; i++)
+    os << ' ' << av[i];
+  string cmd (os.str());
+  int fds[2];
+  cmd_iofds (fds, cmd);
+  ofdstream out (fds[1]);
+  ifdinfinistream in (fds[0]);
+  in.tie (&out);
+
+  if (opt_init)
+    create_config(in, out, maildir);
+  if (!muchsync_init(maildir, opt_init))
     exit (1);
   sqlite3 *db = dbopen(dbpath.c_str());
   if (!db)
     exit (1);
   cleanup _c (sqlite3_close_v2, db);
 
+  new_tags = notmuch_new_tags();
+
 #if 0
   try {
 #endif
     if (ac > 0)
-      muchsync_client (db, maildir, ac, av);
+      muchsync_client (db, maildir, in, out);
     else
       sync_local_data (db, maildir);
 #if 0
