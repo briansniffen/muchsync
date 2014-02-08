@@ -12,12 +12,11 @@
 #include <sys/stat.h>
 
 #include "muchsync.h"
-#include "work_queue.h"
+#include "chan.h"
 
 using namespace std;
 
 class file_dbops {
-  mutex m_;
   sqlstmt_t del_file_;
   sqlstmt_t add_file_;
   sqlstmt_t upd_file_;
@@ -45,34 +44,24 @@ public:
       get_hash_(db, "SELECT hash_id, replica, version, message_id"
 		" FROM maildir_hashes WHERE hash = ?;"),
       add_hash_(db, "INSERT INTO maildir_hashes (hash, size, replica, version)"
-		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second)
-  {
-  }
-  file_dbops(const file_dbops &l)
-    : del_file_(l.del_file_), add_file_(l.add_file_), upd_file_(l.upd_file_),
-      mod_hash_(l.mod_hash_), get_hash_(l.get_hash_), add_hash_(l.add_hash_) {}
-
+		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second) {}
   i64 get_hash_id(const string &hash, i64 sz) {
-    lock_guard<mutex> _lk (m_);
     if (get_hash_.reset().param(hash).step().row())
       return get_hash_.integer(0);
     add_hash_.reset().param(hash, sz).step();
     return sqlite3_last_insert_rowid (sqlite3_db_handle(add_hash_.get()));
   }
   void del_file(i64 rowid, i64 hash_id) {
-    lock_guard<mutex> _lk (m_);
     del_file_.reset().param(rowid).step();
     mod_hash_.reset().param(hash_id).step();
   }
   void add_file(const char *name, const timespec &mtime, i64 inode,
 		i64 hash_id, i64 dir_id) {
-    lock_guard<mutex> _lk (m_);
     add_file_.reset().param(name, ts_to_double(mtime), inode,
 			    hash_id, dir_id).step();
     mod_hash_.reset().param(hash_id).step();
   }
   void upd_file(i64 rowid, const timespec &mtime, i64 inode) {
-    lock_guard<mutex> _lk (m_);
     upd_file_.reset().param(ts_to_double(mtime), inode, rowid).step();
   }
 };
@@ -111,7 +100,7 @@ get_sha (int dfd, const char *direntry, i64 *sizep)
   cleanup _c (close, fd);
 
   hash_ctx ctx;
-  char buf[16384];
+  char buf[32768];
   int n;
   i64 sz = 0;
   while ((n = read (fd, buf, sizeof (buf))) > 0) {
@@ -216,7 +205,7 @@ must_check_file (sqlstmt_t &scan, const struct stat *sbp)
 
 static void
 scan_directory (const string &path, int dfd, i64 dir_id,
-		sqlstmt_t &scan, file_dbops &fdb, work_queue &wq)
+		sqlstmt_t &scan, file_dbops &fdb)
 {
   struct stat sbuf;		// Just storage in case !opt_fullscan
   char *paths[] {const_cast<char *> (path.c_str()), nullptr};
@@ -270,24 +259,24 @@ scan_directory (const string &path, int dfd, i64 dir_id,
 
     if (opt_verbose > 2)
       cerr << "    " << name << "\n";
-
-    wq.enqueue([path,cmp,mtim,inode,rowid,hash_id,name,dir_id,&fdb]() {
-	i64 sz;
-	string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
-	i64 new_hash_id = fdb.get_hash_id(hash, sz);
-	if (cmp == 0) {
-	  /* metadata changed suspiciously */
-	  if (new_hash_id == hash_id) {
-	    /* file unchanged; update metadata so we don't re-hash next time */
-	    fdb.upd_file(rowid, mtim, inode);
-	    return;
-	  }
-	  cerr << "warning: " << path + "/" + name << " was modified\n";
-	  /* file changed; delete old entry and consider it a new file */
-	  fdb.del_file(rowid, hash_id);
-	}
+    i64 sz;
+    string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
+    i64 new_hash_id = fdb.get_hash_id(hash, sz);
+    if (cmp > 0)		// new file
+      fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
+    else {			// metadata changed suspiciously
+      if (new_hash_id == hash_id) {
+	/* file unchanged; update metadata so we don't re-hash next time */
+	fdb.upd_file(rowid, mtim, inode);
+      }
+      else {
+	cerr << "warning: " << path + "/" + name << " was modified\n";
+	/* file changed; delete old entry and consider it a new file */
+	fdb.del_file(rowid, hash_id);
 	fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
-      });
+      }
+    }
+
     scan.step();
     f = f->fts_link;
   }
@@ -302,12 +291,11 @@ scan_directory (const string &path, int dfd, i64 dir_id,
     timespec mtim = sbp->st_mtim;
     i64 inode = sbp->st_ino;
     string name = f->fts_name;
-    wq.enqueue([path,name,mtim,inode,dir_id,&fdb](){
-	i64 sz;
-	string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
-	i64 new_hash_id = fdb.get_hash_id(hash, sz);
-	fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
-      });
+
+    i64 sz;
+    string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
+    //i64 new_hash_id = fdb.get_hash_id(hash, sz);
+    //fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
   }
 }
 
@@ -325,7 +313,6 @@ scan_directories (sqlite3 *sqldb, const string &maildir,
 	       " WHERE dir_id = ? ORDER BY name;");
   file_dbops fdb (sqldb, ws);
   int dfd;
-  work_queue wq;
 
   while (scandirs.step().row()) {
     i64 dir_id {scandirs.integer(0)};
@@ -341,7 +328,7 @@ scan_directories (sqlite3 *sqldb, const string &maildir,
       + subdir;
     if (dir.empty())
       dir = ".";
-    scan_directory (dir, dfd, dir_id, scanfiles, fdb, wq);
+    scan_directory (dir, dfd, dir_id, scanfiles, fdb);
   }
 }
 
