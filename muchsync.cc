@@ -126,8 +126,6 @@ print_time (string msg)
   if (opt_verbose > 0) {
     auto oldFlags = cerr.flags();
     cerr.setf (ios::fixed, ios::floatfield);
-    if (opt_server)
-      msg = "[SERVER] " + msg;
     cerr << msg << "... " << now - start_time_stamp
 	 << " (+" << now - last_time_stamp << ")\n";
     cerr.flags (oldFlags);
@@ -375,6 +373,23 @@ get_notmuch_config()
   exit(1);
 }
 
+static void
+tag_stderr(string tag)
+{
+  infinistreambuf *isb =
+    new infinistreambuf(new infinibuf_mt);
+  streambuf *err = cerr.rdbuf(isb);
+  thread t ([=]() {
+      istream in (isb);
+      ostream out (err);
+      string line;
+      while (getline(in, line))
+	out << tag << line << endl;
+    });
+  t.detach();
+  cerr.rdbuf(isb);
+}
+
 [[noreturn]] void
 usage ()
 {
@@ -391,6 +406,7 @@ server ()
   ifdinfinistream ibin(0);
   cleanup _fixbuf ([](streambuf *sb){ cin.rdbuf(sb); },
 		   cin.rdbuf(ibin.rdbuf()));
+  tag_stderr("[SERVER] ");
 
   string maildir;
   try { maildir = notmuch_maildir_location(); }
