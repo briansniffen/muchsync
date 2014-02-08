@@ -25,7 +25,7 @@ class sqlstmt_t {
  public:
   explicit sqlstmt_t(sqlite3_stmt *stmt) : stmt_(stmt) {}
   explicit sqlstmt_t(sqlite3 *db, const char *fmt, ...);
-  sqlstmt_t(const sqlstmt_t &r) = delete;
+  sqlstmt_t(const sqlstmt_t &r);
   sqlstmt_t(sqlstmt_t &&r) : stmt_ (r.stmt_) { r.stmt_ = nullptr; }
   ~sqlstmt_t() { sqlite3_finalize (stmt_); }
 

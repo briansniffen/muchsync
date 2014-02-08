@@ -48,6 +48,9 @@ public:
 		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second)
   {
   }
+  file_dbops(const file_dbops &l)
+    : del_file_(l.del_file_), add_file_(l.add_file_), upd_file_(l.upd_file_),
+      mod_hash_(l.mod_hash_), get_hash_(l.get_hash_), add_hash_(l.add_hash_) {}
 
   i64 get_hash_id(const string &hash, i64 sz) {
     lock_guard<mutex> _lk (m_);
@@ -268,7 +271,7 @@ scan_directory (const string &path, int dfd, i64 dir_id,
     if (opt_verbose > 2)
       cerr << "    " << name << "\n";
 
-    //wq.enqueue([path,cmp,mtim,inode,rowid,hash_id,name,dir_id,&fdb]() {
+    wq.enqueue([path,cmp,mtim,inode,rowid,hash_id,name,dir_id,&fdb]() {
 	i64 sz;
 	string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
 	i64 new_hash_id = fdb.get_hash_id(hash, sz);
@@ -277,9 +280,6 @@ scan_directory (const string &path, int dfd, i64 dir_id,
 	  if (new_hash_id == hash_id) {
 	    /* file unchanged; update metadata so we don't re-hash next time */
 	    fdb.upd_file(rowid, mtim, inode);
-    scan.step();
-    f = f->fts_link;
-    continue;
 	    return;
 	  }
 	  cerr << "warning: " << path + "/" + name << " was modified\n";
@@ -287,7 +287,7 @@ scan_directory (const string &path, int dfd, i64 dir_id,
 	  fdb.del_file(rowid, hash_id);
 	}
 	fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
-	//});
+      });
     scan.step();
     f = f->fts_link;
   }

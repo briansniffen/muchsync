@@ -57,7 +57,7 @@ sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
 {
   va_list ap;
   va_start (ap, fmt);
-  char *query = sqlite3_vmprintf (fmt, ap);
+  char *query = sqlite3_vmprintf(fmt, ap);
   va_end (ap);
 
   if (!query)
@@ -65,10 +65,20 @@ sqlstmt_t::sqlstmt_t (sqlite3 *db, const char *fmt, ...)
   unique_ptr<char, decltype(&sqlite3_free)> _c (query, sqlite3_free);
 
   const char *tail;
-  if (sqlite3_prepare_v2 (db, query, -1, &stmt_, &tail))
+  if (sqlite3_prepare_v2(db, query, -1, &stmt_, &tail))
     dbthrow (db, query);
   if (tail && *tail)
     throw sqlerr_t (string("illegal compound query\n  Query:  ") + query);
+}
+
+sqlstmt_t::sqlstmt_t(const sqlstmt_t &l)
+{
+  int err = sqlite3_prepare_v2(sqlite3_db_handle(l.stmt_),
+			       sqlite3_sql(l.stmt_), -1, &stmt_, nullptr);
+  if (err)
+    throw sqlerr_t (string("could not copy query\n  Query:  ")
+		    + sqlite3_sql(l.stmt_) + "\n  Error:  "
+		    + sqlite3_errstr(err) + "\n");
 }
 
 void
