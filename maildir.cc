@@ -203,7 +203,7 @@ ftsent_stat (int dfd, const FTSENT *f, struct stat *sbp)
 
 /* true if we need to re-hash */
 static bool
-check_file (sqlstmt_t &scan, const struct stat *sbp)
+must_check_file (sqlstmt_t &scan, const struct stat *sbp)
 {
   return !S_ISREG(sbp->st_mode)
     || ts_to_double(sbp->st_mtim) != scan.real(1)
@@ -213,7 +213,7 @@ check_file (sqlstmt_t &scan, const struct stat *sbp)
 
 static void
 scan_directory (const string &path, int dfd, i64 dir_id,
-		sqlstmt_t &scan, file_dbops &fdb)
+		sqlstmt_t &scan, file_dbops &fdb, work_queue &wq)
 {
   struct stat sbuf;		// Just storage in case !opt_fullscan
   char *paths[] {const_cast<char *> (path.c_str()), nullptr};
@@ -237,47 +237,57 @@ scan_directory (const string &path, int dfd, i64 dir_id,
       f = f->fts_link;
       continue;
     }
+    const i64 rowid = scan.integer(5), hash_id = scan.integer(4);
     int cmp = strcmp (scan.c_str(0), f->fts_name);
     if (cmp < 0) {
-      fdb.del_file(scan.integer(5), scan.integer(4));
+      fdb.del_file(rowid, hash_id);
       scan.step();
       continue;
     }
-    else if (cmp == 0 && (!opt_fullscan || !check_file (scan, f->fts_statp))) {
+    else if (cmp == 0
+	     && (!opt_fullscan || !must_check_file(scan, f->fts_statp))) {
       scan.step();
       f = f->fts_link;
       continue;
     }
+
     /* At this point we either have a new file or the metadata has
      * changed suspiciously.  Either way, assuming it's still a
      * regular file, we must compute a full hash of its contents. */
-    const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
-    i64 old_hash_id = scan.integer(4), rowid = scan.integer(5);
-
+    const struct stat *sbp = ftsent_stat(dfd, f, &sbuf);
     if (!S_ISREG (sbp->st_mode)) {
-      fdb.del_file(rowid, old_hash_id);
+      fdb.del_file(rowid, hash_id);
       scan.step();
       f = f->fts_link;
+      continue;
     }
+    timespec mtim = sbp->st_mtim;
+    i64 inode = sbp->st_ino;
+    string name = f->fts_name;
+
     if (opt_verbose > 2)
-      cerr << "    " << f->fts_name << "\n";
-    i64 sz;
-    string hash = get_sha(dfd, f->fts_name, &sz);
-    i64 hashid = fdb.get_hash_id(hash, sz);
-    if (cmp == 0) {
-      /* metadata changed suspiciously */
-      if (hashid == old_hash_id) {
-	/* file unchanged; update metadata so we don't re-hash next time */
-	fdb.upd_file(rowid, sbp->st_mtim, sbp->st_ino);
-	scan.step();
-	f = f->fts_link;
-	continue;
-      }
-      cerr << "warning: " << path + "/" + f->fts_name << " was modified\n";
-      /* file changed; delete old entry and consider it a new file */
-      fdb.del_file(rowid, old_hash_id);
-    }
-    fdb.add_file(f->fts_name, sbp->st_mtim, sbp->st_ino, hashid, dir_id);
+      cerr << "    " << name << "\n";
+
+    //wq.enqueue([path,cmp,mtim,inode,rowid,hash_id,name,dir_id,&fdb]() {
+	i64 sz;
+	string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
+	i64 new_hash_id = fdb.get_hash_id(hash, sz);
+	if (cmp == 0) {
+	  /* metadata changed suspiciously */
+	  if (new_hash_id == hash_id) {
+	    /* file unchanged; update metadata so we don't re-hash next time */
+	    fdb.upd_file(rowid, mtim, inode);
+    scan.step();
+    f = f->fts_link;
+    continue;
+	    return;
+	  }
+	  cerr << "warning: " << path + "/" + name << " was modified\n";
+	  /* file changed; delete old entry and consider it a new file */
+	  fdb.del_file(rowid, hash_id);
+	}
+	fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
+	//});
     scan.step();
     f = f->fts_link;
   }
@@ -289,10 +299,15 @@ scan_directory (const string &path, int dfd, i64 dir_id,
       continue;
     if (opt_verbose > 2)
       cerr << "    " << f->fts_name << "\n";
-    i64 sz;
-    string hash = get_sha(dfd, f->fts_name, &sz);
-    i64 hashid = fdb.get_hash_id(hash, sz);
-    fdb.add_file(f->fts_name, sbp->st_mtim, sbp->st_ino, hashid, dir_id);
+    timespec mtim = sbp->st_mtim;
+    i64 inode = sbp->st_ino;
+    string name = f->fts_name;
+    wq.enqueue([path,name,mtim,inode,dir_id,&fdb](){
+	i64 sz;
+	string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
+	i64 new_hash_id = fdb.get_hash_id(hash, sz);
+	fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
+      });
   }
 }
 
@@ -310,7 +325,7 @@ scan_directories (sqlite3 *sqldb, const string &maildir,
 	       " WHERE dir_id = ? ORDER BY name;");
   file_dbops fdb (sqldb, ws);
   int dfd;
-  //work_queue wq;
+  work_queue wq;
 
   while (scandirs.step().row()) {
     i64 dir_id {scandirs.integer(0)};
@@ -326,7 +341,7 @@ scan_directories (sqlite3 *sqldb, const string &maildir,
       + subdir;
     if (dir.empty())
       dir = ".";
-    scan_directory (dir, dfd, dir_id, scanfiles, fdb);
+    scan_directory (dir, dfd, dir_id, scanfiles, fdb, wq);
   }
 }
 

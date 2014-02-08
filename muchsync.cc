@@ -497,6 +497,8 @@ client(int ac, char **av)
   if (ac == 0) {
     if (opt_init)
       usage();
+    if (!muchsync_init(maildir, true))
+      exit (1);
     sqlite3 *db = dbopen(dbpath.c_str());
     if (!db)
       exit (1);
