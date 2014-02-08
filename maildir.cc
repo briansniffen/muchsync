@@ -5,14 +5,15 @@
 #include <iostream>
 #include <sstream>
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <fts.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 
 #include "muchsync.h"
-#include "chan.h"
 
 using namespace std;
 
@@ -33,6 +34,8 @@ class file_dbops {
   }
 
 public:
+  sqlstmt_t scan_dir_;
+
   file_dbops(sqlite3 *db, writestamp ws)
     : del_file_(db, "DELETE FROM maildir_files WHERE rowid = ?;"),
       add_file_(db, "INSERT INTO "
@@ -44,7 +47,11 @@ public:
       get_hash_(db, "SELECT hash_id, replica, version, message_id"
 		" FROM maildir_hashes WHERE hash = ?;"),
       add_hash_(db, "INSERT INTO maildir_hashes (hash, size, replica, version)"
-		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second) {}
+		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second),
+      scan_dir_(db,
+		"SELECT name, mtime, inode, size, hash_id, maildir_files.rowid"
+		" FROM maildir_files JOIN maildir_hashes USING (hash_id)"
+		" WHERE dir_id = ?;") {}
   i64 get_hash_id(const string &hash, i64 sz) {
     if (get_hash_.reset().param(hash).step().row())
       return get_hash_.integer(0);
@@ -177,126 +184,89 @@ find_modified_directories (sqlite3 *sqldb, const string &maildir, int rootfd)
   }
 }
 
-static int
-compare_fts_name (const FTSENT **a, const FTSENT **b)
-{
-  return strcmp ((*a)->fts_name, (*b)->fts_name);
-}
-
-static const struct stat *
-ftsent_stat (int dfd, const FTSENT *f, struct stat *sbp)
-{
-  if (f->fts_info != FTS_NSOK)
-    return f->fts_statp;
-  if (!fstatat (dfd, f->fts_name, sbp, 0))
-    return sbp;
-  throw runtime_error (string (f->fts_path) + ": " + strerror (errno));
-}
-
-/* true if we need to re-hash */
-static bool
-must_check_file (sqlstmt_t &scan, const struct stat *sbp)
-{
-  return !S_ISREG(sbp->st_mode)
-    || ts_to_double(sbp->st_mtim) != scan.real(1)
-    || i64(sbp->st_ino) != scan.integer(2)
-    || i64(sbp->st_size) != scan.integer(3);
-}
+struct finfo_t {
+  double mtime;
+  i64 inode;
+  i64 size;
+  i64 hash_id;
+  i64 rowid;
+  bool must_rehash (const struct stat *sbp) {
+    return !S_ISREG(sbp->st_mode)
+      || ts_to_double(sbp->st_mtim) != mtime
+      || i64(sbp->st_ino) != inode
+      || i64(sbp->st_size) != size;
+  }
+};
 
 static void
-scan_directory (const string &path, int dfd, i64 dir_id,
-		sqlstmt_t &scan, file_dbops &fdb)
+scan_directory (const string path, int dfd, i64 dir_id, file_dbops &fdb)
 {
-  struct stat sbuf;		// Just storage in case !opt_fullscan
-  char *paths[] {const_cast<char *> (path.c_str()), nullptr};
-  unique_ptr<FTS, decltype (&fts_close)>
-    ftsp {fts_open (paths, FTS_LOGICAL, &compare_fts_name), fts_close};
-  if (!ftsp)
-    throw runtime_error (path + ": " + strerror (errno));
-  errno = 0;
-  FTSENT *f = fts_read (ftsp.get());
-  if (f)
-    f = fts_children (ftsp.get(), opt_fullscan ? 0 : FTS_NAMEONLY);
-  if (errno)
-    throw runtime_error (path + ": " + strerror (f->fts_errno));
-
   if (opt_verbose > 1)
-    cerr << "  " << path << '\n';
+    cerr << " " << path << '\n';
+  unordered_map<string,finfo_t> finfo;
+  sqlstmt_t &scan = fdb.scan_dir_;
+  scan.reset().param(dir_id);
+  while (scan.step().row())
+    finfo.emplace (scan.str(0),
+		   finfo_t {scan.real(1), scan.integer(2), scan.integer(3),
+		            scan.integer(4), scan.integer(5)});
 
-  scan.step();
-  while (scan.row() && f) {
-    if (f->fts_info != FTS_F && f->fts_info != FTS_NSOK) {
-      f = f->fts_link;
-      continue;
-    }
-    const i64 rowid = scan.integer(5), hash_id = scan.integer(4);
-    int cmp = strcmp (scan.c_str(0), f->fts_name);
-    if (cmp < 0) {
-      fdb.del_file(rowid, hash_id);
-      scan.step();
-      continue;
-    }
-    else if (cmp == 0
-	     && (!opt_fullscan || !must_check_file(scan, f->fts_statp))) {
-      scan.step();
-      f = f->fts_link;
-      continue;
-    }
-
-    /* At this point we either have a new file or the metadata has
-     * changed suspiciously.  Either way, assuming it's still a
-     * regular file, we must compute a full hash of its contents. */
-    const struct stat *sbp = ftsent_stat(dfd, f, &sbuf);
-    if (!S_ISREG (sbp->st_mode)) {
-      fdb.del_file(rowid, hash_id);
-      scan.step();
-      f = f->fts_link;
-      continue;
-    }
-    timespec mtim = sbp->st_mtim;
-    i64 inode = sbp->st_ino;
-    string name = f->fts_name;
-
-    if (opt_verbose > 2)
-      cerr << "    " << name << "\n";
-    i64 sz;
-    string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
-    i64 new_hash_id = fdb.get_hash_id(hash, sz);
-    if (cmp > 0)		// new file
-      fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
-    else {			// metadata changed suspiciously
-      if (new_hash_id == hash_id) {
-	/* file unchanged; update metadata so we don't re-hash next time */
-	fdb.upd_file(rowid, mtim, inode);
+  DIR *dirp = fdopendir(dfd);
+  if (!dirp)
+    throw runtime_error (path + ": " + strerror (errno));
+  cleanup _closedir (closedir, dirp);
+  while (struct dirent *entp = readdir(dirp)) {
+    auto fi = finfo.find(entp->d_name);
+    struct stat sb;
+    if (fi == finfo.end()) {	// new file
+      if (fstatat(dfd, entp->d_name, &sb, 0)) {
+	if (errno == ENOENT)
+	  continue;
+	throw runtime_error (path + "/" + entp->d_name
+			     + ": " + strerror (errno));
       }
-      else {
-	cerr << "warning: " << path + "/" + name << " was modified\n";
-	/* file changed; delete old entry and consider it a new file */
-	fdb.del_file(rowid, hash_id);
-	fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
-      }
-    }
-
-    scan.step();
-    f = f->fts_link;
-  }
-  for (; scan.row(); scan.step())
-    fdb.del_file(scan.integer(5), scan.integer(4));
-  for (; f; f = f->fts_link) {
-    const struct stat *sbp = ftsent_stat (dfd, f, &sbuf);
-    if (!S_ISREG (sbp->st_mode))
+      if (!S_ISREG(sb.st_mode))
+	continue;
+      i64 sz;
+      if (opt_verbose > 2)
+	cerr << "    " << entp->d_name << "\n";
+      string hash = get_sha(dfd, entp->d_name, &sz);
+      fdb.add_file(entp->d_name, sb.st_mtim, sb.st_ino, 
+		   fdb.get_hash_id(hash, sz), dir_id);
       continue;
+    }
+    if (!opt_fullscan) {
+      finfo.erase(fi);
+      continue;
+    }
+    if (fstatat(dfd, entp->d_name, &sb, 0)) {
+      if (errno == ENOENT)
+	continue;
+      throw runtime_error (path + "/" + entp->d_name
+			   + ": " + strerror (errno));
+    }
+    if (!S_ISREG(sb.st_mode))
+      continue;
+    if (!fi->second.must_rehash(&sb)) {
+      finfo.erase(fi);
+      continue;
+    }
     if (opt_verbose > 2)
-      cerr << "    " << f->fts_name << "\n";
-    timespec mtim = sbp->st_mtim;
-    i64 inode = sbp->st_ino;
-    string name = f->fts_name;
-
+      cerr << "    " << entp->d_name << "\n";
     i64 sz;
-    string hash = get_sha(AT_FDCWD, (path + "/" + name).c_str(), &sz);
-    //i64 new_hash_id = fdb.get_hash_id(hash, sz);
-    //fdb.add_file(name.c_str(), mtim, inode, new_hash_id, dir_id);
+    string hash = get_sha(dfd, entp->d_name, &sz);
+    i64 hash_id = fdb.get_hash_id(hash, sz);
+    if (hash_id == fi->second.hash_id)
+      fdb.upd_file(fi->second.rowid, sb.st_mtim, sb.st_ino);
+    else {
+      fdb.del_file(fi->second.rowid, fi->second.hash_id);
+      fdb.add_file(entp->d_name, sb.st_mtim, sb.st_ino, 
+		   fdb.get_hash_id(hash, sz), dir_id);
+    }
+    finfo.erase(fi);
   }
+  for (auto fi : finfo)
+    fdb.del_file(fi.second.rowid, fi.second.hash_id);
 }
 
 static void
@@ -306,11 +276,7 @@ scan_directories (sqlite3 *sqldb, const string &maildir,
   sqlstmt_t
     scandirs (sqldb, "SELECT dir_id, dir_path FROM %s ORDER BY dir_path;",
 	      opt_fullscan ? "maildir_dirs"
-	      : "maildir_dirs NATURAL JOIN modified_maildir_dirs"),
-    scanfiles (sqldb, "SELECT name, mtime, inode, size, hash_id,"
-	       " maildir_files.rowid"
-	       " FROM maildir_files JOIN maildir_hashes USING (hash_id)"
-	       " WHERE dir_id = ? ORDER BY name;");
+	      : "maildir_dirs NATURAL JOIN modified_maildir_dirs");
   file_dbops fdb (sqldb, ws);
   int dfd;
 
@@ -320,15 +286,12 @@ scan_directories (sqlite3 *sqldb, const string &maildir,
     dfd = openat(rootfd, subdir.c_str(), O_RDONLY);
     if (dfd < 0)
       throw runtime_error (subdir + ": " + strerror (errno));
-    cleanup _c (close, dfd);
-    scanfiles.reset().bind_value(1, scandirs.value(0));
-
     string dir = maildir
       + (subdir.size() && maildir.size() && maildir.back() != '/' ? "/" : "")
       + subdir;
     if (dir.empty())
       dir = ".";
-    scan_directory (dir, dfd, dir_id, scanfiles, fdb);
+    scan_directory (dir, dfd, dir_id, fdb);
   }
 }
 
