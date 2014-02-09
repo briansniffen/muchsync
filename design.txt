@@ -45,3 +45,10 @@ Keeping local database up to date:
     dir_docid, filename, docid
     tag, docid
 
+* Resolving a link conflict
+    Let n_A be the number of links of a file in xxx/new on replica A
+    Let c_A be the number of links in xxx/cur on replica A
+    Let n_B and c_B be the same for replica B
+    Put n links in xxx/new and c links in xxx/cur where
+      - c = max(c_A, c_B)
+      - n = max(n_A + c_A, n_B + c_B) - c

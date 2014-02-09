@@ -96,7 +96,6 @@ class msg_sync {
 
   static constexpr i64 bad_dir_id = -1;
   notmuch_database_t *notmuch();
-  void clear_committing();
   i64 get_dir_id (const string &dir, bool create);
 public:
   hash_lookup hashdb;
@@ -499,12 +498,6 @@ msg_sync::notmuch ()
   return notmuch_;
 }
 
-void
-msg_sync::clear_committing()
-{
-  sqlexec(db_, "DELETE FROM committing_fsops; DELETE FROM committing_tags; ");
-}
-
 static bool
 sanity_check_path (const string &path)
 {
@@ -584,6 +577,49 @@ notmuch_message_get_doc_id (const notmuch_message_t *message)
   return reinterpret_cast<const fake_message *>(message)->doc_id;
 }
 
+static void
+resolve_one_link_conflict(const unordered_map<string,i64> &a,
+			  const unordered_map<string,i64> &b,
+			  const string &name,
+			  unordered_map<string,i64> &out)
+{
+  if (out.find(name) != out.end())
+    return;
+  if (!dir_contains_messages(name)) {
+    out[name] = max(find_default(0, a, name), find_default(0, b, name));
+    return;
+  }
+
+  size_t pos = name.rfind('/');
+  if (pos == string::npos)
+    pos = 0;
+  else
+    pos++;
+  string base = name.substr(0, pos);
+  string newpath = base + "new", curpath = base + "cur";
+  cout << base << ' ' << newpath << ' ' << curpath << '\n';
+  i64 curval = max(find_default(0, a, curpath), find_default(0, b, curpath));
+  i64 newval = (max(find_default(0, a, curpath) + find_default(0, a, newpath),
+		    find_default(0, b, curpath) + find_default(0, b, newpath))
+		- curval);
+  if (curval)
+    out[curpath] = curval;
+  if (newval)
+    out[newpath] = newval;
+}
+
+static unordered_map<string,i64>
+resolve_link_conflicts(const unordered_map<string,i64> &a,
+		       const unordered_map<string,i64> &b)
+{
+  unordered_map<string,i64> ret;
+  for (auto ia : a)
+    resolve_one_link_conflict(a, b, ia.first, ret);
+  for (auto ib : b)
+    resolve_one_link_conflict(a, b, ib.first, ret);
+  return ret;
+}
+
 bool
 msg_sync::hash_sync(const versvector &rvv,
 		    const hash_info &rhi,
@@ -607,7 +643,9 @@ msg_sync::hash_sync(const versvector &rvv,
   bool links_conflict =
     lhi.hash_stamp.second > find_default (-1, rvv, lhi.hash_stamp.first);
   bool deleting = rhi.dirs.empty() && (!links_conflict || lhi.dirs.empty());
-  unordered_map<string,i64> needlinks (rhi.dirs);
+
+  unordered_map<string,i64> needlinks
+    (links_conflict ? resolve_link_conflicts (lhi.dirs, rhi.dirs) : rhi.dirs);
   bool needsource = false;
   for (auto i : lhi.dirs)
     needlinks[i.first] -= i.second;
@@ -628,8 +666,6 @@ msg_sync::hash_sync(const versvector &rvv,
       return false;
   }
 
-  sqlexec (db_, "SAVEPOINT hash_sync;");
-  cleanup c (sqlexec, db_, "ROLLBACK TO hash_sync;");
   if (!hashdb.ok()) {
     hashdb.create(rhi);
     lhi = hashdb.info();
@@ -638,7 +674,7 @@ msg_sync::hash_sync(const versvector &rvv,
   /* Adjust link counts in database */
   for (auto li : needlinks)
     if (li.second != 0) {
-      i64 dir_id = get_dir_id (li.first, li.second > 0);
+      i64 dir_id = get_dir_id(li.first, li.second > 0);
       if (dir_id == bad_dir_id)
 	continue;
       i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
@@ -698,7 +734,7 @@ msg_sync::hash_sync(const versvector &rvv,
 	   * already contains a hard link to the same inode, we need
 	   * to delete the original. */
 	  else
-	    err = unlink (path.c_str());
+	    unlink (path.c_str());
 	}
 	else {
 	  err = unlink (path.c_str());
@@ -708,11 +744,11 @@ msg_sync::hash_sync(const versvector &rvv,
 	}
 	if (!err) {
 	  ++n;
-	  notmuch_status_t err =
+	  notmuch_status_t status =
 	    notmuch_database_remove_message (notmuch(), path.c_str());
-	  if (err && err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
+	  if (status && status != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
 	    throw runtime_error ("remove " + path + ": " +
-				 + notmuch_status_to_string(err));
+				 + notmuch_status_to_string(status));
 	}
       }
     }
@@ -720,8 +756,6 @@ msg_sync::hash_sync(const versvector &rvv,
   if (new_msgid && docid_valid)
     record_docid_.param(rhi.message_id, docid).step().reset();
 
-  c.disable();
-  sqlexec (db_, "RELEASE hash_sync;");
   if (clean_trash)
     unlink (trashname(hashdb.maildir, rhi.hash).c_str());
   return true;
