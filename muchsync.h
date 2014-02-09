@@ -46,6 +46,8 @@ std::istream &get_response (std::istream &in, string &line);
 /* muchsync.cc */
 extern bool opt_fullscan;
 extern bool opt_noscan;
+extern bool opt_upbg;
+extern bool opt_noup;
 extern int opt_verbose;
 extern string opt_ssh;
 extern string opt_remote_muchsync_path;

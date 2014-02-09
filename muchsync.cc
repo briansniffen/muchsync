@@ -30,6 +30,8 @@ bool opt_fullscan;
 bool opt_noscan;
 bool opt_init;
 bool opt_server;
+bool opt_upbg;
+bool opt_noup;
 int opt_verbose;
 string opt_ssh = "ssh -CTaxq";
 string opt_remote_muchsync_path = "muchsync";
@@ -212,14 +214,15 @@ muchsync_init (const string &maildir, bool create = false)
 }
 
 sqlite3 *
-dbopen (const char *path)
+dbopen (const char *path, bool exclusive = false)
 {
   sqlite3 *db = nullptr;
   if (access (path, 0) && errno == ENOENT)
     db = dbcreate (path);
   else {
     sqlite3_open_v2 (path, &db, SQLITE_OPEN_READWRITE, nullptr);
-    sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
+    if (exclusive)
+      sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
   }
   if (!db)
     return nullptr;
@@ -391,13 +394,25 @@ tag_stderr(string tag)
 }
 
 [[noreturn]] void
-usage ()
+usage (int code = 1)
 {
-  cerr
-    << "usage: muchsync [-FMXv] [-m maildir] [-s ssh] [-n tag [-n tag ...]]\n"
-    << "                        [-r /path/to/muchsync] [server[:maildir]]\n"
-    << "       muchsync --server [--nosync] [maildir]\n";
-  exit (1);
+  (code ? cerr : cout) << "\
+usage: muchsync\n\
+       muchsync server [server-options]\n\
+       muchsync --init maildir server [server-options]\n\
+\n\
+Additional options:\n\
+   -C file       Specify path to notmuch config file\n\
+   -F            Don't assume files in maildirs are immutable\n\
+   -v            Increase verbosity\n\
+   -r path       Specify path to notmuch executable on server\n\
+   -s ssh-cmd    Specify ssh command and arguments\n\
+   --config file Specify path to notmuch config file (same as -C)\n\
+   --noup[load]  Do not upload changes to server\n\
+   --upbg        Download mail in forground, then upload in background\n\
+   --version     Print version number and exit\n\
+   --help        Print usage\n";
+  exit (code);
 }
 
 static void
@@ -539,7 +554,7 @@ client(int ac, char **av)
     create_config(in, out, maildir);
   if (!muchsync_init(maildir, opt_init))
     exit (1);
-  sqlite3 *db = dbopen(dbpath.c_str());
+  sqlite3 *db = dbopen(dbpath.c_str(), true);
   if (!db)
     exit (1);
   cleanup _c (sqlite3_close_v2, db);
@@ -566,6 +581,9 @@ enum opttag {
   OPT_VERSION = 0x100,
   OPT_SERVER,
   OPT_NOSCAN,
+  OPT_UPBG,
+  OPT_NOUP,
+  OPT_HELP,
   OPT_INIT
 };
 
@@ -573,8 +591,12 @@ static const struct option muchsync_options[] = {
   { "version", no_argument, nullptr, OPT_VERSION },
   { "server", no_argument, nullptr, OPT_SERVER },
   { "noscan", no_argument, nullptr, OPT_NOSCAN },
+  { "upbg", no_argument, nullptr, OPT_UPBG },
+  { "noup", no_argument, nullptr, OPT_NOUP },
+  { "noupload", no_argument, nullptr, OPT_NOUP },
   { "init", required_argument, nullptr, OPT_INIT },
   { "config", required_argument, nullptr, 'C' },
+  { "help", no_argument, nullptr, OPT_HELP },
   { nullptr, 0, nullptr, 0 }
 };
 
@@ -616,12 +638,20 @@ main (int argc, char **argv)
     case OPT_NOSCAN:
       opt_noscan = true;
       break;
+    case OPT_UPBG:
+      opt_upbg = true;
+      break;
+    case OPT_NOUP:
+      opt_noup = true;
+      break;
     case OPT_INIT:
       opt_init = true;
       opt_init_dest = optarg;
       break;
+    case OPT_HELP:
+      usage(0);
     default:
-      usage ();
+      usage();
     }
 
   if (int err = sqlite3_config(SQLITE_CONFIG_SERIALIZED)) {
@@ -631,7 +661,7 @@ main (int argc, char **argv)
   }
 
   if (opt_server) {
-    if (opt_init || optind != argc)
+    if (opt_init || opt_noup || opt_upbg || optind != argc)
       usage();
     server();
   }

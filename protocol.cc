@@ -294,7 +294,7 @@ operator>> (istream &is, tag_info &ti)
   return is;
 }
 
-writestamp
+static writestamp
 get_mystamp(sqlite3 *db)
 {
   sqlstmt_t s (db, "SELECT replica, version "
@@ -1107,17 +1107,15 @@ muchsync_client (sqlite3 *db, const string &maildir,
   msg_sync msync (maildir, db);
   i64 pending = 0;
 
+  out << "vect " << show_sync_vector(localvv) << "\nlsync\n" << flush;
   get_response (in, line);
-
-  out << "vect " << show_sync_vector(localvv) << '\n';
   get_response (in, line);
   is.str(line.substr(4));
   if (!read_sync_vector(is, remotevv))
     throw runtime_error ("cannot parse version vector " + line.substr(4));
+  set_peer_vector(db, remotevv);
   print_time ("received server's version vector");
 
-  out << "lsync\n";
-  sqlexec (db, "BEGIN;");
   while (get_response (in, line) && line.at(3) == '-') {
     is.str(line.substr(4));
     hash_info hi;
@@ -1178,5 +1176,12 @@ muchsync_client (sqlite3 *db, const string &maildir,
 
   sqlexec (db, "COMMIT;");
   print_time ("commited changes to local database");
+
+  if (opt_noup)
+    return;
+  if (opt_upbg && fork() > 0)
+    exit(0);
+
+
 }
 
