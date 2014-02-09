@@ -32,6 +32,7 @@ bool opt_init;
 bool opt_server;
 bool opt_upbg;
 bool opt_noup;
+bool opt_new;
 int opt_verbose;
 int opt_upbg_fd = -1;
 string opt_ssh = "ssh -CTaxq";
@@ -409,6 +410,7 @@ Additional options:\n\
    -r path       Specify path to notmuch executable on server\n\
    -s ssh-cmd    Specify ssh command and arguments\n\
    --config file Specify path to notmuch config file (same as -C)\n\
+   --new         Run notmuch new first\n\
    --noup[load]  Do not upload changes to server\n\
    --upbg        Download mail in forground, then upload in background\n\
    --version     Print version number and exit\n\
@@ -431,6 +433,9 @@ server ()
 
   if (!muchsync_init (maildir))
     exit (1);
+  if (opt_new)
+    system("notmuch new |& sed -e 's/^/[SERVER notmuch] /' >&2");
+
   new_tags = notmuch_new_tags();
   sqlite3 *db = dbopen(dbpath.c_str());
   if (!db)
@@ -531,6 +536,9 @@ client(int ac, char **av)
       usage();
     if (!muchsync_init(maildir, true))
       exit (1);
+    new_tags = notmuch_new_tags();
+    if (opt_new)
+      system("notmuch new");
     sqlite3 *db = dbopen(dbpath.c_str());
     if (!db)
       exit (1);
@@ -554,7 +562,18 @@ client(int ac, char **av)
   if (opt_init)
     create_config(in, out, maildir);
   if (!muchsync_init(maildir, opt_init))
-    exit (1);
+    exit(1);
+  if (opt_init && !mkdir((maildir + "/.notmuch/hooks").c_str(), 0777)) {
+    int fd = open ((maildir + "/.notmuch/hooks/post-new").c_str(),
+		   O_CREAT|O_WRONLY|O_EXCL|O_TRUNC, 0777);
+    ofdstream of (fd);
+    of << "#!/bin/sh\nmuchsync --upbg -r " << opt_remote_muchsync_path;
+    for (int i = 0; i < ac; i++)
+      of << ' ' << av[i];
+    of << " --new" << flush;
+  }
+  if (opt_new)
+    system("notmuch new");
   sqlite3 *db = dbopen(dbpath.c_str(), true);
   if (!db)
     exit (1);
@@ -565,10 +584,7 @@ client(int ac, char **av)
 #if 0
   try {
 #endif
-    if (ac > 0)
-      muchsync_client (db, maildir, in, out);
-    else
-      sync_local_data (db, maildir);
+    muchsync_client (db, maildir, in, out);
 #if 0
   }
   catch (const exception &e) {
@@ -585,6 +601,7 @@ enum opttag {
   OPT_UPBG,
   OPT_NOUP,
   OPT_HELP,
+  OPT_NEW,
   OPT_INIT
 };
 
@@ -595,6 +612,7 @@ static const struct option muchsync_options[] = {
   { "upbg", no_argument, nullptr, OPT_UPBG },
   { "noup", no_argument, nullptr, OPT_NOUP },
   { "noupload", no_argument, nullptr, OPT_NOUP },
+  { "new", no_argument, nullptr, OPT_NEW },
   { "init", required_argument, nullptr, OPT_INIT },
   { "config", required_argument, nullptr, 'C' },
   { "help", no_argument, nullptr, OPT_HELP },
@@ -644,6 +662,9 @@ main (int argc, char **argv)
       break;
     case OPT_NOUP:
       opt_noup = true;
+      break;
+    case OPT_NEW:
+      opt_new = true;
       break;
     case OPT_INIT:
       opt_init = true;
