@@ -597,7 +597,6 @@ resolve_one_link_conflict(const unordered_map<string,i64> &a,
     pos++;
   string base = name.substr(0, pos);
   string newpath = base + "new", curpath = base + "cur";
-  cout << base << ' ' << newpath << ' ' << curpath << '\n';
   i64 curval = max(find_default(0, a, curpath), find_default(0, b, curpath));
   i64 newval = (max(find_default(0, a, curpath) + find_default(0, a, newpath),
 		    find_default(0, b, curpath) + find_default(0, b, newpath))
@@ -879,7 +878,7 @@ INSERT OR REPLACE INTO peer_vector
     pvadd.param(ws.first, ws.second).step().reset();
 }
 
-static void
+static i64
 send_links (sqlite3 *sqldb, const string &prefix, ostream &out)
 {
   unordered_map<i64,string> dirs;
@@ -896,6 +895,7 @@ FROM (peer_vector p JOIN maildir_hashes h
       ON ((p.replica = h.replica) & (p.known_version < h.version)))
 LEFT OUTER JOIN maildir_links USING (hash_id);)");
   
+  i64 count = 0;
   hash_info hi;
   changed.step();
   while (changed.row()) {
@@ -914,10 +914,12 @@ LEFT OUTER JOIN maildir_links USING (hash_id);)");
 	hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
     }
     out << prefix << hi << '\n';
+    count++;
   }
+  return count;
 }
 
-static void
+static i64
 send_tags (sqlite3 *sqldb, const string &prefix, ostream &out)
 {
   sqlstmt_t changed (sqldb, R"(
@@ -928,6 +930,7 @@ FROM (peer_vector p JOIN message_ids m
 
   tag_info ti;
   changed.step();
+  i64 count = 0;
   while (changed.row()) {
     i64 docid = changed.integer(0);
     ti.message_id = changed.str(1);
@@ -942,17 +945,38 @@ FROM (peer_vector p JOIN message_ids m
 	ti.tags.insert (changed.str(4));
     }
     out << prefix << ti << '\n';
+    count++;
   }
+  return count;
+}
+
+static bool
+send_content(hash_lookup &hashdb, const string &hash,
+	     const string &prefix, ostream &out)
+{
+  streambuf *sb;
+  if (hashdb.lookup(hash) && (sb = hashdb.content())) {
+    out << prefix << hashdb.info() << '\n' << sb;
+    return true;
+  }
+  return false;
 }
 
 void
-muchsync_server (sqlite3 *db, const string &maildir)
+muchsync_server(sqlite3 *db, const string &maildir)
 {
   msg_sync msync(maildir, db);
   hash_lookup &hashdb = msync.hashdb;
   tag_lookup tagdb(db);
   bool remotevv_valid = false;
   versvector remotevv;
+  bool transaction = false;
+  auto xbegin = [&transaction,db]() {
+    if (!transaction) {
+      sqlexec(db, "BEGIN IMMEDIATE;");
+      transaction = true;
+    }
+  };
 
   cout << "200 " << dbvers << '\n';
   string cmdline;
@@ -1012,11 +1036,8 @@ muchsync_server (sqlite3 *db, const string &maildir)
     else if (cmd == "send") {
       string hash;
       cmdstream >> hash;
-      streambuf *sb;
-      if (hashdb.lookup(hash) && (sb = hashdb.content()))
-	cout << "220-" << hashdb.info() << '\n'
-	     << sb
-	     << "220 " << hashdb.info().hash << '\n';
+      if (send_content(hashdb, hash, "220-", cout))
+	cout << "220 " << hash << '\n';
       else if (hashdb.ok())
 	cout << "420 cannot open file\n";
       else
@@ -1034,6 +1055,7 @@ muchsync_server (sqlite3 *db, const string &maildir)
       }
     }
     else if (cmd == "link") {
+      xbegin();
       hash_info hi;
       if (!remotevv_valid)
 	cout << "500 must follow vect command\n";
@@ -1041,19 +1063,43 @@ muchsync_server (sqlite3 *db, const string &maildir)
 	cout << "500 could not parse hash_info\n";
       else if (msync.hash_sync(remotevv, hi, nullptr))
 	cout << "220 " << hi.hash << " ok\n";
+      else
+	cout << "520 " << hi.hash << " missing content\n";
+    }
+    else if (cmd == "recv") {
+      xbegin();
+      hash_info hi;
+      if (!remotevv_valid)
+	cout << "500 must follow vect command\n";
+      else if (!(cmdstream >> hi))
+	cout << "500 could not parse hash_info\n";
       else {
-	cout << "350 " << hi.hash << " upload content\n";
+	string path;
 	try {
-	  string path = receive_message (cin, hi, maildir);
+	  path = receive_message(cin, hi, maildir);
 	  if (!msync.hash_sync(remotevv, hi, &path))
 	    cout << "550 failed to synchronize message\n";
 	  else
 	    cout << "250 ok\n";
 	}
 	catch (exception e) {
+	  cerr << e.what() << '\n';
 	  cout << "550 " << e.what() << '\n';
 	}
+	unlink(path.c_str());
       }
+    }
+    else if (cmd == "tags") {
+      xbegin();
+      tag_info ti;
+      if (!remotevv_valid)
+	cout << "500 must follow vect command\n";
+      else if (!(cmdstream >> ti))
+	cout << "500 could not parse hash_info\n";
+      else if (msync.tag_sync(remotevv, ti))
+	cout << "220 ok\n";
+      else
+	cout << "520 unknown message-id\n";
     }
     else if (cmd.substr(1) == "sync") {
       if (!remotevv_valid)
@@ -1073,11 +1119,17 @@ muchsync_server (sqlite3 *db, const string &maildir)
 	  break;
 	}
     }
+    else if (cmd == "commit") {
+      if (transaction) {
+	transaction = false;
+	sqlexec(db, "COMMIT;");
+      }
+      cout << "200 ok\n";
+    }
     else
       cout << "500 unknown verb " << cmd << '\n';
   }
 }
-
 
 istream &
 get_response (istream &in, string &line)
@@ -1108,6 +1160,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
   i64 pending = 0;
 
   out << "vect " << show_sync_vector(localvv) << "\nlsync\n" << flush;
+  sqlexec(db, "BEGIN IMMEDIATE;");
   get_response (in, line);
   get_response (in, line);
   is.str(line.substr(4));
@@ -1175,13 +1228,34 @@ muchsync_client (sqlite3 *db, const string &maildir,
   }
 
   sqlexec (db, "COMMIT;");
-  print_time ("commited changes to local database");
+  print_time("commited changes to local database");
 
   if (opt_noup)
     return;
-  if (opt_upbg && fork() > 0)
-    exit(0);
+  if (opt_upbg)
+    close(opt_upbg_fd);
 
-
+  pending = 0;
+  i64 i = send_links(db, "link ", out);
+  print_time("sent moved messages to server");
+  while (i-- > 0) {
+    getline(in, line);
+    if (line.size() < 4 || (line.at(0) != '2' && line.at(0) != '5'))
+      throw runtime_error ("lost sync while receiving message: " + line);
+    if (line.at(0) == '5') {
+      is.str(line.substr(4));
+      string hash;
+      is >> hash;
+      if (send_content(msync.hashdb, hash, "recv ", out))
+	pending++;
+    }
+  }
+  print_time("sent content of new messages to server");
+  pending += send_tags(db, "tags ", out);
+  print_time("sent modified tags to server");
+  out << "commit\n";
+  while (pending-- > 0)
+    get_response(in, line);
+  get_response(in, line);
+  print_time("commit succeeded on server");
 }
-

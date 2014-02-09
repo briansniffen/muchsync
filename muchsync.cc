@@ -33,6 +33,7 @@ bool opt_server;
 bool opt_upbg;
 bool opt_noup;
 int opt_verbose;
+int opt_upbg_fd = -1;
 string opt_ssh = "ssh -CTaxq";
 string opt_remote_muchsync_path = "muchsync";
 string opt_notmuch_config;
@@ -343,11 +344,11 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
 string
 notmuch_maildir_location()
 {
-  string loc = cmd_output ("notmuch config get database.path");
+  string loc = cmd_output("notmuch config get database.path");
   while (loc.size() > 0 && (loc.back() == '\n' || loc.back() == '\r'))
     loc.resize(loc.size()-1);
   struct stat sb;
-  if (!loc.size() || stat(loc.c_str(), &sb) || !S_ISDIR(sb.st_mode))
+  if (!loc.size() || (!stat(loc.c_str(), &sb) && !S_ISDIR(sb.st_mode)))
     throw runtime_error("cannot find location of default maildir");
   return loc;
 }
@@ -664,6 +665,25 @@ main (int argc, char **argv)
     if (opt_init || opt_noup || opt_upbg || optind != argc)
       usage();
     server();
+  }
+  else if (opt_upbg) {
+    int fds[2];
+    if (pipe(fds)) {
+      cerr << "pipe: " << strerror(errno) << '\n';
+      exit (1);
+    }
+    fcntl(fds[1], F_SETFD, 1);
+    if (fork() > 0) {
+      char c;
+      close(fds[1]);
+      read(fds[0], &c, 1);
+      if (opt_verbose)
+	cerr << "backgrounding\n";
+      exit(0);
+    }
+    close(fds[0]);
+    opt_upbg_fd = fds[1];
+    client(argc - optind, argv + optind);
   }
   else
     client(argc - optind, argv + optind);
