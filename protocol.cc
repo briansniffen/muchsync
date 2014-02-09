@@ -1084,7 +1084,7 @@ get_response (istream &in, string &line)
 {
   if (!getline (in, line))
     throw runtime_error ("premature EOF");
-  if (opt_verbose >= 3)
+  if (opt_verbose > 3)
     cerr << line << '\n';
   if (line.empty())
     throw runtime_error ("unexpected empty line");
@@ -1124,7 +1124,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     if (!(is >> hi))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
     bool ok = msync.hash_sync (remotevv, hi, nullptr);
-    if (opt_verbose >= 2) {
+    if (opt_verbose > 2) {
       if (ok)
 	cerr << hi << '\n';
       else
@@ -1152,7 +1152,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
       throw runtime_error ("lost sync while receiving message: " + line);
     if (!msync.hash_sync (remotevv, hi, &path))
       throw runtime_error ("msg_sync::sync failed even with source");
-    if (opt_verbose >= 2)
+    if (opt_verbose > 2)
       cerr << hi << '\n';
   }
   print_time ("received content of missing messages");
@@ -1162,7 +1162,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     tag_info ti;
     if (!(is >> ti))
       throw runtime_error ("could not parse tag_info: " + line.substr(4));
-    if (opt_verbose >= 2)
+    if (opt_verbose > 2)
       cerr << ti << '\n';
     msync.tag_sync(remotevv, ti);
   }
