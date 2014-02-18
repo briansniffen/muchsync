@@ -88,8 +88,7 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 }
 
 /* xapian_sync.cc */
-void xapian_scan (sqlite3 *sqldb, writestamp ws, const string &maildir);
-void xapian_refresh_message_ids (sqlite3 *sqldb, const string &maildir);
+void xapian_scan (sqlite3 *sqldb, writestamp ws, string maildir);
 string percent_encode (const string &raw);
 string percent_decode (const string &escaped);
 
@@ -118,6 +117,7 @@ dir_contains_messages (const string &dir)
   return dir == "cur" || dir == "new";
 }
 void scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir);
+string get_sha (int dfd, const char *direntry, i64 *sizep);
 
 inline std::istream &
 input_match (std::istream &in, char want)

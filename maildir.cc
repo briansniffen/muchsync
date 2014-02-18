@@ -98,7 +98,7 @@ hash_ctx::final()
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
 
-static string
+string
 get_sha (int dfd, const char *direntry, i64 *sizep)
 {
   int fd = openat(dfd, direntry, O_RDONLY);

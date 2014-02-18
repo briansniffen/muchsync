@@ -30,6 +30,7 @@ class sqlstmt_t {
   ~sqlstmt_t() { sqlite3_finalize (stmt_); }
 
   sqlite3_stmt *get() { return stmt_; }
+  sqlite3 *getdb() { return sqlite3_db_handle(stmt_); }
   int status() const { return status_; }
   bool row() {
     if (status_ == SQLITE_ROW)

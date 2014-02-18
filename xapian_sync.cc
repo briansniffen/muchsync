@@ -3,6 +3,11 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <unistd.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include <xapian.h>
 
@@ -15,24 +20,33 @@ const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
 
-const char xapian_triggers[] =
-R"(CREATE TEMP TABLE IF NOT EXISTS modified_docids (
-  docid INTEGER PRIMARY KEY);
-DELETE FROM modified_docids;
-CREATE TEMP TRIGGER tag_delete AFTER DELETE ON main.tags
-  WHEN old.docid NOT IN (SELECT * FROM modified_docids)
-  BEGIN INSERT INTO modified_docids (docid) VALUES (old.docid); END;
-CREATE TEMP TRIGGER tag_insert AFTER INSERT ON main.tags
-  WHEN new.docid NOT IN (SELECT * FROM modified_docids)
-  BEGIN INSERT INTO modified_docids (docid) VALUES (new.docid); END;
-CREATE TEMP TRIGGER message_id_insert AFTER INSERT ON main.message_ids
-  WHEN new.docid NOT IN (SELECT * FROM modified_docids)
-  BEGIN INSERT INTO modified_docids (docid) VALUES (new.docid); END;
+static void
+drop_triggers(sqlite3 *db)
+{
+  for (const char *trigger
+	 : { "tag_delete", "tag_insert", "message_id_insert" })
+    sqlexec (db, "DROP TRIGGER IF EXISTS %s;", trigger);
+}
 
-CREATE TEMP TABLE deleted_xapian_dirs (
+static void
+set_triggers(sqlite3 *db, const writestamp &ws)
+{
+  drop_triggers (db);
+  sqlexec(db, R"(
+CREATE TEMP TRIGGER tag_delete AFTER DELETE ON main.tags
+  BEGIN UPDATE message_ids SET replica = %lld, version = %lld
+        WHERE docid = old.docid; END;
+CREATE TEMP TRIGGER tag_insert AFTER INSERT ON main.tags
+  BEGIN UPDATE message_ids SET replica = %lld, version = %lld
+        WHERE docid = new.docid; END;
+CREATE TEMP TABLE IF NOT EXISTS deleted_xapian_dirs (
   dir_docid INTEGER PRIMARY KEY,
   dir_path TEXT UNIQUE); 
-)";
+DELETE FROM deleted_xapian_dirs;
+CREATE TEMP TABLE IF NOT EXISTS modified_hashes (hash_id INTEGER PRIMARY KEY);
+DELETE FROM modified_hashes;
+)");
+}
 
 template<typename T> void
 sync_table (sqlstmt_t &s, T &t, T &te,
@@ -167,13 +181,15 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
 }
 
 static void
-xapian_scan_message_ids (sqlite3 *sqldb, Xapian::Database xdb)
+xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
+			 Xapian::Database xdb)
 {
   sqlstmt_t
-    scan (sqldb, "\
-SELECT message_id, docid FROM message_ids ORDER BY docid ASC;"),
-    add_message (sqldb, "\
-INSERT INTO message_ids (message_id, docid) VALUES (?, ?);"),
+    scan (sqldb,
+	  "SELECT message_id, docid FROM message_ids ORDER BY docid ASC;"),
+    add_message (sqldb,
+		 "INSERT INTO message_ids (message_id, docid, replica, version)"
+		 " VALUES (?, ?, %lld, %lld);", ws.first, ws.second),
     del_message (sqldb, "DELETE FROM message_ids WHERE docid = ?;");
 
   Xapian::ValueIterator
@@ -239,83 +255,237 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
 	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_xapian_dirs);");
 }
 
-static void
-xapian_scan_filenames (sqlite3 *sqldb, Xapian::Database xdb)
-{
-  sqlstmt_t
-    dirscan (sqldb, "SELECT dir_path, dir_docid FROM xapian_dirs;"),
-    filescan (sqldb, "SELECT file_id, name, docid"
+class fileops {
+public:
+  sqlstmt_t scan_dir_;
+private:
+  sqlstmt_t get_msgid_;
+  sqlstmt_t del_file_;
+  sqlstmt_t add_file_;
+  sqlstmt_t upd_file_;
+  sqlstmt_t get_hashid_;
+  sqlstmt_t get_hash_;
+  sqlstmt_t add_hash_;
+  sqlstmt_t upd_hash_;
+  string get_msgid(i64 docid);
+  i64 get_file_hash_id(int dfd, const string &file, i64 docid);
+public:
+  fileops(sqlite3 *db, const writestamp &ws);
+  void del_file(i64 rowid) { del_file_.reset().param(rowid).step(); }
+  void add_file(const string &dir, int dfd, i64 dir_docid,
+		string name, i64 docid);
+  void check_file(const string &dir, int dfd, i64 dir_docid);
+};
+
+fileops::fileops(sqlite3 *db, const writestamp &ws)
+  : scan_dir_(db, "SELECT name, docid, mtime, inode, hash_id, rowid"
 	      " FROM xapian_files WHERE dir_docid = ? ORDER BY name;"),
-    add_file (sqldb, "INSERT INTO xapian_files"
-	      " (name, docid, dir_docid)"
-	      " VALUES (?, ?, ?);"),
-    del_file (sqldb, "DELETE FROM xapian_files WHERE file_id = ?;");
+    get_msgid_(db, "SELECT message_id FROM message_ids WHERE docid = ?;"),
+    del_file_(db, "DELETE FROM xapian_files WHERE rowid = ?;"),
+    add_file_(db, "INSERT INTO xapian_files"
+	      " (dir_docid, name, docid, mtime, inode, hash_id)"
+	      " VALUES (?, ?, ?, ?, ?, ?);"),
+    upd_file_(db, "UPDATE xapian_files SET mtime = ?, inode = ?"
+	      " WHERE rowid = ?;"),
+    get_hashid_(db, opt_fullscan
+	      ? "SELECT hash_id, size, message_id FROM maildir_hashes"
+	        " WHERE hash = ?;"
+	      : "SELECT hash_id FROM maildir_hashes WHERE hash = ?;"),
+    get_hash_(db, "SELECT hash, size FROM maildir_hashes WHERE hash_id = ?;"),
+    add_hash_(db, "INSERT OR REPLACE INTO maildir_hashes "
+	      " (hash, size, message_id, replica, version)"
+	      " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second),
+    upd_hash_(db, "UPDATE maildir_hashes SET size = ?, message_id = ?"
+	      " WHERE hash_id = ?;",
+	      ws.first, ws.second)
+{
+}
+
+string
+fileops::get_msgid(i64 docid)
+{
+  get_msgid_.reset().param(docid).step();
+  if (!get_msgid_.row())
+    throw runtime_error ("xapian_fileops: unknown docid " + to_string(docid));
+  return get_msgid_.str(0);
+}
+
+i64
+fileops::get_file_hash_id(int dfd, const string &name, i64 docid)
+{
+  i64 sz;
+  if (opt_verbose > 2)
+    cerr << "    " << name << '\n';
+  string hash = get_sha(dfd, name.c_str(), &sz);
+
+  if (get_hashid_.reset().param(hash).step().row()) {
+    i64 hash_id = get_hashid_.integer(0);
+    if (!opt_fullscan)
+      return hash_id;
+    string msgid = get_msgid(docid);
+    if (sz == get_hashid_.integer(1) && msgid == get_hashid_.str(2))
+      return hash_id;
+    // This should almost never happen
+    cerr << "size or message-id changed for hash " << hash << '\n';
+    upd_hash_.reset().param(sz, msgid, hash_id).step();
+    return hash_id;
+  }
+
+  add_hash_.reset().param(hash, sz, get_msgid(docid)).step();
+  return sqlite3_last_insert_rowid(add_hash_.getdb());
+}
+
+void
+fileops::add_file(const string &dir, int dfd, i64 dir_docid,
+		  string name, i64 docid)
+{
+  struct stat sb;
+  if (fstatat(dfd, name.c_str(), &sb, 0)) {
+    if (errno == ENOENT)
+      return;
+    throw runtime_error (dir + ": " + strerror(errno));
+  }
+  if (!S_ISREG(sb.st_mode))
+    return;
+
+  i64 hash_id = get_file_hash_id(dfd, name, docid);
+  add_file_.reset()
+    .param(dir_docid, name, docid, ts_to_double(sb.st_mtim),
+	   i64(sb.st_ino), hash_id).step();
+}
+
+void
+fileops::check_file(const string &dir, int dfd, i64 dir_docid)
+{
+  string name = scan_dir_.str(0);
+  struct stat sb;
+  if (fstatat(dfd, name.c_str(), &sb, 0)) {
+    if (errno == ENOENT)
+      return;
+    throw runtime_error (dir + ": " + strerror(errno));
+  }
+  if (!S_ISREG(sb.st_mode))
+    return;
+
+  double fs_mtim = ts_to_double(sb.st_mtim);
+  i64 fs_inode = sb.st_ino, fs_size = sb.st_size;
+  double db_mtim = scan_dir_.real(2);
+  i64 db_inode = scan_dir_.integer(3);
+
+  i64 db_hashid = scan_dir_.integer(4);
+  if (!get_hash_.reset().param(db_hashid).step().row())
+    throw runtime_error ("invalid hash_id: " + to_string(db_hashid));
+  i64 db_size = get_hash_.integer(1);
+
+  if (fs_mtim == db_mtim && fs_inode == db_inode && fs_size == db_size)
+    return;
+
+  i64 rowid = scan_dir_.integer(5), docid = scan_dir_.integer(1);
+  i64 fs_hashid = get_file_hash_id(dfd, name, docid);
+  if (db_hashid == fs_hashid)
+    upd_file_.reset().param(fs_mtim, fs_inode, rowid).step();
+  else {
+    del_file_.reset().param(rowid).step();
+    add_file_.reset().param(dir_docid, name, docid, fs_mtim, fs_inode,
+			    fs_hashid);
+  }
+}
+
+static void
+xapian_scan_filenames (sqlite3 *db, const string &maildir,
+		       const writestamp &ws, Xapian::Database xdb)
+{
+  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs;");
+  fileops f (db, ws);
 
   while (dirscan.step().row()) {
     string dir = dirscan.str(0);
+    if (opt_verbose > 1)
+      cerr << "  " << dir << '\n';
+    string dirpath = maildir + "/" + dir;
+    int dfd = open(dirpath.c_str(), O_RDONLY);
+    if (dfd == -1) {
+      cerr << dirpath << ": " << strerror (errno) << '\n';
+      continue;
+    }
+    cleanup _close (close, dfd);
 
     i64 dir_docid = dirscan.integer(1);
+    f.scan_dir_.reset().param(dir_docid).step();
+
     string dirtermprefix = (notmuch_file_direntry_prefix
 			    + to_string (dir_docid) + ":");
-    filescan.reset().bind_int(1, dir_docid);
-    add_file.reset().bind_int(3, dir_docid);
-
-    auto cmp = [&dirtermprefix]
-      (sqlstmt_t &s, Xapian::TermIterator &ti) -> int {
-      return s.str(1).compare((*ti).substr(dirtermprefix.length()));
-    };
-    auto merge = [&dirtermprefix,&add_file,&del_file,&xdb]
-      (sqlstmt_t *sp, Xapian::TermIterator *tip) {
-      if (!tip) {
-	del_file.reset().param(sp->value(0)).step();
-	return;
-      }
-
-      if (sp && !opt_fullscan)
-	return;
-
-      i64 docid = xapian_get_unique_posting (xdb, **tip);
-      if (sp) {
-	if (sp->integer(2) == docid)
-	  return;
-	del_file.reset().param(sp->value(0)).step();
-      }
-      string dirent { (**tip).substr(dirtermprefix.length()) };
-      add_file.reset().param(dirent, docid).step();
-    };
-
     Xapian::TermIterator ti = xdb.allterms_begin(dirtermprefix),
       te = xdb.allterms_end(dirtermprefix);
-    sync_table<Xapian::TermIterator> (filescan, ti, te, cmp, merge);
+
+    unordered_map<string,function<void()>> to_add;
+
+    while (f.scan_dir_.row() && ti != te) {
+      string dbname = f.scan_dir_.str(0);
+      string xname = (*ti).substr(dirtermprefix.length());
+      if (dbname == xname) {
+	if (opt_fullscan)
+	  f.check_file(dir, dfd, dir_docid);
+	f.scan_dir_.step();
+	++ti;
+      }
+      else if (dbname < xname) {
+	f.del_file(f.scan_dir_.integer(5));
+	f.scan_dir_.step();
+      }
+      else {
+	to_add.emplace(xname,
+		       bind(mem_fn(&fileops::add_file), f, dir, dfd, dir_docid,
+			    xname, xapian_get_unique_posting(xdb, *ti)));
+	++ti;
+      }
+    }
+    while (f.scan_dir_.row()) {
+      f.del_file(f.scan_dir_.integer(5));
+      f.scan_dir_.step();
+    }
+    while (ti != te) {
+      string xname = (*ti).substr(dirtermprefix.length());
+      to_add.emplace(xname,
+		     bind(mem_fn(&fileops::add_file), f, dir, dfd, dir_docid,
+			  xname, xapian_get_unique_posting(xdb, *ti)));
+      ++ti;
+    }
+
+    // With a cold buffer cache, reading files to compute hashes goes
+    // shockingly faster in the order of directory entries.
+    _close.disable();
+    DIR *d = fdopendir(dfd);
+    cleanup _closedir (closedir, d);
+    while (struct dirent *e = readdir(d)) {
+      string name (e->d_name);
+      auto action = to_add.find(name);
+      if (action != to_add.end()) {
+	action->second();
+	to_add.erase(action);
+      }
+    }
+
   }
 }
 
 void
-xapian_refresh_message_ids (sqlite3 *sqldb, const string &maildir)
+xapian_scan (sqlite3 *sqldb, writestamp ws, string maildir)
 {
-  print_time ("opening Xapian");
-  Xapian::Database xdb (maildir + "/.notmuch/xapian");
-  print_time ("scanning message IDs");
-  xapian_scan_message_ids (sqldb, xdb);
-}
-
-void
-xapian_scan (sqlite3 *sqldb, writestamp ws, const string &maildir)
-{
+  while (maildir.size() > 1 && maildir.back() == '/')
+    maildir.resize (maildir.size() - 1);
+  if (maildir.empty())
+    maildir = ".";
   print_time ("starting scan of Xapian database");
   Xapian::Database xdb (maildir + "/.notmuch/xapian");
-  sqlexec (sqldb, xapian_triggers);
+  set_triggers(sqldb, ws);
   print_time ("opened Xapian");
-  xapian_scan_message_ids (sqldb, xdb);
+  xapian_scan_message_ids (sqldb, ws, xdb);
   print_time ("scanned message IDs");
   xapian_scan_tags (sqldb, xdb);
   print_time ("scanned tags");
-  sqlexec (sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
-	   " WHERE docid IN (SELECT docid FROM modified_docids);",
-	   ws.first, ws.second);
-  print_time ("updated version stamps");
   xapian_scan_directories (sqldb, xdb);
   print_time ("scanned directories in xapian");
-  xapian_scan_filenames (sqldb, xdb);
+  xapian_scan_filenames (sqldb, maildir, ws, xdb);
   print_time ("scanned filenames in xapian");
 }

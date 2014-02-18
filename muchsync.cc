@@ -64,12 +64,27 @@ CREATE TABLE message_ids (
   version INTEGER);
 CREATE INDEX message_ids_writestamp ON message_ids (replica, version);
 CREATE TABLE xapian_files (
-  file_id INTEGER PRIMARY KEY AUTOINCREMENT,
   dir_docid INTEGER,
   name TEXT NOT NULL,
   docid INTEGER,
+  mtime REAL,
+  inode INTEGER,
+  hash_id INGEGER,
   UNIQUE (dir_docid, name));
+CREATE INDEX xapian_files_hash_id ON xapian_files (hash_id);
+CREATE TABLE maildir_hashes (
+  hash_id INTEGER PRIMARY KEY,
+  hash TEXT UNIQUE NOT NULL,
+  size INTEGER,
+  message_id TEXT,
+  replica INTEGER,
+  version INTEGER);
+CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
+CREATE INDEX maildir_hashes_writestamp ON maildir_hashes (replica, version);
+)";
 
+#if 0
+R"(
 -- State from last scan of maildir, to detect changes
 CREATE TABLE maildir_dirs (
   dir_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,21 +106,13 @@ CREATE INDEX maildir_hash_dir_index ON maildir_files (hash_id, dir_id);
 CREATE TRIGGER dir_delete_trigger AFTER DELETE ON maildir_dirs
   BEGIN DELETE FROM maildir_files WHERE dir_id = old.dir_id;
   END;
-CREATE TABLE maildir_hashes (
-  hash_id INTEGER PRIMARY KEY,
-  hash TEXT UNIQUE NOT NULL,
-  size INTEGER,
-  message_id TEXT,
-  replica INTEGER,
-  version INTEGER);
-CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
-CREATE INDEX maildir_hashes_writestamp ON maildir_hashes (replica, version);
 CREATE TABLE maildir_links (
   hash_id INTEGER NOT NULL,
   dir_id INTEGER NOT NULL,
   link_count INTEGER,
   PRIMARY KEY (hash_id, dir_id));
 )";
+#endif
 
 const char xapian_dirs_def[] =
 R"(CREATE TABLE xapian_dirs (
@@ -332,7 +339,7 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
     writestamp ws { self, vers };
 
     xapian_scan (sqldb, ws, maildir);
-    scan_maildir (sqldb, ws, maildir);
+    //scan_maildir (sqldb, ws, maildir);
   }
   catch (...) {
     sqlexec (sqldb, "ROLLBACK TO localsync;");
