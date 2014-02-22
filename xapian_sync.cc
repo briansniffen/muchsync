@@ -278,8 +278,9 @@ public:
 };
 
 fileops::fileops(sqlite3 *db, const writestamp &ws)
-  : scan_dir_(db, "SELECT name, docid, mtime, inode, hash_id, rowid"
-	      " FROM xapian_files WHERE dir_docid = ? ORDER BY name;"),
+  : scan_dir_(db, "SELECT rowid, name, docid%s"
+	      " FROM xapian_files WHERE dir_docid = ? ORDER BY name;",
+	      opt_fullscan ? ", mtime, inode, hash_id" : ""),
     get_msgid_(db, "SELECT message_id FROM message_ids WHERE docid = ?;"),
     del_file_(db, "DELETE FROM xapian_files WHERE rowid = ?;"),
     add_file_(db, "INSERT INTO xapian_files"
@@ -357,7 +358,9 @@ fileops::add_file(const string &dir, int dfd, i64 dir_docid,
 void
 fileops::check_file(const string &dir, int dfd, i64 dir_docid)
 {
-  string name = scan_dir_.str(0);
+  if (!opt_fullscan)
+    return;
+  string name = scan_dir_.str(1);
   struct stat sb;
   if (fstatat(dfd, name.c_str(), &sb, 0)) {
     if (errno == ENOENT)
@@ -369,10 +372,10 @@ fileops::check_file(const string &dir, int dfd, i64 dir_docid)
 
   double fs_mtim = ts_to_double(sb.st_mtim);
   i64 fs_inode = sb.st_ino, fs_size = sb.st_size;
-  double db_mtim = scan_dir_.real(2);
-  i64 db_inode = scan_dir_.integer(3);
+  double db_mtim = scan_dir_.real(3);
+  i64 db_inode = scan_dir_.integer(4);
 
-  i64 db_hashid = scan_dir_.integer(4);
+  i64 db_hashid = scan_dir_.integer(5);
   if (!get_hash_.reset().param(db_hashid).step().row())
     throw runtime_error ("invalid hash_id: " + to_string(db_hashid));
   i64 db_size = get_hash_.integer(1);
@@ -380,7 +383,7 @@ fileops::check_file(const string &dir, int dfd, i64 dir_docid)
   if (fs_mtim == db_mtim && fs_inode == db_inode && fs_size == db_size)
     return;
 
-  i64 rowid = scan_dir_.integer(5), docid = scan_dir_.integer(1);
+  i64 rowid = scan_dir_.integer(0), docid = scan_dir_.integer(2);
   i64 fs_hashid = get_file_hash_id(dfd, name, docid);
   if (db_hashid == fs_hashid)
     upd_file_.reset().param(fs_mtim, fs_inode, rowid).step();
@@ -395,7 +398,8 @@ static void
 xapian_scan_filenames (sqlite3 *db, const string &maildir,
 		       const writestamp &ws, Xapian::Database xdb)
 {
-  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs;");
+  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs"
+		     " ORDER BY dir_path;");
   fileops f (db, ws);
 
   while (dirscan.step().row()) {
@@ -421,7 +425,7 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
     unordered_map<string,function<void()>> to_add;
 
     while (f.scan_dir_.row() && ti != te) {
-      string dbname = f.scan_dir_.str(0);
+      string dbname = f.scan_dir_.str(1);
       string xname = (*ti).substr(dirtermprefix.length());
       if (dbname == xname) {
 	if (opt_fullscan)
@@ -430,7 +434,7 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
 	++ti;
       }
       else if (dbname < xname) {
-	f.del_file(f.scan_dir_.integer(5));
+	f.del_file(f.scan_dir_.integer(0));
 	f.scan_dir_.step();
       }
       else {
@@ -441,7 +445,7 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
       }
     }
     while (f.scan_dir_.row()) {
-      f.del_file(f.scan_dir_.integer(5));
+      f.del_file(f.scan_dir_.integer(0));
       f.scan_dir_.step();
     }
     while (ti != te) {
@@ -454,15 +458,18 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
 
     // With a cold buffer cache, reading files to compute hashes goes
     // shockingly faster in the order of directory entries.
-    _close.disable();
-    DIR *d = fdopendir(dfd);
-    cleanup _closedir (closedir, d);
-    while (struct dirent *e = readdir(d)) {
-      string name (e->d_name);
-      auto action = to_add.find(name);
-      if (action != to_add.end()) {
-	action->second();
-	to_add.erase(action);
+    if (!to_add.empty()) {
+      _close.disable();
+      DIR *d = fdopendir(dfd);
+      cleanup _closedir (closedir, d);
+      struct dirent *e;
+      while ((e = readdir(d)) && !to_add.empty()) {
+	string name (e->d_name);
+	auto action = to_add.find(name);
+	if (action != to_add.end()) {
+	  action->second();
+	  to_add.erase(action);
+	}
       }
     }
 
