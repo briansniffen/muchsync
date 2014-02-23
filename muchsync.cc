@@ -64,13 +64,13 @@ CREATE TABLE message_ids (
   version INTEGER);
 CREATE INDEX message_ids_writestamp ON message_ids (replica, version);
 CREATE TABLE xapian_files (
-  dir_docid INTEGER,
+  dir_docid INTEGER NOT NULL,
   name TEXT NOT NULL,
   docid INTEGER,
   mtime REAL,
   inode INTEGER,
   hash_id INGEGER,
-  UNIQUE (dir_docid, name));
+  PRIMARY KEY (dir_docid, name));
 CREATE INDEX xapian_files_hash_id ON xapian_files (hash_id);
 CREATE TABLE maildir_hashes (
   hash_id INTEGER PRIMARY KEY,

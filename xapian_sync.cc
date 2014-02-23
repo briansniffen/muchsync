@@ -398,8 +398,7 @@ static void
 xapian_scan_filenames (sqlite3 *db, const string &maildir,
 		       const writestamp &ws, Xapian::Database xdb)
 {
-  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs"
-		     " ORDER BY dir_path;");
+  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs;");
   fileops f (db, ws);
 
   while (dirscan.step().row()) {
@@ -421,26 +420,30 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
 			    + to_string (dir_docid) + ":");
     Xapian::TermIterator ti = xdb.allterms_begin(dirtermprefix),
       te = xdb.allterms_end(dirtermprefix);
+    size_t dirtermprefixlen = dirtermprefix.size();
 
-    unordered_map<string,function<void()>> to_add;
+    unordered_map<string,Xapian::docid> to_add;
 
     while (f.scan_dir_.row() && ti != te) {
-      string dbname = f.scan_dir_.str(1);
-      string xname = (*ti).substr(dirtermprefix.length());
-      if (dbname == xname) {
+      //string dbname = f.scan_dir_.str(1);
+      //string xname = (*ti).substr(dirtermprefixlen);
+      const char *dbname = f.scan_dir_.c_str(1);
+      string term = *ti;
+      const char *xname = &term[dirtermprefixlen];
+      int cmp = strcmp(dbname,xname);
+      if (!cmp) {
 	if (opt_fullscan)
 	  f.check_file(dir, dfd, dir_docid);
 	f.scan_dir_.step();
 	++ti;
       }
-      else if (dbname < xname) {
+      else if (cmp < 0) {
 	f.del_file(f.scan_dir_.integer(0));
 	f.scan_dir_.step();
       }
       else {
-	to_add.emplace(xname,
-		       bind(mem_fn(&fileops::add_file), f, dir, dfd, dir_docid,
-			    xname, xapian_get_unique_posting(xdb, *ti)));
+	to_add.emplace(term.substr(dirtermprefixlen),
+		       xapian_get_unique_posting(xdb, term));
 	++ti;
       }
     }
@@ -449,10 +452,9 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
       f.scan_dir_.step();
     }
     while (ti != te) {
-      string xname = (*ti).substr(dirtermprefix.length());
-      to_add.emplace(xname,
-		     bind(mem_fn(&fileops::add_file), f, dir, dfd, dir_docid,
-			  xname, xapian_get_unique_posting(xdb, *ti)));
+      string term = *ti;
+      to_add.emplace(term.substr(dirtermprefixlen),
+		     xapian_get_unique_posting(xdb, term));
       ++ti;
     }
 
@@ -463,11 +465,12 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
       DIR *d = fdopendir(dfd);
       cleanup _closedir (closedir, d);
       struct dirent *e;
+      auto notfound = to_add.end();
       while ((e = readdir(d)) && !to_add.empty()) {
 	string name (e->d_name);
 	auto action = to_add.find(name);
-	if (action != to_add.end()) {
-	  action->second();
+	if (action != notfound) {
+	  f.add_file(dir, dfd, dir_docid, action->first, action->second);
 	  to_add.erase(action);
 	}
       }
