@@ -312,7 +312,7 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database &xdb)
 
     if (mtime != scandirs.integer(2)) {
       flagdir.reset().param(i64(dir_docid)).step();
-      upddir.reset().param(i64(mtime), i64(dir_docid));
+      upddir.reset().param(i64(mtime), i64(dir_docid)).step();
     }
     ++ti;
     scandirs.step();
@@ -462,9 +462,8 @@ static void
 xapian_scan_filenames (sqlite3 *db, const string &maildir,
 		       const writestamp &ws, Xapian::Database xdb)
 {
-  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs"
-		     " WHERE dir_docid IN"
-		     " (SELECT dir_docid FROM modified_xapian_dirs);");
+  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid"
+		     " FROM xapian_dirs NATURAL JOIN modified_xapian_dirs;");
   fileops f (db, ws);
 
   while (dirscan.step().row()) {
