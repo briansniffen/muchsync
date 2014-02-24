@@ -52,6 +52,10 @@ CREATE TABLE sync_vector (
   version INTEGER);
 
 -- Shadow copy of the Xapian database to detect changes
+CREATE TABLE xapian_dirs (
+  dir_path TEXT UNIQUE NOT NULL,
+  dir_docid INTEGER PRIMARY KEY,
+  dir_mtime INTEGER);
 CREATE TABLE tags (
   tag TEXT NOT NULL,
   docid INTEGER NOT NULL,
@@ -87,11 +91,6 @@ CREATE TABLE xapian_nlinks (
   link_count INTEGER,
   PRIMARY KEY (hash_id, dir_docid));
 )";
-
-const char xapian_dirs_def[] =
-R"(CREATE TABLE xapian_dirs (
-  dir_path TEXT UNIQUE NOT NULL,
-  dir_docid INTEGER PRIMARY KEY);)";
 
 static double
 time_stamp ()
@@ -141,7 +140,6 @@ dbcreate (const char *path)
   try {
     sqlexec (db, "BEGIN;");
     sqlexec (db, schema_def);
-    sqlexec (db, xapian_dirs_def);
     setconfig (db, "dbvers", dbvers);
     setconfig (db, "self", self);
     setconfig (db, "last_scan", 0.0);

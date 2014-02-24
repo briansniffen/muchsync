@@ -53,7 +53,6 @@ extern int opt_verbose;
 extern string opt_ssh;
 extern string opt_remote_muchsync_path;
 extern string opt_notmuch_config;
-extern const char xapian_dirs_def[];
 extern const char muchsync_trashdir[];
 extern const char muchsync_tmpdir[];
 extern std::unordered_set<string> new_tags;

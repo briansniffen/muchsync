@@ -15,6 +15,8 @@
 
 using namespace std;
 
+// XXX - these things have to match notmuch-private.h
+constexpr int NOTMUCH_VALUE_TIMESTAMP = 0;
 constexpr int NOTMUCH_VALUE_MESSAGE_ID = 1;
 const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
@@ -27,7 +29,7 @@ drop_triggers(sqlite3 *db)
 	 : { "tag_delete", "tag_insert", "link_delete", "link_insert" })
     sqlexec (db, "DROP TRIGGER IF EXISTS %s;", trigger);
   for (const char *table
-	 : { "modified_docids", "deleted_xapian_dirs", "modified_hashes" })
+	 : { "modified_docids", "modified_xapian_dirs", "modified_hashes" })
     sqlexec(db, "DROP TABLE IF EXISTS %s;", table);
 }
 
@@ -39,7 +41,6 @@ set_triggers(sqlite3 *db)
 CREATE TEMP TABLE IF NOT EXISTS modified_docids (
   docid INTEGER PRIMARY KEY,
   new INTEGER);
-DELETE FROM modified_docids;
 CREATE TEMP TRIGGER tag_delete AFTER DELETE ON main.tags
   WHEN old.docid NOT IN (SELECT docid FROM modified_docids)
   BEGIN INSERT INTO modified_docids (docid, new) VALUES (old.docid, 0); END;
@@ -47,13 +48,10 @@ CREATE TEMP TRIGGER tag_insert AFTER INSERT ON main.tags
   WHEN new.docid NOT IN (SELECT docid FROM modified_docids)
   BEGIN INSERT INTO modified_docids (docid, new) VALUES (new.docid, 0); END;
 
-CREATE TEMP TABLE IF NOT EXISTS deleted_xapian_dirs (
-  dir_docid INTEGER PRIMARY KEY,
-  dir_path TEXT UNIQUE); 
-DELETE FROM deleted_xapian_dirs;
+CREATE TEMP TABLE IF NOT EXISTS modified_xapian_dirs (
+  dir_docid INTEGER PRIMARY KEY);
 
 CREATE TEMP TABLE IF NOT EXISTS modified_hashes (hash_id INTEGER PRIMARY KEY);
-DELETE FROM modified_hashes;
 CREATE TEMP TRIGGER link_delete AFTER DELETE ON xapian_files
   WHEN old.hash_id NOT IN (SELECT hash_id FROM modified_hashes)
   BEGIN INSERT INTO modified_hashes (hash_id) VALUES (old.hash_id); END;
@@ -247,7 +245,7 @@ xapian_get_unique_posting (const Xapian::Database &xdb, const string &term)
   Xapian::PostingIterator pi = xdb.postlist_begin (term),
     pe = xdb.postlist_end (term);
   if (pi == pe)
-    throw range_error (string() + "xapian term " + term + " has no postings");
+    throw range_error (string("xapian term ") + term + " has no postings");
   i64 ret = *pi;
   if (++pi != pe)
     cerr << "warning: xapian term " << term << " has multiple postings\n";
@@ -255,29 +253,70 @@ xapian_get_unique_posting (const Xapian::Database &xdb, const string &term)
 }
 
 static void
-xapian_scan_directories (sqlite3 *sqldb, Xapian::Database xdb)
+xapian_scan_directories (sqlite3 *sqldb, Xapian::Database &xdb)
 {
-  sqlexec (sqldb, "DROP TABLE IF EXISTS old_xapian_dirs; "
-	   "ALTER TABLE xapian_dirs RENAME TO old_xapian_dirs; "
-	   "%s", xapian_dirs_def);
-  sqlstmt_t insert (sqldb,
-      "INSERT INTO xapian_dirs (dir_path, dir_docid) VALUES (?, ?);");
+  sqlstmt_t
+    scandirs(sqldb, "SELECT dir_path, dir_docid, dir_mtime FROM xapian_dirs"
+	     " ORDER BY dir_path;"),
+    deldir(sqldb, "DELETE FROM xapian_dirs WHERE dir_docid = ?;"),
+    delfiles(sqldb, "DELETE FROM xapian_files WHERE dir_docid = ?;"),
+    adddir(sqldb, "INSERT INTO xapian_dirs (dir_path, dir_docid, dir_mtime)"
+	   " VALUES (?, ?, ?);"),
+    upddir(sqldb, "UPDATE xapian_dirs SET dir_mtime = ? WHERE dir_docid = ?;"),
+    flagdir(sqldb, "INSERT INTO modified_xapian_dirs (dir_docid) VALUES (?);");
 
-  for (Xapian::TermIterator
-         ti = xdb.allterms_begin(notmuch_directory_prefix),
-         te = xdb.allterms_end(notmuch_directory_prefix);
-       ti != te; ti++) {
-    string dir = (*ti).substr(notmuch_directory_prefix.length());
-    if (!dir_contains_messages(dir))
+
+  Xapian::TermIterator
+    ti = xdb.allterms_begin(notmuch_directory_prefix),
+    te = xdb.allterms_end(notmuch_directory_prefix);
+  scandirs.step();
+  while (ti != te || scandirs.row()) {
+    int d;  // >0 if only sqlite valid, <0 if only xapian valid
+    string dir;
+    if (!scandirs.row()) {
+      dir = (*ti).substr(notmuch_directory_prefix.length());
+      d = -1;
+    }
+    else if (ti == te)
+      d = 1;
+    else {
+      dir = (*ti).substr(notmuch_directory_prefix.length());
+      d = dir.compare(scandirs.c_str(0));
+    }
+
+    if (d > 0) {
+      deldir.reset().param(scandirs.value(1)).step();
+      delfiles.reset().param(scandirs.value(1)).step();
+      scandirs.step();
       continue;
-    insert.reset().param(dir, i64(xapian_get_unique_posting(xdb, *ti))).step();
-  }
+    }
 
-  sqlexec (sqldb, "INSERT INTO deleted_xapian_dirs (dir_docid, dir_path)"
-	   " SELECT dir_docid, dir_path from old_xapian_dirs"
-	   " EXCEPT SELECT dir_docid, dir_path from xapian_dirs;");
-  sqlexec (sqldb, "DELETE FROM xapian_files"
-	   " WHERE dir_docid IN (SELECT dir_docid FROM deleted_xapian_dirs);");
+    Xapian::docid dir_docid = xapian_get_unique_posting(xdb, *ti);
+    if (d == 0 && dir_docid != scandirs.integer(1)) {
+      deldir.reset().param(scandirs.value(1)).step();
+      delfiles.reset().param(scandirs.value(1)).step();
+      scandirs.step();
+      continue;
+    }
+
+    time_t mtime = Xapian::sortable_unserialise
+      (xdb.get_document(dir_docid).get_value(NOTMUCH_VALUE_TIMESTAMP));
+    if (d < 0) {
+      deldir.reset().param(i64(dir_docid)).step();
+      delfiles.reset().param(i64(dir_docid)).step();
+      adddir.reset().param(dir, i64(dir_docid), i64(mtime)).step();
+      flagdir.reset().param(i64(dir_docid)).step();
+      ++ti;
+      continue;
+    }
+
+    if (mtime != scandirs.integer(2)) {
+      flagdir.reset().param(i64(dir_docid)).step();
+      upddir.reset().param(i64(mtime), i64(dir_docid));
+    }
+    ++ti;
+    scandirs.step();
+  }
 }
 
 class fileops {
@@ -423,7 +462,9 @@ static void
 xapian_scan_filenames (sqlite3 *db, const string &maildir,
 		       const writestamp &ws, Xapian::Database xdb)
 {
-  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs;");
+  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs"
+		     " WHERE dir_docid IN"
+		     " (SELECT dir_docid FROM modified_xapian_dirs);");
   fileops f (db, ws);
 
   while (dirscan.step().row()) {
