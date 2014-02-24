@@ -579,6 +579,8 @@ msg_sync::get_dir_docid (const string &dir, bool create)
     notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
   if (err)
     throw runtime_error (dir + ": " + notmuch_status_to_string(err));
+  if (!dirp)
+    throw runtime_error (dir + ": not in xapian database");
   i64 dir_docid = notmuch_directory_get_document_id(dirp);
   notmuch_directory_destroy(dirp);
 
@@ -697,28 +699,18 @@ msg_sync::hash_sync(const versvector &rvv,
     lhi = hashdb.info();
   }
 
-  /* Adjust link counts in database */
-  for (auto li : needlinks)
-    if (li.second != 0) {
-      i64 dir_docid = get_dir_docid(li.first, li.second > 0);
-      if (dir_docid == bad_dir_docid)
-	continue;
-      i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
-      if (newcount > 0)
-	set_link_count_.reset()
-	  .param(hashdb.hash_id(), dir_docid, newcount).step();
-      else
-	delete_link_count_.reset().param(hashdb.hash_id(), dir_docid).step();
-    }
-
   /* Set writestamp for new link counts */
   const writestamp *wsp = links_conflict ? &mystamp_ : &rhi.hash_stamp;
   update_hash_stamp_.reset()
     .param(wsp->first, wsp->second, hashdb.hash_id()).step();
 
+  auto save_needlinks = needlinks;
+
   /* add missing links */
   for (auto li : needlinks)
     for (; li.second > 0; --li.second) {
+      // XXX this sucks because notmuch won't give us a dir_docid
+      // until the message is in the database.
       i64 dir_id = get_dir_docid (li.first, true);
       if (dir_id == bad_dir_docid)
 	throw runtime_error ("no dir_id for " + li.first);
@@ -780,6 +772,20 @@ msg_sync::hash_sync(const versvector &rvv,
 
   if (new_msgid && docid_valid)
     record_docid_.param(rhi.message_id, docid).step().reset();
+
+  /* Adjust link counts in database */
+  for (auto li : save_needlinks)
+    if (li.second != 0) {
+      i64 dir_docid = get_dir_docid(li.first, li.second > 0);
+      if (dir_docid == bad_dir_docid)
+	continue;
+      i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
+      if (newcount > 0)
+	set_link_count_.reset()
+	  .param(hashdb.hash_id(), dir_docid, newcount).step();
+      else
+	delete_link_count_.reset().param(hashdb.hash_id(), dir_docid).step();
+    }
 
   if (clean_trash)
     unlink (trashname(hashdb.maildir, rhi.hash).c_str());
