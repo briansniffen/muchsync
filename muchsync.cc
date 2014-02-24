@@ -311,7 +311,6 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
     writestamp ws { self, vers };
 
     xapian_scan (sqldb, ws, maildir);
-    //scan_maildir (sqldb, ws, maildir);
   }
   catch (...) {
     sqlexec (sqldb, "ROLLBACK TO localsync;");
@@ -384,7 +383,7 @@ usage: muchsync\n\
 \n\
 Additional options:\n\
    -C file       Specify path to notmuch config file\n\
-   -F            Don't assume files in maildirs are immutable\n\
+   -F            Disable optimizations and do full maildir scan\n\
    -v            Increase verbosity\n\
    -r path       Specify path to notmuch executable on server\n\
    -s ssh-cmd    Specify ssh command and arguments\n\
