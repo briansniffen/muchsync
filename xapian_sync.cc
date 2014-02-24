@@ -26,19 +26,26 @@ drop_triggers(sqlite3 *db)
   for (const char *trigger
 	 : { "tag_delete", "tag_insert", "link_delete", "link_insert" })
     sqlexec (db, "DROP TRIGGER IF EXISTS %s;", trigger);
+  for (const char *table
+	 : { "modified_docids", "deleted_xapian_dirs", "modified_hashes" })
+    sqlexec(db, "DROP TABLE IF EXISTS %s;", table);
 }
 
 static void
-set_triggers(sqlite3 *db, const writestamp &ws)
+set_triggers(sqlite3 *db)
 {
   drop_triggers (db);
   sqlexec(db, R"(
+CREATE TEMP TABLE IF NOT EXISTS modified_docids (
+  docid INTEGER PRIMARY KEY,
+  new INTEGER);
+DELETE FROM modified_docids;
 CREATE TEMP TRIGGER tag_delete AFTER DELETE ON main.tags
-  BEGIN UPDATE message_ids SET replica = %lld, version = %lld
-        WHERE docid = old.docid; END;
+  WHEN old.docid NOT IN (SELECT docid FROM modified_docids)
+  BEGIN INSERT INTO modified_docids (docid, new) VALUES (old.docid, 0); END;
 CREATE TEMP TRIGGER tag_insert AFTER INSERT ON main.tags
-  BEGIN UPDATE message_ids SET replica = %lld, version = %lld
-        WHERE docid = new.docid; END;
+  WHEN new.docid NOT IN (SELECT docid FROM modified_docids)
+  BEGIN INSERT INTO modified_docids (docid, new) VALUES (new.docid, 0); END;
 
 CREATE TEMP TABLE IF NOT EXISTS deleted_xapian_dirs (
   dir_docid INTEGER PRIMARY KEY,
@@ -53,8 +60,7 @@ CREATE TEMP TRIGGER link_delete AFTER DELETE ON xapian_files
 CREATE TEMP TRIGGER link_insert AFTER INSERT ON xapian_files
   WHEN new.hash_id NOT IN (SELECT hash_id FROM modified_hashes)
   BEGIN INSERT INTO modified_hashes (hash_id) VALUES (new.hash_id); END;
-)",
-	  ws.first, ws.second, ws.first, ws.second);
+)");
 }
 
 template<typename T> void
@@ -156,7 +162,7 @@ term_from_tag (const string &tag)
 }
 
 static void
-xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
+xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb, const writestamp &ws)
 {
   sqlstmt_t
     scan (sqldb, "SELECT docid FROM tags WHERE tag = ? ORDER BY docid ASC;"),
@@ -187,6 +193,10 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb)
 	   del_tag.reset().bind_value(1, sp->value(0)).step();
        });
   }
+
+  sqlexec(sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
+	  " WHERE docid IN (SELECT docid FROM modified_docids WHERE new = 0);",
+	  ws.first, ws.second);
 }
 
 static void
@@ -194,12 +204,14 @@ xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
 			 Xapian::Database xdb)
 {
   sqlstmt_t
-    scan (sqldb,
+    scan(sqldb,
 	  "SELECT message_id, docid FROM message_ids ORDER BY docid ASC;"),
-    add_message (sqldb,
-		 "INSERT INTO message_ids (message_id, docid, replica, version)"
-		 " VALUES (?, ?, %lld, %lld);", ws.first, ws.second),
-    del_message (sqldb, "DELETE FROM message_ids WHERE docid = ?;");
+    add_message(sqldb,
+		"INSERT INTO message_ids (message_id, docid, replica, version)"
+		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second),
+    flag_new_message(sqldb, "INSERT INTO modified_docids (docid, new)"
+		     " VALUES (?, 1);"),
+    del_message(sqldb, "DELETE FROM message_ids WHERE docid = ?;");
 
   Xapian::ValueIterator
     vi = xdb.valuestream_begin (NOTMUCH_VALUE_MESSAGE_ID),
@@ -210,9 +222,13 @@ xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
      [] (sqlstmt_t &s, Xapian::ValueIterator &vi) -> int {
        return s.integer(1) - vi.get_docid();
      },
-     [&add_message,&del_message] (sqlstmt_t *sp, Xapian::ValueIterator *vip) {
-       if (!sp)
-	 add_message.reset().param(**vip, i64(vip->get_docid())).step();
+     [&add_message,&del_message,&flag_new_message]
+     (sqlstmt_t *sp, Xapian::ValueIterator *vip) {
+       if (!sp) {
+	 i64 docid = vip->get_docid();
+	 add_message.reset().param(**vip, docid).step();
+	 flag_new_message.reset().param(docid).step();
+       }
        else if (!vip)
 	 del_message.reset().param(sp->value(1)).step();
        else if (sp->str(0) != **vip) {
@@ -548,11 +564,11 @@ xapian_scan(sqlite3 *sqldb, writestamp ws, string maildir)
     maildir = ".";
   print_time ("starting scan of Xapian database");
   Xapian::Database xdb (maildir + "/.notmuch/xapian");
-  set_triggers(sqldb, ws);
+  set_triggers(sqldb);
   print_time ("opened Xapian");
   xapian_scan_message_ids (sqldb, ws, xdb);
   print_time ("scanned message IDs");
-  xapian_scan_tags (sqldb, xdb);
+  xapian_scan_tags (sqldb, xdb, ws);
   print_time ("scanned tags");
   xapian_scan_directories (sqldb, xdb);
   print_time ("scanned directories in xapian");
