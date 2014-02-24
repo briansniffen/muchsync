@@ -1,8 +1,6 @@
 
-AM_CPPFLAGS = $(BOOST_CPPFLAGS) $(sqlite3_CFLAGS) $(libcrypto_CFLAGS)	\
-	$(xapian_CPPFLAGS)
-LDADD = $(BOOST_LDFLAGS) $(BOOST_IOSTREAMS_LIB) $(sqlite3_LIBS)	\
-	$(libcrypto_LIBS) $(xapian_LIBS) -lnotmuch
+AM_CPPFLAGS = $(sqlite3_CFLAGS) $(libcrypto_CFLAGS) $(xapian_CPPFLAGS)
+LDADD = $(sqlite3_LIBS)	$(libcrypto_LIBS) $(xapian_LIBS) -lnotmuch
 
 bin_PROGRAMS = muchsync
 
