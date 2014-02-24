@@ -585,16 +585,17 @@ resolve_one_link_conflict(const unordered_map<string,i64> &a,
 {
   if (out.find(name) != out.end())
     return;
-  if (!dir_contains_messages(name)) {
-    out[name] = max(find_default(0, a, name), find_default(0, b, name));
-    return;
-  }
-
   size_t pos = name.rfind('/');
   if (pos == string::npos)
     pos = 0;
   else
     pos++;
+  string suffix = name.substr(pos);
+  if (suffix != "cur" && suffix != "new") {
+    out[name] = max(find_default(0, a, name), find_default(0, b, name));
+    return;
+  }
+
   string base = name.substr(0, pos);
   string newpath = base + "new", curpath = base + "cur";
   i64 curval = max(find_default(0, a, curpath), find_default(0, b, curpath));

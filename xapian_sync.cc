@@ -291,6 +291,8 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database &xdb)
       continue;
     }
 
+    if (dir.empty())
+      dir = ".";
     Xapian::docid dir_docid = xapian_get_unique_posting(xdb, *ti);
     if (d == 0 && dir_docid != scandirs.integer(1)) {
       deldir.reset().param(scandirs.value(1)).step();
@@ -462,8 +464,9 @@ static void
 xapian_scan_filenames (sqlite3 *db, const string &maildir,
 		       const writestamp &ws, Xapian::Database xdb)
 {
-  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid"
-		     " FROM xapian_dirs NATURAL JOIN modified_xapian_dirs;");
+  sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs%s;",
+		     opt_fullscan ? ""
+		     : " NATURAL JOIN modified_xapian_dirs");
   fileops f (db, ws);
 
   while (dirscan.step().row()) {
@@ -490,8 +493,6 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
     unordered_map<string,Xapian::docid> to_add;
 
     while (f.scan_dir_.row() && ti != te) {
-      //string dbname = f.scan_dir_.str(1);
-      //string xname = (*ti).substr(dirtermprefixlen);
       const char *dbname = f.scan_dir_.c_str(1);
       string term = *ti;
       const char *xname = &term[dirtermprefixlen];

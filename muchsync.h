@@ -1,5 +1,6 @@
 // -*- C++ -*-
 
+#include <istream>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -68,7 +69,6 @@ std::istream &read_writestamp (std::istream &in, writestamp &ws);
 std::istream &read_sync_vector (std::istream &sb, versvector &vv);
 void sync_local_data (sqlite3 *sqldb, const string &maildir);
 
-
 /*
  * Example: getconfig(db, "key", &sqlstmt_t::integer)
  */
@@ -95,7 +95,7 @@ string percent_decode (const string &escaped);
 string cmd_output (const string &cmd);
 void cmd_iofds (int fds[2], const string &cmd);
 
-/* maildir.cc */
+/* hash.cc */
 class hash_ctx {
   SHA_CTX ctx_;
 public:
@@ -105,17 +105,6 @@ public:
   void update(const void *buf, size_t n) { SHA1_Update (&ctx_, buf, n); }
   string final();
 };
-/* Maildirs place messages in directories called "new" and "dir" */
-inline bool
-dir_contains_messages (const string &dir)
-{
-  if (dir.length() >= 4) {
-    string end (dir.substr (dir.length() - 4));
-    return end == "/cur" || end == "/new";
-  }
-  return dir == "cur" || dir == "new";
-}
-void scan_maildir (sqlite3 *sqldb, writestamp ws, string maildir);
 string get_sha (int dfd, const char *direntry, i64 *sizep);
 
 inline std::istream &
