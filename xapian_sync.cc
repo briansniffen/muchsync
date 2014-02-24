@@ -24,7 +24,7 @@ static void
 drop_triggers(sqlite3 *db)
 {
   for (const char *trigger
-	 : { "tag_delete", "tag_insert", "message_id_insert" })
+	 : { "tag_delete", "tag_insert", "link_delete", "link_insert" })
     sqlexec (db, "DROP TRIGGER IF EXISTS %s;", trigger);
 }
 
@@ -39,13 +39,22 @@ CREATE TEMP TRIGGER tag_delete AFTER DELETE ON main.tags
 CREATE TEMP TRIGGER tag_insert AFTER INSERT ON main.tags
   BEGIN UPDATE message_ids SET replica = %lld, version = %lld
         WHERE docid = new.docid; END;
+
 CREATE TEMP TABLE IF NOT EXISTS deleted_xapian_dirs (
   dir_docid INTEGER PRIMARY KEY,
   dir_path TEXT UNIQUE); 
 DELETE FROM deleted_xapian_dirs;
+
 CREATE TEMP TABLE IF NOT EXISTS modified_hashes (hash_id INTEGER PRIMARY KEY);
 DELETE FROM modified_hashes;
-)");
+CREATE TEMP TRIGGER link_delete AFTER DELETE ON xapian_files
+  WHEN old.hash_id NOT IN (SELECT hash_id FROM modified_hashes)
+  BEGIN INSERT INTO modified_hashes (hash_id) VALUES (old.hash_id); END;
+CREATE TEMP TRIGGER link_insert AFTER INSERT ON xapian_files
+  WHEN new.hash_id NOT IN (SELECT hash_id FROM modified_hashes)
+  BEGIN INSERT INTO modified_hashes (hash_id) VALUES (new.hash_id); END;
+)",
+	  ws.first, ws.second, ws.first, ws.second);
 }
 
 template<typename T> void
@@ -475,12 +484,63 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
 	}
       }
     }
+  }
+}
 
+static void
+xapian_adjust_nlinks(sqlite3 *db, writestamp ws)
+{
+  sqlstmt_t
+    newcount(db, "SELECT hash_id, dir_docid, count(*)"
+	     " FROM xapian_files NATURAL JOIN modified_hashes"
+	     " GROUP BY hash_id, dir_docid ORDER BY hash_id, dir_docid;"),
+    oldcount(db, "SELECT hash_id, dir_docid, link_count, xapian_nlinks.rowid"
+	     " FROM xapian_nlinks NATURAL JOIN modified_hashes"
+	     " ORDER BY hash_id, dir_docid;"),
+    updcount(db, "UPDATE xapian_nlinks SET link_count = ? WHERE rowid = ?;"),
+    delcount(db, "DELETE FROM xapian_nlinks WHERE rowid = ?;"),
+    addcount(db, "INSERT INTO xapian_nlinks (hash_id, dir_docid, link_count)"
+	     " VALUES (?, ?, ?);"),
+    updhash(db, "UPDATE maildir_hashes SET replica = %lld, version = %lld"
+	    " WHERE hash_id = ?;", ws.first, ws.second);
+    
+  newcount.step();
+  oldcount.step();
+  while (newcount.row() || oldcount.row()) {
+    i64 d;  // < 0 only oldcount valid, > 0 only newcount valid
+    if (!newcount.row())
+      d = -1;
+    else if (!oldcount.row())
+      d = 1;
+    else if (!(d = oldcount.integer(0) - newcount.integer(0)))
+      d = oldcount.integer(1) - newcount.integer(1);
+    if (d == 0) {
+      i64 cnt = newcount.integer(2);
+      if (cnt != oldcount.integer(2)) {
+	updhash.reset().param(newcount.value(0)).step();
+	updcount.reset().param(cnt, oldcount.value(3)).step();
+      }
+      oldcount.step();
+      newcount.step();
+    }
+    else if (d < 0) {
+      // file deleted and (hash_id, dir_id) not present newcount
+      updhash.reset().param(oldcount.value(0)).step();
+      delcount.reset().param(oldcount.value(3)).step();
+      oldcount.step();
+    }
+    else {
+      // file added and (hash_id, dir_id) not present in oldcount
+      updhash.reset().param(newcount.value(0)).step();
+      addcount.reset().param(newcount.value(0), newcount.value(1),
+			     newcount.value(2)).step();
+      newcount.step();
+    }
   }
 }
 
 void
-xapian_scan (sqlite3 *sqldb, writestamp ws, string maildir)
+xapian_scan(sqlite3 *sqldb, writestamp ws, string maildir)
 {
   while (maildir.size() > 1 && maildir.back() == '/')
     maildir.resize (maildir.size() - 1);
@@ -498,4 +558,6 @@ xapian_scan (sqlite3 *sqldb, writestamp ws, string maildir)
   print_time ("scanned directories in xapian");
   xapian_scan_filenames (sqldb, maildir, ws, xdb);
   print_time ("scanned filenames in xapian");
+  xapian_adjust_nlinks(sqldb, ws);
+  print_time ("adjusted link counts");
 }

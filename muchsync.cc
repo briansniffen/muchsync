@@ -71,7 +71,7 @@ CREATE TABLE xapian_files (
   inode INTEGER,
   hash_id INGEGER,
   PRIMARY KEY (dir_docid, name));
-CREATE INDEX xapian_files_hash_id ON xapian_files (hash_id);
+CREATE INDEX xapian_files_hash_id ON xapian_files (hash_id, dir_docid);
 CREATE TABLE maildir_hashes (
   hash_id INTEGER PRIMARY KEY,
   hash TEXT UNIQUE NOT NULL,
@@ -81,38 +81,12 @@ CREATE TABLE maildir_hashes (
   version INTEGER);
 CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
 CREATE INDEX maildir_hashes_writestamp ON maildir_hashes (replica, version);
-)";
-
-#if 0
-R"(
--- State from last scan of maildir, to detect changes
-CREATE TABLE maildir_dirs (
-  dir_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  dir_path TEXT UNIQUE NOT NULL,
-  ctime REAL,
-  mtime REAL,
-  inode INTEGER,
-  dir_docid INTEGER);
-CREATE TABLE maildir_files (
-  dir_id INTEGER NOT NULL,
-  name TEXT NOT NULL COLLATE BINARY,
-  mtime REAL,
-  inode INTEGER,
+CREATE TABLE xapian_nlinks (
   hash_id INTEGER NOT NULL,
-  PRIMARY KEY (dir_id, name));
-CREATE INDEX maildir_dir_hash_index ON maildir_files (dir_id, hash_id);
-CREATE INDEX maildir_hash_dir_index ON maildir_files (hash_id, dir_id);
--- poor man's foreign key
-CREATE TRIGGER dir_delete_trigger AFTER DELETE ON maildir_dirs
-  BEGIN DELETE FROM maildir_files WHERE dir_id = old.dir_id;
-  END;
-CREATE TABLE maildir_links (
-  hash_id INTEGER NOT NULL,
-  dir_id INTEGER NOT NULL,
+  dir_docid INTEGER NOT NULL,
   link_count INTEGER,
-  PRIMARY KEY (hash_id, dir_id));
+  PRIMARY KEY (hash_id, dir_docid));
 )";
-#endif
 
 const char xapian_dirs_def[] =
 R"(CREATE TABLE xapian_dirs (
