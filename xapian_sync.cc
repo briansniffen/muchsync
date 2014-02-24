@@ -582,7 +582,8 @@ xapian_adjust_nlinks(sqlite3 *db, writestamp ws)
     }
     else if (d < 0) {
       // file deleted and (hash_id, dir_id) not present newcount
-      updhash.reset().param(oldcount.value(0)).step();
+      if (oldcount.integer(2))
+	updhash.reset().param(oldcount.value(0)).step();
       delcount.reset().param(oldcount.value(3)).step();
       oldcount.step();
     }

@@ -38,6 +38,7 @@ class hash_lookup {
   i64 hash_id_;
   vector<pair<string,string>> links_;
   ifstream content_;
+  i64 docid_;
 public:
   const string maildir;
 
@@ -51,6 +52,7 @@ public:
     assert (ok());
     return links_;
   }
+  i64 docid() const { assert (nlinks()); return docid_; }
   int nlinks() const { return links().size(); }
   string link_path(int i) const {
     auto &lnk = links().at(i);
@@ -84,7 +86,7 @@ class msg_sync {
   sqlite3 *db_;
   notmuch_database_t *notmuch_ = nullptr;
   sqlstmt_t update_hash_stamp_;
-  sqlstmt_t add_link_;
+  sqlstmt_t add_file_;
   sqlstmt_t set_link_count_;
   sqlstmt_t delete_link_count_;
   sqlstmt_t clear_tags_;
@@ -94,9 +96,9 @@ class msg_sync {
   unordered_map<string,i64> dir_ids_;
   writestamp mystamp_;
 
-  static constexpr i64 bad_dir_id = -1;
+  static constexpr i64 bad_dir_docid = -1;
   notmuch_database_t *notmuch();
-  i64 get_dir_id (const string &dir, bool create);
+  i64 get_dir_docid (const string &dir, bool create);
 public:
   hash_lookup hashdb;
   tag_lookup tagdb;
@@ -308,8 +310,8 @@ get_mystamp(sqlite3 *db)
 hash_lookup::hash_lookup (const string &m, sqlite3 *db)
   : gethash_(db, "SELECT hash_id, size, message_id, replica, version"
 	     " FROM maildir_hashes WHERE hash = ?;"),
-    getlinks_(db, "SELECT dir_path, name"
-	      " FROM maildir_files JOIN maildir_dirs USING (dir_id)"
+    getlinks_(db, "SELECT dir_path, name, docid"
+	      " FROM xapian_files JOIN xapian_dirs USING (dir_docid)"
 	      " WHERE hash_id = ?;"),
     makehash_(db, "INSERT INTO maildir_hashes"
 	      " (hash, size, message_id, replica, version)"
@@ -333,11 +335,14 @@ hash_lookup::lookup (const string &hash)
   hi_.hash_stamp.second = gethash_.integer(4);
   hi_.dirs.clear();
   links_.clear();
+  docid_ = -1;
   for (getlinks_.reset().param(hash_id_).step();
        getlinks_.row(); getlinks_.step()) {
     string dir = getlinks_.str(0), name = getlinks_.str(1);
     ++hi_.dirs[dir];
     links_.emplace_back(dir, name);
+    if (docid_ == -1)
+      docid_ = getlinks_.integer(2);
   }
   return ok_ = true;
 }
@@ -453,13 +458,13 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
   : db_(db),
     update_hash_stamp_(db_, "UPDATE maildir_hashes "
 		       "SET replica = ?, version = ? WHERE hash_id = ?;"),
-    add_link_(db_, "INSERT INTO maildir_files"
-	      " (dir_id, name, mtime, inode, hash_id)"
-	      " VALUES (?, ?, ?, ?, ?);"),
-    set_link_count_(db_, "INSERT OR REPLACE INTO maildir_links"
-		    " (hash_id, dir_id, link_count) VALUES (?, ?, ?);"),
-    delete_link_count_(db_, "DELETE FROM maildir_links"
-		       " WHERE (hash_id = ?) & (dir_id = ?);"),
+    add_file_(db_, "INSERT INTO xapian_files"
+	      " (dir_docid, name, docid, mtime, inode, hash_id)"
+	      " VALUES (?, ?, ?, ?, ?, ?);"),
+    set_link_count_(db_, "INSERT OR REPLACE INTO xapian_nlinks"
+		    " (hash_id, dir_docid, link_count) VALUES (?, ?, ?);"),
+    delete_link_count_(db_, "DELETE FROM xapian_nlinks"
+		       " WHERE (hash_id = ?) & (dir_docid = ?);"),
     clear_tags_(db_, "DELETE FROM tags WHERE docid = ?;"),
     add_tag_(db_, "INSERT OR IGNORE INTO tags (docid, tag) VALUES (?, ?);"),
     update_message_id_stamp_(db_, "UPDATE message_ids SET"
@@ -470,7 +475,7 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
     hashdb (maildir, db_),
     tagdb (db_)
 {
-  sqlstmt_t s (db_, "SELECT dir_path, dir_id FROM maildir_dirs;");
+  sqlstmt_t s (db_, "SELECT dir_path, dir_docid FROM xapian_dirs;");
   while (s.step().row()) {
     string dir {s.str(0)};
     i64 dir_id {s.integer(1)};
@@ -543,8 +548,19 @@ recursive_mkdir (string path)
   }
 }
 
+inline Xapian::docid
+notmuch_directory_get_document_id (const notmuch_directory_t *dir)
+{
+  struct fake_directory {
+    notmuch_database_t *notmuch;
+    Xapian::docid doc_id;
+  };
+  return reinterpret_cast<const fake_directory *>(dir)->doc_id;
+}
+
+
 i64
-msg_sync::get_dir_id (const string &dir, bool create)
+msg_sync::get_dir_docid (const string &dir, bool create)
 {
   auto i = dir_ids_.find(dir);
   if (i != dir_ids_.end())
@@ -553,16 +569,24 @@ msg_sync::get_dir_id (const string &dir, bool create)
   if (!sanity_check_path (dir))
     throw runtime_error (dir + ": illegal directory name");
   if (!create)
-    return bad_dir_id;
+    return bad_dir_docid;
   string path = hashdb.maildir + "/" + dir;
   if (!is_dir(path) && !recursive_mkdir(path))
     throw runtime_error (path + ": cannot create directory");
-  
-  sqlexec (db_, "INSERT INTO maildir_dirs (dir_path) VALUES (%Q);",
-	   dir.c_str());
-  i64 dir_id = sqlite3_last_insert_rowid (db_);
-  dir_ids_.emplace(dir, dir_id);
-  return dir_id;
+
+  notmuch_directory_t *dirp;
+  notmuch_status_t err =
+    notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
+  if (err)
+    throw runtime_error (dir + ": " + notmuch_status_to_string(err));
+  i64 dir_docid = notmuch_directory_get_document_id(dirp);
+  notmuch_directory_destroy(dirp);
+
+  sqlexec (db_, "INSERT OR REPLACE INTO xapian_dirs"
+	   " (dir_path, dir_docid, mtime) VALUES (%Q, %lld, -1);",
+	   dir.c_str(), i64(dir_docid));
+  dir_ids_.emplace(dir, dir_docid);
+  return dir_docid;
 }
 
 inline Xapian::docid
@@ -650,8 +674,10 @@ msg_sync::hash_sync(const versvector &rvv,
   for (auto i : lhi.dirs)
     needlinks[i.first] -= i.second;
   for (auto i : needlinks)
-    if (i.second > 0)
+    if (i.second > 0) {
       needsource = true;
+      break;
+    }
 
   /* find copy of content, if needed */
   string source;
@@ -674,15 +700,15 @@ msg_sync::hash_sync(const versvector &rvv,
   /* Adjust link counts in database */
   for (auto li : needlinks)
     if (li.second != 0) {
-      i64 dir_id = get_dir_id(li.first, li.second > 0);
-      if (dir_id == bad_dir_id)
+      i64 dir_docid = get_dir_docid(li.first, li.second > 0);
+      if (dir_docid == bad_dir_docid)
 	continue;
       i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
       if (newcount > 0)
 	set_link_count_.reset()
-	  .param(hashdb.hash_id(), dir_id, newcount).step();
+	  .param(hashdb.hash_id(), dir_docid, newcount).step();
       else
-	delete_link_count_.reset().param(hashdb.hash_id(), dir_id).step();
+	delete_link_count_.reset().param(hashdb.hash_id(), dir_docid).step();
     }
 
   /* Set writestamp for new link counts */
@@ -693,17 +719,14 @@ msg_sync::hash_sync(const versvector &rvv,
   /* add missing links */
   for (auto li : needlinks)
     for (; li.second > 0; --li.second) {
-      i64 dir_id = get_dir_id (li.first, true);
-      if (dir_id == bad_dir_id)
+      i64 dir_id = get_dir_docid (li.first, true);
+      if (dir_id == bad_dir_docid)
 	throw runtime_error ("no dir_id for " + li.first);
       string newname (maildir_name());
       string target = hashdb.maildir + "/" + li.first + "/" + newname;
       if (link (source.c_str(), target.c_str()))
 	throw runtime_error (string("link (\"") + source + "\", \""
 			     + target + "\"): " + strerror(errno));
-      add_link_.reset().param(dir_id, newname, ts_to_double(sb.st_mtim),
-			      i64(sb.st_ino), hashdb.hash_id()).step();
-
       notmuch_message_t *message;
       notmuch_status_t err =
 	notmuch_database_add_message (notmuch(), target.c_str(), &message);
@@ -715,6 +738,8 @@ msg_sync::hash_sync(const versvector &rvv,
       if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
 	new_msgid = true;
       notmuch_message_destroy (message);
+      add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.st_mtim),
+			      i64(sb.st_ino), hashdb.hash_id()).step();
     }
   /* remove extra links */
   if (!links_conflict)
@@ -884,17 +909,17 @@ send_links (sqlite3 *sqldb, const string &prefix, ostream &out)
 {
   unordered_map<i64,string> dirs;
   {
-    sqlstmt_t d (sqldb, "SELECT dir_id, dir_path FROM maildir_dirs;");
+    sqlstmt_t d (sqldb, "SELECT dir_docid, dir_path FROM xapian_dirs;");
     while (d.step().row())
       dirs.emplace (d.integer(0), d.str(1));
   }
 
   sqlstmt_t changed (sqldb, R"(
 SELECT h.hash_id, hash, size, message_id, h.replica, h.version,
-       dir_id, link_count
+       dir_docid, link_count
 FROM (peer_vector p JOIN maildir_hashes h
       ON ((p.replica = h.replica) & (p.known_version < h.version)))
-LEFT OUTER JOIN maildir_links USING (hash_id);)");
+LEFT OUTER JOIN xapian_nlinks USING (hash_id);)");
   
   i64 count = 0;
   hash_info hi;
