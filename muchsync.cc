@@ -144,7 +144,7 @@ dbcreate (const char *path)
     setconfig (db, "self", self);
     setconfig (db, "last_scan", 0.0);
     sqlexec (db, "INSERT INTO sync_vector (replica, version)"
-	     " VALUES (%lld, 0);", self);
+	     " VALUES (%lld, 1);", self);
     sqlexec (db, "COMMIT;");
   } catch (sqlerr_t exc) {
     sqlite3_close_v2 (db);

@@ -25,7 +25,7 @@ struct hash_info {
   string hash;
   i64 size = -1;
   string message_id;
-  writestamp hash_stamp = {-1, -1};
+  writestamp hash_stamp = {0, 0};
   unordered_map<string,i64> dirs;
 };
 
@@ -64,7 +64,7 @@ public:
 
 struct tag_info {
   string message_id;
-  writestamp tag_stamp = {-1, -1};
+  writestamp tag_stamp = {0, 0};
   unordered_set<string> tags;
 };
 
@@ -468,8 +468,9 @@ msg_sync::msg_sync (const string &maildir, sqlite3 *db)
     add_tag_(db_, "INSERT OR IGNORE INTO tags (docid, tag) VALUES (?, ?);"),
     update_message_id_stamp_(db_, "UPDATE message_ids SET"
 			     " replica = ?, version = ? WHERE docid = ?;"),
-    record_docid_(db_, "INSERT OR IGNORE INTO message_ids (message_id, docid)"
-		  " VALUES (?, ?);"),
+    record_docid_(db_, "INSERT OR IGNORE INTO message_ids"
+		  " (message_id, docid, replica, version)"
+		  " VALUES (?, ?, 0, 0);"),
     mystamp_(get_mystamp(db_)),
     hashdb (maildir, db_),
     tagdb (db_)
@@ -521,7 +522,7 @@ is_dir (const string &path)
   return !stat (path.c_str(), &sb) && (errno = ENOTDIR, S_ISDIR (sb.st_mode));
 }
 
-bool
+static bool
 recursive_mkdir(string path)
 {
   string::size_type n = 0;
@@ -547,7 +548,7 @@ recursive_mkdir(string path)
   }
 }
 
-bool
+static bool
 maildir_mkdir(string path)
 {
   if (!recursive_mkdir(path))
@@ -584,40 +585,6 @@ notmuch_directory_get_document_id (const notmuch_directory_t *dir)
   return reinterpret_cast<const fake_directory *>(dir)->doc_id;
 }
 
-#if 0
-i64
-msg_sync::get_dir_docid (const string &dir, bool create)
-{
-  auto i = dir_ids_.find(dir);
-  if (i != dir_ids_.end())
-    return i->second;
-
-  if (!sanity_check_path (dir))
-    throw runtime_error (dir + ": illegal directory name");
-  if (!create)
-    return bad_dir_docid;
-  string path = hashdb.maildir + "/" + dir;
-  if (!is_dir(path) && !recursive_mkdir(path))
-    throw runtime_error (path + ": cannot create directory");
-
-  notmuch_directory_t *dirp;
-  notmuch_status_t err =
-    notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
-  if (err)
-    throw runtime_error (dir + ": " + notmuch_status_to_string(err));
-  if (!dirp)
-    throw runtime_error (dir + ": not in xapian database");
-  i64 dir_docid = notmuch_directory_get_document_id(dirp);
-  notmuch_directory_destroy(dirp);
-
-  sqlexec (db_, "INSERT OR REPLACE INTO xapian_dirs"
-	   " (dir_path, dir_docid, dir_mtime) VALUES (%Q, %lld, -1);",
-	   dir.c_str(), i64(dir_docid));
-  dir_ids_.emplace(dir, dir_docid);
-  return dir_docid;
-}
-#endif
-
 i64
 msg_sync::get_dir_docid (const string &dir)
 {
@@ -630,12 +597,17 @@ msg_sync::get_dir_docid (const string &dir)
     notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
   if (err)
     throw runtime_error (dir + ": " + notmuch_status_to_string(err));
+#if 1
+  if (!dirp)
+    throw runtime_error (dir + ": not in xapian database");
+#else
   if (!dirp) {
     notmuch_close();
     notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
     if (!dirp)
       throw runtime_error (dir + ": not in xapian database");
   }
+#endif
 
   i64 dir_docid = notmuch_directory_get_document_id(dirp);
   notmuch_directory_destroy(dirp);
@@ -722,7 +694,7 @@ msg_sync::hash_sync(const versvector &rvv,
     lhi.hash = rhi.hash;
 
   bool links_conflict =
-    lhi.hash_stamp.second > find_default (-1, rvv, lhi.hash_stamp.first);
+    lhi.hash_stamp.second > find_default (0, rvv, lhi.hash_stamp.first);
   bool deleting = rhi.dirs.empty() && (!links_conflict || lhi.dirs.empty());
 
   unordered_map<string,i64> needlinks
@@ -874,7 +846,7 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
   assert (tagdb.docid() == notmuch_message_get_doc_id(message));
 
   bool tags_conflict
-    = lti.tag_stamp.second > find_default (-1, rvv, lti.tag_stamp.first);
+    = lti.tag_stamp.second > find_default (0, rvv, lti.tag_stamp.first);
   unordered_set<string> newtags (rti.tags);
   if (tags_conflict) {
     // Logically OR most tags
@@ -954,9 +926,9 @@ CREATE TEMP TABLE IF NOT EXISTS peer_vector (
   known_version INTEGER);
 DELETE FROM peer_vector;
 INSERT OR REPLACE INTO peer_vector
-  SELECT DISTINCT replica, -1 FROM message_ids;
+  SELECT DISTINCT replica, 0 FROM message_ids;
 INSERT OR REPLACE INTO peer_vector
-  SELECT DISTINCT replica, -1 FROM maildir_hashes;
+  SELECT DISTINCT replica, 0 FROM maildir_hashes;
 )");
   sqlstmt_t pvadd (sqldb, "INSERT OR REPLACE INTO"
 		   " peer_vector (replica, known_version) VALUES (?, ?);");
@@ -1318,7 +1290,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     sqlstmt_t udvv(db, "INSERT OR REPLACE INTO sync_vector (replica, version)"
 		   " VALUES (?, ?);");
     for (auto i : remotevv)
-      if (i.second > find_default (-1, localvv, i.first))
+      if (i.second > find_default (0, localvv, i.first))
 	udvv.reset().param(i.first, i.second).step();
   }
 
