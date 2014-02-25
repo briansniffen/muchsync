@@ -432,7 +432,7 @@ server ()
 }
 
 static void
-create_config(istream &in, ostream &out, const string &maildir)
+create_config(istream &in, ostream &out, string &maildir)
 {
   if (!maildir.size() || !maildir.front())
     throw runtime_error ("illegal empty maildir path\n");
@@ -455,12 +455,11 @@ create_config(istream &in, ostream &out, const string &maildir)
   write(fd, conf.c_str(), conf.size());
   close(fd);
 
-  conf = maildir;
-  if (conf[0] != '/') {
+  if (maildir[0] != '/') {
     const char *p = getenv("PWD");
     if (!p)
       throw runtime_error ("no PWD in environment\n");
-    conf = p + ("/" + maildir);
+    maildir = p + ("/" + maildir);
   }
 
   vector<const char *> av;
@@ -468,7 +467,7 @@ create_config(istream &in, ostream &out, const string &maildir)
   av.push_back("config");
   av.push_back("set");
   av.push_back("database.path");
-  av.push_back(conf.c_str());
+  av.push_back(maildir.c_str());
   av.push_back(nullptr);
 
   pid_t pid = fork();

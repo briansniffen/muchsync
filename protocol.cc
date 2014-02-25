@@ -96,9 +96,8 @@ class msg_sync {
   unordered_map<string,i64> dir_ids_;
   writestamp mystamp_;
 
-  static constexpr i64 bad_dir_docid = -1;
   notmuch_database_t *notmuch();
-  i64 get_dir_docid (const string &dir, bool create);
+  i64 get_dir_docid (const string &dir);
 public:
   hash_lookup hashdb;
   tag_lookup tagdb;
@@ -523,7 +522,7 @@ is_dir (const string &path)
 }
 
 bool
-recursive_mkdir (string path)
+recursive_mkdir(string path)
 {
   string::size_type n = 0;
   for (;;) {
@@ -548,6 +547,33 @@ recursive_mkdir (string path)
   }
 }
 
+bool
+maildir_mkdir(string path)
+{
+  if (!recursive_mkdir(path))
+    return false;
+  size_t pos = path.rfind('/');
+  if (pos == string::npos)
+    pos = 0;
+  else
+    pos++;
+  string prefix = path.substr(0, pos);
+  string suffix = path.substr(pos);
+  if (suffix == "new") {
+    if (!mkdir((prefix + "cur").c_str(), 0777) && opt_verbose > 0)
+      cerr << "created directory " << prefix << "cur\n";
+    if (!mkdir((prefix + "tmp").c_str(), 0777) && opt_verbose > 0)
+      cerr << "created directory " << prefix << "tmp\n";
+  }
+  else if (suffix == "cur") {
+    if (!mkdir((prefix + "new").c_str(), 0777) && opt_verbose > 0)
+      cerr << "created directory " << prefix << "new\n";
+    if (!mkdir((prefix + "tmp").c_str(), 0777) && opt_verbose > 0)
+      cerr << "created directory " << prefix << "tmp\n";
+  }
+  return true;
+}
+
 inline Xapian::docid
 notmuch_directory_get_document_id (const notmuch_directory_t *dir)
 {
@@ -558,7 +584,7 @@ notmuch_directory_get_document_id (const notmuch_directory_t *dir)
   return reinterpret_cast<const fake_directory *>(dir)->doc_id;
 }
 
-
+#if 0
 i64
 msg_sync::get_dir_docid (const string &dir, bool create)
 {
@@ -585,7 +611,36 @@ msg_sync::get_dir_docid (const string &dir, bool create)
   notmuch_directory_destroy(dirp);
 
   sqlexec (db_, "INSERT OR REPLACE INTO xapian_dirs"
-	   " (dir_path, dir_docid, mtime) VALUES (%Q, %lld, -1);",
+	   " (dir_path, dir_docid, dir_mtime) VALUES (%Q, %lld, -1);",
+	   dir.c_str(), i64(dir_docid));
+  dir_ids_.emplace(dir, dir_docid);
+  return dir_docid;
+}
+#endif
+
+i64
+msg_sync::get_dir_docid (const string &dir)
+{
+  auto i = dir_ids_.find(dir);
+  if (i != dir_ids_.end())
+    return i->second;
+
+  notmuch_directory_t *dirp;
+  notmuch_status_t err =
+    notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
+  if (err)
+    throw runtime_error (dir + ": " + notmuch_status_to_string(err));
+  if (!dirp) {
+    notmuch_close();
+    notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
+    if (!dirp)
+      throw runtime_error (dir + ": not in xapian database");
+  }
+
+  i64 dir_docid = notmuch_directory_get_document_id(dirp);
+  notmuch_directory_destroy(dirp);
+  sqlexec (db_, "INSERT OR REPLACE INTO xapian_dirs"
+	   " (dir_path, dir_docid, dir_mtime) VALUES (%Q, %lld, -1);",
 	   dir.c_str(), i64(dir_docid));
   dir_ids_.emplace(dir, dir_docid);
   return dir_docid;
@@ -709,19 +764,19 @@ msg_sync::hash_sync(const versvector &rvv,
   /* add missing links */
   for (auto li : needlinks)
     for (; li.second > 0; --li.second) {
-      // XXX this sucks because notmuch won't give us a dir_docid
-      // until the message is in the database.
-      i64 dir_id = get_dir_docid (li.first, true);
-      if (dir_id == bad_dir_docid)
-	throw runtime_error ("no dir_id for " + li.first);
+      if (!sanity_check_path(li.first))
+	break;
       string newname (maildir_name());
       string target = hashdb.maildir + "/" + li.first + "/" + newname;
-      if (link (source.c_str(), target.c_str()))
-	throw runtime_error (string("link (\"") + source + "\", \""
-			     + target + "\"): " + strerror(errno));
+      if (link(source.c_str(), target.c_str())
+	  && (errno != ENOENT
+	      || !maildir_mkdir(hashdb.maildir + "/" + li.first)
+	      || link(source.c_str(), target.c_str())))
+	  throw runtime_error (string("link (\"") + source + "\", \""
+			       + target + "\"): " + strerror(errno));
       notmuch_message_t *message;
       notmuch_status_t err =
-	notmuch_database_add_message (notmuch(), target.c_str(), &message);
+	notmuch_database_add_message(notmuch(), target.c_str(), &message);
       if (err && err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
 	throw runtime_error (hashdb.maildir + ": "
 			     + notmuch_status_to_string(err));
@@ -730,6 +785,7 @@ msg_sync::hash_sync(const versvector &rvv,
       if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
 	new_msgid = true;
       notmuch_message_destroy (message);
+      i64 dir_id = get_dir_docid (li.first);
       add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.st_mtim),
 			      i64(sb.st_ino), hashdb.hash_id()).step();
     }
@@ -776,9 +832,7 @@ msg_sync::hash_sync(const versvector &rvv,
   /* Adjust link counts in database */
   for (auto li : save_needlinks)
     if (li.second != 0) {
-      i64 dir_docid = get_dir_docid(li.first, li.second > 0);
-      if (dir_docid == bad_dir_docid)
-	continue;
+      i64 dir_docid = get_dir_docid(li.first);
       i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
       if (newcount > 0)
 	set_link_count_.reset()

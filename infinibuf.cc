@@ -33,6 +33,8 @@ infinibuf::gbump(int n)
 void
 infinibuf::pbump(int n)
 {
+  if (n == 0)
+    return;
   assert (n >= 0);
   assert (n <= psize());
   assert (!eof_);

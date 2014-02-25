@@ -162,19 +162,24 @@ term_from_tag (const string &tag)
 static void
 xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb, const writestamp &ws)
 {
+  sqlexec(sqldb, "DROP TABLE IF EXISTS dead_tags; "
+	  "CREATE TEMP TABLE dead_tags (tag TEXT PRIMARY KEY); "
+	  "INSERT INTO dead_tags SELECT DISTINCT tag FROM tags;");
   sqlstmt_t
-    scan (sqldb, "SELECT docid FROM tags WHERE tag = ? ORDER BY docid ASC;"),
+    scan (sqldb, "SELECT docid, rowid FROM tags"
+	  " WHERE tag = ? ORDER BY docid ASC;"),
     add_tag (sqldb, "INSERT INTO tags (docid, tag) VALUES (?, ?);"),
-    del_tag (sqldb, "DELETE FROM tags WHERE (docid = ?) & (tag = ?);");
+    del_tag (sqldb, "DELETE FROM tags WHERE rowid = ?;"),
+    record_tag (sqldb, "DELETE FROM dead_tags WHERE tag = ?;");
 
   for (Xapian::TermIterator ti = xdb.allterms_begin(notmuch_tag_prefix),
 	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
     string tag = tag_from_term (*ti);
     if (opt_verbose > 1)
       cerr << "  " << tag << "\n";
+    record_tag.reset().param(tag).step();
     scan.reset().bind_text(1, tag);
     add_tag.reset().bind_text(2, tag);
-    del_tag.reset().bind_text(2, tag);
 
     Xapian::PostingIterator pi = xdb.postlist_begin (*ti),
       pe = xdb.postlist_end (*ti);
@@ -188,7 +193,7 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb, const writestamp &ws)
 	 if (!sp)
 	   add_tag.reset().bind_int(1, **pp).step();
 	 else if (!pp)
-	   del_tag.reset().bind_value(1, sp->value(0)).step();
+	   del_tag.reset().bind_value(1, sp->value(1)).step();
        });
   }
 
@@ -612,6 +617,8 @@ xapian_scan(sqlite3 *sqldb, writestamp ws, string maildir)
   print_time ("scanned message IDs");
   xapian_scan_tags (sqldb, xdb, ws);
   print_time ("scanned tags");
+  sqlexec(sqldb, "DELETE FROM tags WHERE tag IN (SELECT * FROM dead_tags);");
+  print_time ("deleted dead tags");
   xapian_scan_directories (sqldb, xdb);
   print_time ("scanned directories in xapian");
   xapian_scan_filenames (sqldb, maildir, ws, xdb);
