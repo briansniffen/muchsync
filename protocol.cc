@@ -105,7 +105,7 @@ public:
   ~msg_sync();
   bool hash_sync(const versvector &remote_sync_vector,
 		 const hash_info &remote_hash_info,
-		 const string *sourcefile);
+		 const string *sourcefile, const tag_info *tip);
   bool tag_sync(const versvector &remote_sync_vector,
 		const tag_info &remote_tag_info);
   void notmuch_close() {
@@ -597,17 +597,8 @@ msg_sync::get_dir_docid (const string &dir)
     notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
   if (err)
     throw runtime_error (dir + ": " + notmuch_status_to_string(err));
-#if 1
   if (!dirp)
     throw runtime_error (dir + ": not in xapian database");
-#else
-  if (!dirp) {
-    notmuch_close();
-    notmuch_database_get_directory(notmuch(), dir.c_str(), &dirp);
-    if (!dirp)
-      throw runtime_error (dir + ": not in xapian database");
-  }
-#endif
 
   i64 dir_docid = notmuch_directory_get_document_id(dirp);
   notmuch_directory_destroy(dirp);
@@ -676,7 +667,8 @@ resolve_link_conflicts(const unordered_map<string,i64> &a,
 bool
 msg_sync::hash_sync(const versvector &rvv,
 		    const hash_info &rhi,
-		    const string *sourcep)
+		    const string *sourcep,
+		    const tag_info *tip)
 {
   hash_info lhi;
   i64 docid = -1;
@@ -746,20 +738,42 @@ msg_sync::hash_sync(const versvector &rvv,
 	      || link(source.c_str(), target.c_str())))
 	  throw runtime_error (string("link (\"") + source + "\", \""
 			       + target + "\"): " + strerror(errno));
+
+      if (tip)
+	notmuch_database_begin_atomic(notmuch());
       notmuch_message_t *message;
       notmuch_status_t err =
 	notmuch_database_add_message(notmuch(), target.c_str(), &message);
-      if (err && err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
+      if (err && err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID) {
+	if (tip)
+	  notmuch_database_end_atomic(notmuch());
 	throw runtime_error (hashdb.maildir + ": "
 			     + notmuch_status_to_string(err));
+      }
       docid = notmuch_message_get_doc_id (message);
       docid_valid = true;
       if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
 	new_msgid = true;
+
+      bool tags_updated = false;
+      if (new_msgid && tip) {
+	tags_updated = true;
+	for (auto tag : tip->tags) {
+	  if (notmuch_message_add_tag(message, tag.c_str()))
+	    tags_updated = false;
+	  try { add_tag_.param(docid, tag).step().reset(); }
+	  catch (...) { notmuch_database_end_atomic(notmuch()); throw; }
+	}
+      }
+      if (tip)
+	notmuch_database_end_atomic(notmuch());
       notmuch_message_destroy (message);
       i64 dir_id = get_dir_docid (li.first);
       add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.st_mtim),
 			      i64(sb.st_ino), hashdb.hash_id()).step();
+      if (tags_updated)
+	update_message_id_stamp_.reset()
+	  .param(tip->tag_stamp.first, tip->tag_stamp.second, docid).step();
     }
   /* remove extra links */
   if (!links_conflict)
@@ -821,7 +835,6 @@ msg_sync::hash_sync(const versvector &rvv,
 bool
 msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
 {
-
   if (!tagdb.lookup(rti.message_id)) {
     cerr << "warning: can't find " << rti.message_id << '\n';
     return false;
@@ -1009,12 +1022,14 @@ FROM (peer_vector p JOIN message_ids m
 }
 
 static bool
-send_content(hash_lookup &hashdb, const string &hash,
+send_content(hash_lookup &hashdb, tag_lookup &tagdb, const string &hash,
 	     const string &prefix, ostream &out)
 {
   streambuf *sb;
-  if (hashdb.lookup(hash) && (sb = hashdb.content())) {
-    out << prefix << hashdb.info() << '\n' << sb;
+  if (hashdb.lookup(hash) && (sb = hashdb.content())
+      && tagdb.lookup(hashdb.info().message_id)) {
+    out << prefix << hashdb.info()
+	<< ' ' << tagdb.info() << '\n' << sb;
     return true;
   }
   return false;
@@ -1094,7 +1109,7 @@ muchsync_server(sqlite3 *db, const string &maildir)
     else if (cmd == "send") {
       string hash;
       cmdstream >> hash;
-      if (send_content(hashdb, hash, "220-", cout))
+      if (send_content(hashdb, tagdb, hash, "220-", cout))
 	cout << "220 " << hash << '\n';
       else if (hashdb.ok())
 	cout << "420 cannot open file\n";
@@ -1119,7 +1134,7 @@ muchsync_server(sqlite3 *db, const string &maildir)
 	cout << "500 must follow vect command\n";
       else if (!(cmdstream >> hi))
 	cout << "500 could not parse hash_info\n";
-      else if (msync.hash_sync(remotevv, hi, nullptr)) {
+      else if (msync.hash_sync(remotevv, hi, nullptr, nullptr)) {
 	if (opt_verbose > 3)
 	  cerr << "received-links " << hi << '\n';
 	cout << "220 " << hi.hash << " ok\n";
@@ -1130,15 +1145,16 @@ muchsync_server(sqlite3 *db, const string &maildir)
     else if (cmd == "recv") {
       xbegin();
       hash_info hi;
+      tag_info ti;
       if (!remotevv_valid)
 	cout << "500 must follow vect command\n";
-      else if (!(cmdstream >> hi))
-	cout << "500 could not parse hash_info\n";
+      else if (!(cmdstream >> hi >> ti))
+	cout << "500 could not parse hash_info or tag_info\n";
       else {
 	string path;
 	try {
 	  path = receive_message(cin, hi, maildir);
-	  if (!msync.hash_sync(remotevv, hi, &path))
+	  if (!msync.hash_sync(remotevv, hi, &path, &ti))
 	    cout << "550 failed to synchronize message\n";
 	  else {
 	    if (opt_verbose > 3)
@@ -1241,7 +1257,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     hash_info hi;
     if (!(is >> hi))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
-    bool ok = msync.hash_sync (remotevv, hi, nullptr);
+    bool ok = msync.hash_sync (remotevv, hi, nullptr, nullptr);
     if (opt_verbose > 2) {
       if (ok)
 	cerr << hi << '\n';
@@ -1257,10 +1273,11 @@ muchsync_client (sqlite3 *db, const string &maildir,
   print_time ("received hashes of new files");
 
   hash_info hi;
+  tag_info ti;
   for (; pending > 0; pending--) {
     get_response (in, line);
     is.str(line.substr(4));
-    if (!(is >> hi))
+    if (!(is >> hi >> ti))
       throw runtime_error ("could not parse hash_info: " + line.substr(4));
     string path = receive_message(in, hi, maildir);
     cleanup _unlink (unlink, path.c_str());
@@ -1268,7 +1285,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
     if (line.size() < 4 || line.at(0) != '2' || line.at(3) != ' '
 	|| line.substr(4) != hi.hash)
       throw runtime_error ("lost sync while receiving message: " + line);
-    if (!msync.hash_sync (remotevv, hi, &path))
+    if (!msync.hash_sync (remotevv, hi, &path, &ti))
       throw runtime_error ("msg_sync::sync failed even with source");
     if (opt_verbose > 2)
       cerr << hi << '\n';
@@ -1277,7 +1294,6 @@ muchsync_client (sqlite3 *db, const string &maildir,
 
   while (get_response (in, line) && line.at(3) == '-') {
     is.str(line.substr(4));
-    tag_info ti;
     if (!(is >> ti))
       throw runtime_error ("could not parse tag_info: " + line.substr(4));
     if (opt_verbose > 2)
@@ -1313,7 +1329,7 @@ muchsync_client (sqlite3 *db, const string &maildir,
       is.str(line.substr(4));
       string hash;
       is >> hash;
-      if (send_content(msync.hashdb, hash, "recv ", out))
+      if (send_content(msync.hashdb, msync.tagdb, hash, "recv ", out))
 	pending++;
     }
   }
