@@ -1147,8 +1147,11 @@ muchsync_server(sqlite3 *db, const string &maildir)
 	cout << "500 must follow vect command\n";
       else if (!(cmdstream >> hi))
 	cout << "500 could not parse hash_info\n";
-      else if (msync.hash_sync(remotevv, hi, nullptr))
+      else if (msync.hash_sync(remotevv, hi, nullptr)) {
+	if (opt_verbose > 3)
+	  cerr << "received-links " << hi << '\n';
 	cout << "220 " << hi.hash << " ok\n";
+      }
       else
 	cout << "520 " << hi.hash << " missing content\n";
     }
@@ -1165,8 +1168,11 @@ muchsync_server(sqlite3 *db, const string &maildir)
 	  path = receive_message(cin, hi, maildir);
 	  if (!msync.hash_sync(remotevv, hi, &path))
 	    cout << "550 failed to synchronize message\n";
-	  else
+	  else {
+	    if (opt_verbose > 3)
+	      cerr << "received-file " << hi << '\n';
 	    cout << "250 ok\n";
+	  }
 	}
 	catch (exception e) {
 	  cerr << e.what() << '\n';
@@ -1182,8 +1188,11 @@ muchsync_server(sqlite3 *db, const string &maildir)
 	cout << "500 must follow vect command\n";
       else if (!(cmdstream >> ti))
 	cout << "500 could not parse hash_info\n";
-      else if (msync.tag_sync(remotevv, ti))
+      else if (msync.tag_sync(remotevv, ti)) {
+	if (opt_verbose > 3)
+	  cerr << "received-tags " << ti << '\n';
 	cout << "220 ok\n";
+      }
       else
 	cout << "520 unknown message-id\n";
     }
