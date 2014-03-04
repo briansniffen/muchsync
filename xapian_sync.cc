@@ -480,7 +480,7 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
       cerr << "  " << dir << '\n';
     string dirpath = maildir + "/" + dir;
     int dfd = open(dirpath.c_str(), O_RDONLY);
-    if (dfd == -1) {
+    if (dfd == -1 && errno != ENOENT) {
       cerr << dirpath << ": " << strerror (errno) << '\n';
       continue;
     }
