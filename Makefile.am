@@ -12,3 +12,9 @@ CLEANFILES = *~
 maintainer-clean-local:
 	+@echo rm -rf `sed -ne 's!^/!!p' .gitignore` Makefile.in
 	rm -rf `sed -ne 's!^/!!p' .gitignore` Makefile.in
+
+muchsync.1: muchsync.1.md
+	pandoc -s -w man muchsync.1.md -o muchsync.1
+
+man_MANS = muchsync.1
+EXTRA_DIST = muchsync.1.md $(man_MANS)

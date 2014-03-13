@@ -13,5 +13,6 @@
 /install-sh
 /missing
 /muchsync
+/muchsync.1
 Makefile
 Makefile.in
