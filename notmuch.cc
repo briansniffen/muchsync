@@ -24,6 +24,13 @@ notmuch_db::default_notmuch_config()
   throw runtime_error ("Cannot find HOME directory\n");
 }
 
+string
+notmuch_db::config_get(const char *config)
+{
+  const char *av[] { "notmuch", "config", "get", config, nullptr };
+  return run_notmuch(av);
+}
+
 notmuch_db::notmuch_db(string config)
   : notmuch_config (config)
 {
@@ -35,7 +42,7 @@ notmuch_db::~notmuch_db()
 }
 
 string
-notmuch_db::run_notmuch(vector<const char *> &av)
+notmuch_db::run_notmuch(const char **av)
 {
   int fds[2];
   if (pipe(fds) != 0)
@@ -56,8 +63,7 @@ notmuch_db::run_notmuch(vector<const char *> &av)
       ::close(fds[1]);
     }
     setenv("NOTMUCH_CONFIG", notmuch_config.c_str(), 1);
-    av.push_back(nullptr);
-    execvp("notmuch", const_cast<char *const*> (av.data()));
+    execvp("notmuch", const_cast<char *const*> (av));
     cerr << "notmuch: " << strerror(errno) << endl;
     raise(SIGINT);
     _exit(127);
@@ -97,4 +103,13 @@ notmuch_db::close()
   if (notmuch_)
     notmuch_database_destroy (notmuch_);
   notmuch_ = nullptr;
+}
+
+int
+xmain(int argc, char **argv)
+{
+  notmuch_db nm (notmuch_db::default_notmuch_config());
+  for (int i = 1; i < argc; i++)
+    cout << "**** " << argv[i] << '\n' << nm.config_get (argv[i]) << '\n';
+  return 0;
 }

@@ -597,7 +597,7 @@ static const struct option muchsync_options[] = {
 };
 
 int
-main (int argc, char **argv)
+main(int argc, char **argv)
 {
   umask (077);
 
