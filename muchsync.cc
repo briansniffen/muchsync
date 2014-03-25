@@ -597,7 +597,7 @@ static const struct option muchsync_options[] = {
 };
 
 int
-main(int argc, char **argv)
+xmain(int argc, char **argv)
 {
   umask (077);
 
@@ -687,4 +687,3 @@ main(int argc, char **argv)
     client(argc - optind, argv + optind);
   return 0;
 }
-

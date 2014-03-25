@@ -5,12 +5,41 @@
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include "infinibuf.h"
 #include "notmuch_db.h"
 
 using namespace std;
+
+static unordered_set<string>
+lines(const string &s)
+{
+  istringstream is (s);
+  string line;
+  unordered_set<string> ret;
+  while (getline(is, line))
+    ret.insert(line);
+  return ret;
+}
+
+static string
+chomp(string s)
+{
+  while (s.length() && (s.back() == '\n' || s.back() == '\r'))
+    s.resize(s.length() - 1);
+  return s;
+}
+
+static bool
+conf_to_bool(string s)
+{
+  s = chomp(s);
+  if (s.empty() || s == "false" || s == "0")
+    return false;
+  return true;
+}
 
 string
 notmuch_db::default_notmuch_config()
@@ -32,8 +61,16 @@ notmuch_db::config_get(const char *config)
 }
 
 notmuch_db::notmuch_db(string config)
-  : notmuch_config (config)
+  : notmuch_config (config),
+    maildir (chomp(config_get("database.path"))),
+    new_tags (lines(config_get("new.tags"))),
+    sync_flags (conf_to_bool(config_get("maildir.synchronize_flags")))
 {
+  if (maildir.empty())
+    throw runtime_error(notmuch_config + ": no database.path in config file");
+  struct stat sb;
+  if (stat(maildir.c_str(), &sb) || !S_ISDIR(sb.st_mode))
+    throw runtime_error(maildir + ": cannot access maildir");
 }
 
 notmuch_db::~notmuch_db()
@@ -87,11 +124,11 @@ notmuch_db::notmuch ()
 {
   if (!notmuch_) {
     notmuch_status_t err =
-      notmuch_database_open (maildir_.c_str(),
+      notmuch_database_open (maildir.c_str(),
 			     NOTMUCH_DATABASE_MODE_READ_WRITE,
 			     &notmuch_);
     if (err)
-      throw runtime_error (maildir_ + ": "
+      throw runtime_error (maildir + ": "
 			   + notmuch_status_to_string(err));
   }
   return notmuch_;
@@ -106,9 +143,11 @@ notmuch_db::close()
 }
 
 int
-xmain(int argc, char **argv)
+main(int argc, char **argv)
 {
   notmuch_db nm (notmuch_db::default_notmuch_config());
+  for (auto x : nm.new_tags)
+    cout << x << '\n';
   for (int i = 1; i < argc; i++)
     cout << "**** " << argv[i] << '\n' << nm.config_get (argv[i]) << '\n';
   return 0;
