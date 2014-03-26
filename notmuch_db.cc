@@ -41,6 +41,19 @@ conf_to_bool(string s)
   return true;
 }
 
+void
+notmuch_db::set_tags(notmuch_message_t *msg,
+		     const std::unordered_set<string> &tags)
+{
+  // Deliberately don't unthaw message if we throw exception
+  nmtry("notmuch_message_freeze", notmuch_message_freeze(msg));
+  nmtry("notmuch_message_remove_all_tags",
+	notmuch_message_remove_all_tags(msg));
+  for (auto tag : tags)
+    nmtry("notmuch_message_add_tag", notmuch_message_add_tag(msg, tag.c_str()));
+  nmtry("notmuch_message_thaw", notmuch_message_thaw(msg));
+}
+
 string
 notmuch_db::default_notmuch_config()
 {
