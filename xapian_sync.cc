@@ -197,6 +197,7 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb, const writestamp &ws)
        });
   }
 
+  sqlexec(sqldb, "DELETE FROM tags WHERE tag IN (SELECT * FROM dead_tags);");
   sqlexec(sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
 	  " WHERE docid IN (SELECT docid FROM modified_docids WHERE new = 0);",
 	  ws.first, ws.second);
@@ -617,8 +618,6 @@ xapian_scan(sqlite3 *sqldb, writestamp ws, string maildir)
   print_time ("scanned message IDs");
   xapian_scan_tags (sqldb, xdb, ws);
   print_time ("scanned tags");
-  sqlexec(sqldb, "DELETE FROM tags WHERE tag IN (SELECT * FROM dead_tags);");
-  print_time ("deleted dead tags");
   xapian_scan_directories (sqldb, xdb);
   print_time ("scanned directories in xapian");
   xapian_scan_filenames (sqldb, maildir, ws, xdb);
