@@ -17,12 +17,19 @@ public:
   cleanup() : action_ ([] () {}) {}
   cleanup(const cleanup &) = delete;
   cleanup(cleanup &&c) : action_(c.action_) { c.release(); }
-  template<typename... Args> cleanup (Args... args)
+  template<typename F> cleanup(F &&f) : action_(std::forward<F>(f)) {}
+  template<typename... Args> cleanup(Args... args)
     : action_(std::bind(args...)) {}
   ~cleanup() { action_(); }
+  cleanup &operator=(cleanup &&c) { action_.swap(c.action_); return *this; }
   void reset() {
     std::function<void()> old (action_);
     release();
+    old();
+  }
+  template<typename F> void reset(F && f) {
+    std::function<void()> old (action_);
+    action_ = std::forward<F>(f);
     old();
   }
   template<typename... Args> void reset(Args... args) {
@@ -36,7 +43,7 @@ public:
 /** \brief Like a \ref std::unique_ptr, but half the size because the
  *  cleanup function is specified as part of the type.
  */
-template<class T, void(destructor)(T*)>
+template<typename T, void(destructor)(T*)>
 class unique_obj {
   T *obj_;
 public:

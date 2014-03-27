@@ -42,18 +42,6 @@ conf_to_bool(string s)
   return true;
 }
 
-Xapian::docid
-notmuch_db::get_docid(notmuch_message_t *message)
-{
-  struct fake_message {
-    notmuch_database_t *notmuch;
-    Xapian::docid doc_id;
-  };
-  /* This is massively evil, but looking through git history, doc_id
-   * has been the second element of the structure for a long time. */
-  return reinterpret_cast<const fake_message *>(message)->doc_id;
-}
-
 notmuch_db::message_t
 notmuch_db::get_message(const char *msgid)
 {
@@ -66,10 +54,6 @@ notmuch_db::get_message(const char *msgid)
 notmuch_db::message_t
 notmuch_db::add_message(const string &path, tags_t *newtags, bool *was_new)
 {
-  nmtry("notmuch_database_begin_atomic",
-	notmuch_database_begin_atomic(notmuch()));
-  cleanup _c (notmuch_database_end_atomic, notmuch());
-
   notmuch_status_t err;
   notmuch_message_t *message;
   err = notmuch_database_add_message(notmuch(), path.c_str(), &message);
@@ -201,6 +185,7 @@ main(int argc, char **argv)
   cout << sizeof (unique_ptr<notmuch_message_t,
 		  decltype(&notmuch_message_destroy)>) << '\n';
   cout << sizeof (notmuch_db::message_t) << '\n';
+  cout << sizeof (cleanup) << '\n';
   return 0;
 
   notmuch_db nm (notmuch_db::default_notmuch_config());
