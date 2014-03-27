@@ -45,19 +45,18 @@ From then on, to synchronize the client with the server, just run:
 
     muchsync --new SERVER --new
 
-Since muchsync replicates the tags in the notmuch database itself, it
-is recommended that you disable maildir flag synchronization by
-executing:
+Since muchsync replicates the tags in the notmuch database itself, you
+should consider disabling maildir flag synchronization by executing:
 
     notmuch config set maildir.synchronize_flags=false
 
 The reason is that the synchronize\_flags feature only works on a
 small subset of pre-defined flags and so is not all that useful.
-Moreover it marks flags by renaming files, which is not particularly
+Moreover, it marks flags by renaming files, which is not particularly
 efficient.  muchsync was largely motivated by the need for better flag
 synchronization.  If you are satisfied with the synchronize\_flags
-feature, you might also be able to use a tool such as offlineimap
-instead of muchsync.
+feature, you might consider a tool such as offlineimap as an
+alternative to muchsync.
 
 
 ## Synchronization algorithm
@@ -81,7 +80,9 @@ constitutes an update conflict.  Update conflicts are resolved by
 storing in each subdirectory a number of copies equal to the maximum
 of the number of copies in that subdirectory on the two replicas.
 This is conservative, in the sense that a file will never be deleted
-after a conflict, but you may get extra copies of files.
+after a conflict, though you may get extra copies of files.  (muchsync
+uses hard links, so at least these copies will not use too much disk
+space.)
 
 For example, if one replica moves a message to subdirectory .box1/cur
 and another moves the same message to subdirectory .box2/cur, the
@@ -123,10 +124,10 @@ propagated.)
 
 \-r /path/to/muchsync
 :   Specifies the path to muchsync on the server.  Ordinarily, muchsync
-    should be in the default path on the server and this option should
-    not be required.  However, this option is useful if you have to
-    install muchsync in a non-standard place, or which to test
-    development versions of the code.
+    should be in the default PATH on the server so this option is not
+    required.  However, this option is useful if you have to install
+    muchsync in a non-standard place or wish to test development
+    versions of the code.
 
 \-s ssh-cmd
 :   Specifies a command line to pass to /bin/sh to execute a command on
@@ -220,9 +221,9 @@ read one of many messages bearing the same Message-ID header.  It is
 conceivable that an attacker could suppress a message from a mailing
 list by sending another message with the same Message-ID.  This bug is
 in the design of notmuch, and hence not something that muchsync can
-work around.  muchsync does ensure that all versions of a message are
-propagated everywhere, so any tools used to work around the problem
-should work on all replicas.
+work around.  muchsync itself does not assume Message-ID equivalence,
+relying instead on content hashes to synchronize link counts.  Hence,
+any tools used to work around the problem should work on all replicas.
 
 Because notmuch and Xapian do not keep any kind of modification time
 on database entries, every invocation of muchsync requires a complete
