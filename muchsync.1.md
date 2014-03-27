@@ -21,20 +21,46 @@ arbitrary pairs.  For efficiency, version vectors and logical
 timestamps are used to limit synchronization to items a peer may not
 yet know about.
 
+To use muchsync, both muchsync and notmuch should be installed
+someplace in your PATH on two machines, and you must be able to access
+the remote machine via ssh.
+
+In its simplest usage, you have a single notmuch database on some
+server `SERVER` and wish to start replicating that database on a
+client, where the client currently does not have any mailboxes.  You
+can initialize a new replica in `$HOME/inbox` by running the following
+command:
+
+    muchsync --init $HOME/inbox SERVER --new
+
+This command may take some time, as it transfers the entire contents
+of your maildir from the server to the client and creates a new
+notmuch index on the client.  Depending on your setup, you may be
+either bandwidth limited or CPU limited.  (Sadly, the notmuch library
+on which muchsync is built is non-reentrant and forces all indexing to
+happen on a single core at a rate of about 10,000 messages per
+minute.)
+
+From then on, to synchronize the client with the server, just run:
+
+    muchsync --new SERVER --new
+
 Since muchsync replicates the tags in the notmuch database itself, it
 is recommended that you disable maildir flag synchronization by
 executing:
 
     notmuch config set maildir.synchronize_flags=false
 
-One reason is that muchsync itself makes no effort to rename files to
-reflect tags.  Another reason is that the synchronize_flags feature
-only works on a small subset of pre-defined flags and so is not all
-that useful.  Moreover it marks flags by renaming files, which is not
-particularly efficient.  muchsync was largely motivated by the need
-for better flag synchronization.  If you are satisfied with the
-synchronize_flags feature, you might also be able to use a tool such
-as offlineimap instead of muchsync.
+The reason is that the synchronize\_flags feature only works on a
+small subset of pre-defined flags and so is not all that useful.
+Moreover it marks flags by renaming files, which is not particularly
+efficient.  muchsync was largely motivated by the need for better flag
+synchronization.  If you are satisfied with the synchronize\_flags
+feature, you might also be able to use a tool such as offlineimap
+instead of muchsync.
+
+
+## Synchronization algorithm
 
 muchsync separately synchronizes two classes of information:  the
 message-to-directory mapping (henceforth link counts) and the
@@ -55,7 +81,7 @@ constitutes an update conflict.  Update conflicts are resolved by
 storing in each subdirectory a number of copies equal to the maximum
 of the number of copies in that subdirectory on the two replicas.
 This is conservative, in the sense that a file will never be deleted
-after an update, but you may get extra copies of files.
+after a conflict, but you may get extra copies of files.
 
 For example, if one replica moves a message to subdirectory .box1/cur
 and another moves the same message to subdirectory .box2/cur, the
