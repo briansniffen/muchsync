@@ -155,6 +155,22 @@ notmuch_db::run_notmuch(const char **av)
   return os.str();
 }
 
+Xapian::docid
+notmuch_db::get_dir_docid(const char *path)
+{
+  unique_obj<notmuch_directory_t, notmuch_directory_destroy> dir;
+  nmtry("notmuch_database_get_directory",
+	notmuch_database_get_directory(notmuch(), path, &dir.get()));
+  if (!dir)
+    throw range_error (path + string (": directory not found in notmuch"));
+
+  /* XXX -- evil evil */
+  struct fake_directory {
+    notmuch_database_t *notmuch;
+    Xapian::docid doc_id;
+  };
+  return reinterpret_cast<const fake_directory *>(dir.get())->doc_id;
+}
 
 notmuch_database_t *
 notmuch_db::notmuch ()

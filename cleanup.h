@@ -47,12 +47,14 @@ template<typename T, void(destructor)(T*)>
 class unique_obj {
   T *obj_;
 public:
+  unique_obj() noexcept : obj_(nullptr) {}
   explicit unique_obj(T *obj) noexcept : obj_(obj) {}
   unique_obj(unique_obj &&uo) noexcept : obj_(uo.obj_) { uo.obj_ = nullptr; }
   ~unique_obj() { if (obj_) destructor(obj_); }
   void reset(T *obj) { T *old = obj_; obj_ = obj; destructor(old); }
   T *release() noexcept { T *old = obj_; obj_ = nullptr; return old; }
   T *get() const noexcept { return obj_; }
+  T *&get() noexcept { return obj_; }
   operator T*() const noexcept { return obj_; }
 };
 

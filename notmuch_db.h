@@ -39,13 +39,15 @@ public:
   const bool sync_flags;
 
   static string default_notmuch_config();
+
+  /* The next function is massively evil, but looking through git
+   * history, doc_id has been the second element of the
+   * notmuch_message_t structure for a long time. */
   static Xapian::docid get_docid(notmuch_message_t *msg) {
     struct fake_message {
       notmuch_database_t *notmuch;
       Xapian::docid doc_id;
     };
-    /* This is massively evil, but looking through git history, doc_id
-     * has been the second element of the structure for a long time. */
     return reinterpret_cast<const fake_message *>(msg)->doc_id;
   }
 
@@ -64,6 +66,7 @@ public:
 			tags_t *new_tags = nullptr, 
 			bool *was_new = nullptr);
   void set_tags(notmuch_message_t *msg, const tags_t &tags);
+  Xapian::docid get_dir_docid(const char *path);
 
   notmuch_database_t *notmuch();
   void close();
