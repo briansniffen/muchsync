@@ -895,7 +895,7 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
     .param(wsp->first, wsp->second, tagdb.docid())
     .step();
 
-  c.disable();
+  c.release();
   sqlexec (db_, "RELEASE tag_sync;");
   return true;
 }
@@ -926,7 +926,7 @@ receive_message (istream &in, const hash_info &hi, const string &maildir)
   tmp.close();
   if (ctx.final() != hi.hash)
     throw runtime_error ("message received does not match hash");
-  _unlink.disable();
+  _unlink.release();
   return path;
 }
 

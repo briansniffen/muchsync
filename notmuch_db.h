@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_set>
 #include <notmuch.h>
+#include <xapian.h>
 
 using std::string;
 
@@ -28,17 +29,28 @@ class notmuch_db {
   string run_notmuch(const char **av);
 
 public:
+  using tags_t = std::unordered_set<string>;
+  using message_t = unique_obj<notmuch_message_t, notmuch_message_destroy>;
+
   const string notmuch_config;
   const string maildir;
-  const std::unordered_set<string> new_tags;
+  const tags_t new_tags;
   const bool sync_flags;
 
   static string default_notmuch_config();
+  static Xapian::docid get_docid(notmuch_message_t *);
+
   string config_get(const char *);
   notmuch_db(string config);
   ~notmuch_db();
 
-  void set_tags(notmuch_message_t *msg, const std::unordered_set<string> &tags);
+  // Returns true if it is a new message
+  message_t get_message(const char *msgid);
+  message_t add_message(const string &path,
+			tags_t *new_tags = nullptr, 
+			bool *was_new = nullptr);
+  void set_tags(notmuch_message_t *msg, const tags_t &tags);
+
   notmuch_database_t *notmuch();
   void close();
 };

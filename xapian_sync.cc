@@ -532,7 +532,7 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
     // With a cold buffer cache, reading files to compute hashes goes
     // shockingly faster in the order of directory entries.
     if (!to_add.empty()) {
-      _close.disable();
+      _close.release();
       DIR *d = fdopendir(dfd);
       cleanup _closedir (closedir, d);
       struct dirent *e;

@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include "cleanup.h"
 #include "infinibuf.h"
 #include "notmuch_db.h"
 
@@ -41,9 +42,48 @@ conf_to_bool(string s)
   return true;
 }
 
+Xapian::docid
+notmuch_db::get_docid(notmuch_message_t *message)
+{
+  struct fake_message {
+    notmuch_database_t *notmuch;
+    Xapian::docid doc_id;
+  };
+  /* This is massively evil, but looking through git history, doc_id
+   * has been the second element of the structure for a long time. */
+  return reinterpret_cast<const fake_message *>(message)->doc_id;
+}
+
+notmuch_db::message_t
+notmuch_db::get_message(const char *msgid)
+{
+  notmuch_message_t *message;
+  nmtry("notmuch_database_find_message",
+	notmuch_database_find_message (notmuch(), msgid, &message));
+  return message_t (message);
+}
+
+notmuch_db::message_t
+notmuch_db::add_message(const string &path, tags_t *newtags, bool *was_new)
+{
+  nmtry("notmuch_database_begin_atomic",
+	notmuch_database_begin_atomic(notmuch()));
+  cleanup _c (notmuch_database_end_atomic, notmuch());
+
+  notmuch_status_t err;
+  notmuch_message_t *message;
+  err = notmuch_database_add_message(notmuch(), path.c_str(), &message);
+  if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID) {
+    nmtry("notmuch_database_add_message", err);
+    set_tags(message, newtags ? *newtags : new_tags);
+  }
+  if (was_new)
+    *was_new = err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID;
+  return message_t (message);
+}
+
 void
-notmuch_db::set_tags(notmuch_message_t *msg,
-		     const std::unordered_set<string> &tags)
+notmuch_db::set_tags(notmuch_message_t *msg, const tags_t &tags)
 {
   // Deliberately don't unthaw message if we throw exception
   nmtry("notmuch_message_freeze", notmuch_message_freeze(msg));
@@ -158,6 +198,11 @@ notmuch_db::close()
 int
 main(int argc, char **argv)
 {
+  cout << sizeof (unique_ptr<notmuch_message_t,
+		  decltype(&notmuch_message_destroy)>) << '\n';
+  cout << sizeof (notmuch_db::message_t) << '\n';
+  return 0;
+
   notmuch_db nm (notmuch_db::default_notmuch_config());
   for (auto x : nm.new_tags)
     cout << x << '\n';

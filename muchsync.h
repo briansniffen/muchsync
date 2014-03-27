@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <openssl/sha.h>
 
+#include "cleanup.h"
 #include "sqlstmt.h"
 
 using std::string;
@@ -24,17 +25,6 @@ ts_to_double (const timespec &ts)
 {
   return ts.tv_sec + ts.tv_nsec / 1000000000.0;
 }
-
-/* Kludgy way to fit C cleanup functions into the C++ RAII scheme. */
-class cleanup {
-  std::function<void()> action_;
-public:
-  cleanup(std::function<void()> &&action) : action_(action) {}
-  template<typename... Args> cleanup (Args... args)
-    : action_(std::bind(args...)) {}
-  void disable() { action_ = [] () {}; }
-  ~cleanup() { action_(); }
-};
 
 /* protocol.cc */
 string permissive_percent_encode (const string &raw);
