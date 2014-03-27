@@ -27,9 +27,10 @@ ts_to_double (const timespec &ts)
 }
 
 /* protocol.cc */
+struct notmuch_db;
 string permissive_percent_encode (const string &raw);
-void muchsync_server (sqlite3 *db, const string &maildir);
-void muchsync_client (sqlite3 *db, const string &maildir,
+void muchsync_server (sqlite3 *db, notmuch_db &nm);
+void muchsync_client (sqlite3 *db, notmuch_db &nm,
 		      std::istream &in, std::ostream &out);
 std::istream &get_response (std::istream &in, string &line);
 
@@ -46,14 +47,12 @@ extern string opt_remote_muchsync_path;
 extern string opt_notmuch_config;
 extern const char muchsync_trashdir[];
 extern const char muchsync_tmpdir[];
-extern std::unordered_set<string> new_tags;
 // Writestamp is the pair (replica-id, version-number)
 using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
 void print_time (string msg);
 versvector get_sync_vector (sqlite3 *db);
-std::unordered_set<string> notmuch_new_tags ();
 string show_sync_vector (const versvector &vv);
 std::istream &read_writestamp (std::istream &in, writestamp &ws);
 std::istream &read_sync_vector (std::istream &sb, versvector &vv);

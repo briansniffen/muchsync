@@ -27,8 +27,8 @@ class notmuch_db {
     if (stat)
       throw notmuch_err (op, stat);
   }
-  string run_notmuch(const char **av);
 
+  string run_notmuch(const char *const *av, const char *errprefix = nullptr);
 public:
   using tags_t = std::unordered_set<string>;
   using message_t = unique_obj<notmuch_message_t, notmuch_message_destroy>;
@@ -51,8 +51,8 @@ public:
     return reinterpret_cast<const fake_message *>(msg)->doc_id;
   }
 
-  string config_get(const char *);
-  notmuch_db(string config);
+  notmuch_db(string config, bool create = false);
+  notmuch_db(const notmuch_db &) = delete;
   ~notmuch_db();
 
   void begin_atomic() {
@@ -63,11 +63,15 @@ public:
   }
   message_t get_message(const char *msgid);
   message_t add_message(const string &path,
-			tags_t *new_tags = nullptr, 
+			const tags_t *new_tags = nullptr, 
 			bool *was_new = nullptr);
+  void remove_message(const string &path);
   void set_tags(notmuch_message_t *msg, const tags_t &tags);
   Xapian::docid get_dir_docid(const char *path);
 
   notmuch_database_t *notmuch();
+  string get_config(const char *);
+  void set_config(const char *, ...);
   void close();
+  void run_new(const char *prefix = "[notmuch] ");
 };

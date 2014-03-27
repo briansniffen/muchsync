@@ -3,6 +3,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <signal.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -52,7 +53,8 @@ notmuch_db::get_message(const char *msgid)
 }
 
 notmuch_db::message_t
-notmuch_db::add_message(const string &path, tags_t *newtags, bool *was_new)
+notmuch_db::add_message(const string &path, const tags_t *newtags,
+			bool *was_new)
 {
   notmuch_status_t err;
   notmuch_message_t *message;
@@ -64,6 +66,15 @@ notmuch_db::add_message(const string &path, tags_t *newtags, bool *was_new)
   if (was_new)
     *was_new = err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID;
   return message_t (message);
+}
+
+void
+notmuch_db::remove_message(const string &path)
+{
+  notmuch_status_t err =
+    notmuch_database_remove_message(notmuch(), path.c_str());
+  if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID)
+    nmtry("notmuch_database_remove_message", err);
 }
 
 void
@@ -91,23 +102,46 @@ notmuch_db::default_notmuch_config()
 }
 
 string
-notmuch_db::config_get(const char *config)
+notmuch_db::get_config(const char *config)
 {
   const char *av[] { "notmuch", "config", "get", config, nullptr };
   return run_notmuch(av);
 }
 
-notmuch_db::notmuch_db(string config)
+void
+notmuch_db::set_config(const char *config, ...)
+{
+  va_list ap;
+  va_start(ap, config);
+  vector<const char *> av { "notmuch", "config", "set", config };
+  const char *a;
+  do {
+    a = va_arg(ap, const char *);
+    av.push_back(a);
+  } while (a);
+  run_notmuch(av.data(), "[notmuch] ");
+}
+
+notmuch_db::notmuch_db(string config, bool create)
   : notmuch_config (config),
-    maildir (chomp(config_get("database.path"))),
-    new_tags (lines(config_get("new.tags"))),
-    sync_flags (conf_to_bool(config_get("maildir.synchronize_flags")))
+    maildir (chomp(get_config("database.path"))),
+    new_tags (lines(get_config("new.tags"))),
+    sync_flags (conf_to_bool(get_config("maildir.synchronize_flags")))
 {
   if (maildir.empty())
     throw runtime_error(notmuch_config + ": no database.path in config file");
-  struct stat sb;
-  if (stat(maildir.c_str(), &sb) || !S_ISDIR(sb.st_mode))
-    throw runtime_error(maildir + ": cannot access maildir");
+  if (create) {
+    struct stat sb;
+    string nmdir = maildir + "/.notmuch";
+    int err = stat(nmdir.c_str(), &sb);
+    if (!err && S_ISDIR(sb.st_mode))
+      return;
+    if (!err || errno != ENOENT)
+      throw runtime_error(nmdir + ": cannot access directory");
+    mkdir(maildir.c_str(), 0777);
+    nmtry("notmuch_database_create",
+	  notmuch_database_create(maildir.c_str(), &notmuch_));
+  }
 }
 
 notmuch_db::~notmuch_db()
@@ -116,7 +150,7 @@ notmuch_db::~notmuch_db()
 }
 
 string
-notmuch_db::run_notmuch(const char **av)
+notmuch_db::run_notmuch(const char *const *av, const char *errprefix)
 {
   int fds[2];
   if (pipe(fds) != 0)
@@ -132,9 +166,12 @@ notmuch_db::run_notmuch(const char **av)
     }
   case 0:
     ::close(fds[0]);
+    if (errprefix && fds[1] != 2)
+      dup2(fds[1], 2);
     if (fds[1] != 1) {
       dup2(fds[1], 1);
-      ::close(fds[1]);
+      if (errprefix && fds[1] != 2)
+	::close(fds[1]);
     }
     setenv("NOTMUCH_CONFIG", notmuch_config.c_str(), 1);
     execvp("notmuch", const_cast<char *const*> (av));
@@ -146,7 +183,14 @@ notmuch_db::run_notmuch(const char **av)
   ::close(fds[1]);
   ifdstream in (fds[0]);
   ostringstream os;
-  os << in.rdbuf();
+
+  if (errprefix) {
+    string line;
+    while (getline(in, line))
+      cerr << line << '\n';
+  }
+  else
+    os << in.rdbuf();
 
   int status;
   if (waitpid(pid, &status, 0) == pid
@@ -195,19 +239,10 @@ notmuch_db::close()
   notmuch_ = nullptr;
 }
 
-int
-main(int argc, char **argv)
+void
+notmuch_db::run_new(const char *prefix)
 {
-  cout << sizeof (unique_ptr<notmuch_message_t,
-		  decltype(&notmuch_message_destroy)>) << '\n';
-  cout << sizeof (notmuch_db::message_t) << '\n';
-  cout << sizeof (cleanup) << '\n';
-  return 0;
-
-  notmuch_db nm (notmuch_db::default_notmuch_config());
-  for (auto x : nm.new_tags)
-    cout << x << '\n';
-  for (int i = 1; i < argc; i++)
-    cout << "**** " << argv[i] << '\n' << nm.config_get (argv[i]) << '\n';
-  return 0;
+  const char *av[] = { "notmuch", "new", nullptr };
+  close();
+  run_notmuch(av, prefix);
 }

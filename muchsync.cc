@@ -16,6 +16,7 @@
 #include <notmuch.h>
 #include "muchsync.h"
 #include "infinibuf.h"
+#include "notmuch_db.h"
 
 using namespace std;
 
@@ -40,7 +41,13 @@ string opt_remote_muchsync_path = "muchsync";
 string opt_notmuch_config;
 string opt_init_dest;
 
-unordered_set<string> new_tags;
+#if 1
+struct whattocatch_t {
+  const char *what() noexcept { return "no such exception"; }
+};
+#else
+using whattocatch_t = const exception;
+#endif
 
 const char schema_def[] = R"(
 -- General table
@@ -332,17 +339,6 @@ notmuch_maildir_location()
   return loc;
 }
 
-unordered_set<string>
-notmuch_new_tags()
-{
-  istringstream is (cmd_output ("notmuch config get new.tags"));
-  string line;
-  unordered_set<string> ret;
-  while (getline (is, line))
-    ret.insert(line);
-  return ret;
-}
-
 static string
 get_notmuch_config()
 {
@@ -397,24 +393,26 @@ Additional options:\n\
 }
 
 static void
-server ()
+server()
 {
   ifdinfinistream ibin(0);
   cleanup _fixbuf ([](streambuf *sb){ cin.rdbuf(sb); },
 		   cin.rdbuf(ibin.rdbuf()));
   tag_stderr("[SERVER] ");
 
-  string maildir;
-  try { maildir = notmuch_maildir_location(); }
-  catch (exception e) { cerr << e.what() << '\n'; exit (1); }
-  string dbpath = maildir + muchsync_dbpath;
+  unique_ptr<notmuch_db> nmp;
+  try {
+    nmp.reset(new notmuch_db (opt_notmuch_config));
+  } catch (whattocatch_t e) { cerr << e.what() << '\n'; exit (1); }
+  notmuch_db &nm = *nmp;
 
-  if (!muchsync_init (maildir))
+  string dbpath = nm.maildir + muchsync_dbpath;
+
+  if (!muchsync_init (nm.maildir))
     exit (1);
   if (opt_new)
-    system("notmuch new |& sed -e 's/^/[SERVER notmuch] /' >&2");
+    nm.run_new("[SERVER notmuch] ");
 
-  new_tags = notmuch_new_tags();
   sqlite3 *db = dbopen(dbpath.c_str());
   if (!db)
     exit(1);
@@ -422,10 +420,10 @@ server ()
 
   try {
     if (!opt_noscan)
-      sync_local_data(db, maildir);
-    muchsync_server(db, maildir);
+      sync_local_data(db, nm.maildir);
+    muchsync_server(db, nm);
   }
-  catch (const exception &e) {
+  catch (whattocatch_t &e) {
     cerr << e.what() << '\n';
     exit(1);
   }
@@ -462,29 +460,14 @@ create_config(istream &in, ostream &out, string &maildir)
     maildir = p + ("/" + maildir);
   }
 
-  vector<const char *> av;
-  av.push_back("notmuch");
-  av.push_back("config");
-  av.push_back("set");
-  av.push_back("database.path");
-  av.push_back(maildir.c_str());
-  av.push_back(nullptr);
-
-  pid_t pid = fork();
-  if (pid < 0)
-    throw runtime_error (string("fork: ") + strerror (errno));
-  else if (pid == 0) {
-    execvp(av[0], const_cast<char *const *> (av.data()));
-    _exit(1);
-  }
-  waitpid(pid, nullptr, 0);
+  notmuch_db nm (opt_notmuch_config);
+  nm.set_config ("database.path", maildir.c_str(), nullptr);
 }
 
 static void
 client(int ac, char **av)
 {
-  string maildir;
-
+  unique_ptr<notmuch_db> nmp;
   struct stat sb;
   int err = stat(opt_notmuch_config.c_str(), &sb);
   if (opt_init) {
@@ -496,31 +479,30 @@ client(int ac, char **av)
       cerr << opt_notmuch_config << ": " << strerror(errno) << '\n';
       exit (1);
     }
-    maildir = opt_init_dest;
   }
   else if (err) {
     cerr << opt_notmuch_config << ": " << strerror(errno) << '\n';
     exit (1);
   }
   else {
-    try { maildir = notmuch_maildir_location(); }
-    catch (exception e) { cerr << e.what() << '\n'; exit (1); }
+    try {
+      nmp.reset(new notmuch_db (opt_notmuch_config));
+    } catch (whattocatch_t e) { cerr << e.what() << '\n'; exit (1); }
   }
-  string dbpath = maildir + muchsync_dbpath;
 
   if (ac == 0) {
-    if (opt_init)
+    if (!nmp)
       usage();
-    if (!muchsync_init(maildir, true))
+    if (!muchsync_init(nmp->maildir, true))
       exit (1);
-    new_tags = notmuch_new_tags();
     if (opt_new)
-      system("notmuch new");
+      nmp->run_new();
+    string dbpath = nmp->maildir + muchsync_dbpath;
     sqlite3 *db = dbopen(dbpath.c_str());
     if (!db)
       exit (1);
     cleanup _c (sqlite3_close_v2, db);
-    sync_local_data (db, notmuch_maildir_location());
+    sync_local_data (db, nmp->maildir);
     exit(0);
   }
 
@@ -536,12 +518,19 @@ client(int ac, char **av)
   ifdinfinistream in (fds[0]);
   in.tie (&out);
 
-  if (opt_init)
-    create_config(in, out, maildir);
-  if (!muchsync_init(maildir, opt_init))
+  if (opt_init) {
+    create_config(in, out, opt_init_dest);
+    try {
+      nmp.reset(new notmuch_db (opt_notmuch_config, true));
+    } catch (whattocatch_t e) { cerr << e.what() << '\n'; exit (1); }
+  }
+  if (!muchsync_init(nmp->maildir, opt_init))
     exit(1);
-  if (opt_init && !mkdir((maildir + "/.notmuch/hooks").c_str(), 0777)) {
-    int fd = open ((maildir + "/.notmuch/hooks/post-new").c_str(),
+  if (opt_new)
+    nmp->run_new();
+#if 0
+  if (opt_init && !mkdir((nmp->maildir + "/.notmuch/hooks").c_str(), 0777)) {
+    int fd = open ((nmp->maildir + "/.notmuch/hooks/post-new").c_str(),
 		   O_CREAT|O_WRONLY|O_EXCL|O_TRUNC, 0777);
     ofdstream of (fd);
     of << "#!/bin/sh\nmuchsync --upbg -r " << opt_remote_muchsync_path;
@@ -549,26 +538,20 @@ client(int ac, char **av)
       of << ' ' << av[i];
     of << " --new" << flush;
   }
-  if (opt_new)
-    system("notmuch new");
+#endif
+  string dbpath = nmp->maildir + muchsync_dbpath;
   sqlite3 *db = dbopen(dbpath.c_str(), true);
   if (!db)
     exit (1);
   cleanup _c (sqlite3_close_v2, db);
 
-  new_tags = notmuch_new_tags();
-
-#if 0
   try {
-#endif
-    muchsync_client (db, maildir, in, out);
-#if 0
+    muchsync_client (db, *nmp, in, out);
   }
-  catch (const exception &e) {
+  catch (whattocatch_t &e) {
     cerr << e.what() << '\n';
     exit (1);
   }
-#endif
 }
 
 enum opttag {
@@ -597,7 +580,7 @@ static const struct option muchsync_options[] = {
 };
 
 int
-xmain(int argc, char **argv)
+main(int argc, char **argv)
 {
   umask (077);
 
@@ -611,7 +594,6 @@ xmain(int argc, char **argv)
       break;
     case 'C':
       opt_notmuch_config = optarg;
-      setenv("NOTMUCH_CONFIG", optarg, 1);
       break;
     case 'F':
       opt_fullscan = true;
@@ -652,12 +634,6 @@ xmain(int argc, char **argv)
     default:
       usage();
     }
-
-  if (int err = sqlite3_config(SQLITE_CONFIG_SERIALIZED)) {
-    cerr << "Initializing sqlite threading: "
-	 << sqlite3_errstr(err) << '\n';
-    exit(1);
-  }
 
   if (opt_server) {
     if (opt_init || opt_noup || opt_upbg || optind != argc)
