@@ -86,6 +86,9 @@ notmuch_db::set_tags(notmuch_message_t *msg, const tags_t &tags)
 	notmuch_message_remove_all_tags(msg));
   for (auto tag : tags)
     nmtry("notmuch_message_add_tag", notmuch_message_add_tag(msg, tag.c_str()));
+  if (sync_flags)
+    nmtry("notmuch_message_maildir_flags_to_tags",
+	  notmuch_message_tags_to_maildir_flags(msg));
   nmtry("notmuch_message_thaw", notmuch_message_thaw(msg));
 }
 

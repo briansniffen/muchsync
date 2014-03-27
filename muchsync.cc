@@ -524,7 +524,7 @@ client(int ac, char **av)
       nmp.reset(new notmuch_db (opt_notmuch_config, true));
     } catch (whattocatch_t e) { cerr << e.what() << '\n'; exit (1); }
   }
-  if (!muchsync_init(nmp->maildir, opt_init))
+  if (!muchsync_init(nmp->maildir, true))
     exit(1);
   if (opt_new)
     nmp->run_new();

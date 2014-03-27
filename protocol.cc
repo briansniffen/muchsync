@@ -149,7 +149,7 @@ randint()
 }
 
 static string
-maildir_name ()
+maildir_name()
 {
   static string hostname = myhostname();
   static int pid = getpid();
@@ -163,6 +163,21 @@ maildir_name ()
      << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
      << '.' << hostname;
   return os.str();
+}
+
+static string
+new_maildir_path(const string &dir, string *namep = nullptr)
+{
+  string name = maildir_name();
+  if ((dir.size() > 4 && !strncmp(dir.data() + (dir.size() - 4), "/cur", 4))
+      || (dir.size() == 3 && dir == "cur"))
+    name += ":2,";
+  if (namep)
+    *namep = name;
+  if (dir.size() && dir.back() != '/')
+    return dir + "/" + name;
+  else
+    return dir + name;
 }
 
 string
@@ -684,8 +699,9 @@ msg_sync::hash_sync(const versvector &rvv,
     for (; li.second > 0; --li.second) {
       if (!sanity_check_path(li.first))
 	break;
-      string newname (maildir_name());
-      string target = hashdb.maildir + "/" + li.first + "/" + newname;
+      string newname;
+      string target =
+	new_maildir_path(hashdb.maildir + "/" + li.first, &newname);
       if (link(source.c_str(), target.c_str())
 	  && (errno != ENOENT
 	      || !maildir_mkdir(hashdb.maildir + "/" + li.first)
