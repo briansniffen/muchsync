@@ -1,9 +1,12 @@
 // -*- C++ -*-
 
+#ifndef _SQLSTMT_H_
+#define _SQLSTMT_H_ 1
+
 #include <cassert>
 #include <string>
-#include <sqlite3.h>
 #include <tuple>
+#include <sqlite3.h>
 
 using i64 = sqlite3_int64;
 
@@ -166,3 +169,4 @@ sqlstmt_t::column(int i)
 
 void sqlexec (sqlite3 *db, const char *fmt, ...);
 
+#endif /* !_SQLSTMT_H_ */
