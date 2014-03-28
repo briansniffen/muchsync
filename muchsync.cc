@@ -33,7 +33,7 @@ bool opt_init;
 bool opt_server;
 bool opt_upbg;
 bool opt_noup;
-bool opt_new;
+bool opt_nonew;
 int opt_verbose;
 int opt_upbg_fd = -1;
 string opt_ssh = "ssh -CTaxq";
@@ -408,10 +408,10 @@ server()
 
   string dbpath = nm.maildir + muchsync_dbpath;
 
+  if (!opt_nonew)
+    nm.run_new();
   if (!muchsync_init (nm.maildir))
     exit (1);
-  if (opt_new)
-    nm.run_new("[SERVER notmuch] ");
 
   sqlite3 *db = dbopen(dbpath.c_str());
   if (!db)
@@ -495,7 +495,7 @@ client(int ac, char **av)
       usage();
     if (!muchsync_init(nmp->maildir, true))
       exit (1);
-    if (opt_new)
+    if (!opt_nonew)
       nmp->run_new();
     string dbpath = nmp->maildir + muchsync_dbpath;
     sqlite3 *db = dbopen(dbpath.c_str());
@@ -526,14 +526,14 @@ client(int ac, char **av)
   }
   if (!muchsync_init(nmp->maildir, true))
     exit(1);
-  if (opt_new)
+  if (!opt_nonew)
     nmp->run_new();
 #if 0
   if (opt_init && !mkdir((nmp->maildir + "/.notmuch/hooks").c_str(), 0777)) {
     int fd = open ((nmp->maildir + "/.notmuch/hooks/post-new").c_str(),
 		   O_CREAT|O_WRONLY|O_EXCL|O_TRUNC, 0777);
     ofdstream of (fd);
-    of << "#!/bin/sh\nmuchsync --upbg -r " << opt_remote_muchsync_path;
+    of << "#!/bin/sh\nmuchsync --nonew --upbg -r " << opt_remote_muchsync_path;
     for (int i = 0; i < ac; i++)
       of << ' ' << av[i];
     of << " --new" << flush;
@@ -561,7 +561,7 @@ enum opttag {
   OPT_UPBG,
   OPT_NOUP,
   OPT_HELP,
-  OPT_NEW,
+  OPT_NONEW,
   OPT_INIT
 };
 
@@ -572,7 +572,7 @@ static const struct option muchsync_options[] = {
   { "upbg", no_argument, nullptr, OPT_UPBG },
   { "noup", no_argument, nullptr, OPT_NOUP },
   { "noupload", no_argument, nullptr, OPT_NOUP },
-  { "new", no_argument, nullptr, OPT_NEW },
+  { "nonew", no_argument, nullptr, OPT_NONEW },
   { "init", required_argument, nullptr, OPT_INIT },
   { "config", required_argument, nullptr, 'C' },
   { "help", no_argument, nullptr, OPT_HELP },
@@ -622,8 +622,8 @@ main(int argc, char **argv)
     case OPT_NOUP:
       opt_noup = true;
       break;
-    case OPT_NEW:
-      opt_new = true;
+    case OPT_NONEW:
+      opt_nonew = true;
       break;
     case OPT_INIT:
       opt_init = true;

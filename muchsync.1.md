@@ -31,7 +31,7 @@ client, where the client currently does not have any mailboxes.  You
 can initialize a new replica in `$HOME/inbox` by running the following
 command:
 
-    muchsync --init $HOME/inbox SERVER --new
+    muchsync --init $HOME/inbox SERVER
 
 This command may take some time, as it transfers the entire contents
 of your maildir from the server to the client and creates a new
@@ -43,7 +43,7 @@ minute.)
 
 From then on, to synchronize the client with the server, just run:
 
-    muchsync --new SERVER --new
+    muchsync SERVER
 
 Since muchsync replicates the tags in the notmuch database itself, you
 should consider disabling maildir flag synchronization by executing:
@@ -151,12 +151,13 @@ propagated.)
     the local maildir), while _maildir_ is created as a replica of the
     maildir you have on the server.
 
-\--new
-:   This command says to run "notmuch new" before starting the muchsync
+\--nonew
+:   Ordinarily, muchsync begins by running "notmuch new".  This option
+    says not to run "notmuch new" before starting the muchsync
     operation.  It can be passed as either a client or a server
-    option.  For example:  The command "```muchsync myserver --new```"
-    will first run "notmuch new" on myserver, then synchronize the
-    local maildir with the maildir on the server.
+    option.  For example:  The command "```muchsync myserver
+    --nonew```" will run "```notmuch new```" locally but not on
+    myserver.
 
 \--noup, \--noupload
 :   Transfer files from the server to the client, but not vice versa.
@@ -173,24 +174,36 @@ propagated.)
 
 # EXAMPLES
 
-    muchsync -vv --new
+To initialize a the muchsync database, you can run:
 
-Run "notmuch new", then build the initial muchsync database on a
-server.  This command may take several minutes the first time it is
-run, as it must compute a content hash of every message in the
-database.
+    muchsync -vv
 
-    muchsync --init ~/maildir myserver --new
+This first executes "`notmuch new`", then builds the initial muchsync
+database from the contents of your maildir (the directory specified as
+`database.path` in your notmuch configuration file).  This command may
+take several minutes the first time it is run, as it must compute a
+content hash of every message in the database.  Note that you do not
+need to run this command, as muchsync will initialize the database the
+first time a client tries to synchronize anyway.
 
-First run "notmuch new" on myserver, then create a replica of your
-mailbox on myserver on the local machine in the directory ~/maildir.
-Note that neither your configuration file (by default
-~/.notmuch-config) nor ~/maildir should exist before running this
-command, as both will be created.  Moreover, it is recommended that
-you set maildir.synchronize_flags=false on the server before running
-this command, since this setting will be copied to the client.
+    muchsync --init ~/maildir myserver
+
+First run "notmuch new" on myserver, then create a directory
+`~/maildir` containing a replica of your mailbox on myserver.  Note
+that neither your configuration file (by default `~/.notmuch-config`)
+nor `~/maildir` should exist before running this command, as both will
+be created.
+
+To have the command ``notmuch new`` on a client automatically fetch
+new mail from server `myserver`, you can place the following in the
+file ``.notmuch/hooks/post-new`` under your mail directory:
+
+    #!/bin/sh
+    notmuch --nonew --upbg myserver
 
 # FILES
+
+The default notmuch configuration file is `$HOME/.notmuch-config`.
 
 muchsync keeps all of its state in a subdirectory of your top maildir
 called ```.notmuch/muchsync```.

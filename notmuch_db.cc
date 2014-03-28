@@ -190,7 +190,7 @@ notmuch_db::run_notmuch(const char *const *av, const char *errprefix)
   if (errprefix) {
     string line;
     while (getline(in, line))
-      cerr << line << '\n';
+      cerr << errprefix << line << '\n';
   }
   else
     os << in.rdbuf();
