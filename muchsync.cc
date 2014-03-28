@@ -149,7 +149,6 @@ dbcreate (const char *path)
     sqlexec (db, schema_def);
     setconfig (db, "dbvers", dbvers);
     setconfig (db, "self", self);
-    setconfig (db, "last_scan", 0.0);
     sqlexec (db, "INSERT INTO sync_vector (replica, version)"
 	     " VALUES (%lld, 1);", self);
     sqlexec (db, "COMMIT;");

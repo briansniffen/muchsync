@@ -716,7 +716,9 @@ msg_sync::hash_sync(const versvector &rvv,
       }
       bool isnew;
       docid =
-	notmuch_db::get_docid(nm_.add_message(target, &tip->tags, &isnew));
+	notmuch_db::get_docid(nm_.add_message(target,
+					      tip ? &tip->tags : nullptr,
+					      &isnew));
       docid_valid = true;
       i64 dir_id = get_dir_docid(li.first);
       add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.st_mtim),
@@ -725,6 +727,9 @@ msg_sync::hash_sync(const versvector &rvv,
 	new_msgid = true;
 	update_message_id_stamp_.reset()
 	  .param(tip->tag_stamp.first, tip->tag_stamp.second, docid).step();
+	add_tag_.reset().bind_int(1, docid);
+	for (auto t : (tip ? tip->tags : nm_.new_tags))
+	  add_tag_.reset().bind_text(2, t).step();
       }
     }
   /* remove extra links */
@@ -820,6 +825,9 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
   update_message_id_stamp_.reset()
     .param(wsp->first, wsp->second, tagdb.docid())
     .step();
+  add_tag_.reset().bind_int(1, tagdb.docid());
+  for (auto t : newtags)
+    add_tag_.reset().bind_text(2, t).step();
 
   c.release();
   sqlexec (db_, "RELEASE tag_sync;");
@@ -921,6 +929,8 @@ LEFT OUTER JOIN xapian_nlinks USING (hash_id);)");
 	hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
     }
     out << prefix << hi << '\n';
+    if (opt_verbose > 3)
+      cerr << prefix << hi << '\n';
     count++;
   }
   return count;
@@ -952,6 +962,8 @@ FROM (peer_vector p JOIN message_ids m
 	ti.tags.insert (changed.str(4));
     }
     out << prefix << ti << '\n';
+    if (opt_verbose > 3)
+      cerr << prefix << ti << '\n';
     count++;
   }
   return count;
