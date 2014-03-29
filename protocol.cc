@@ -474,6 +474,7 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
   update_message_id_stamp_.reset()
     .param(wsp->first, wsp->second, tagdb.docid())
     .step();
+  clear_tags_.reset().param(tagdb.docid()).step();
   add_tag_.reset().bind_int(1, tagdb.docid());
   for (auto t : newtags)
     add_tag_.reset().bind_text(2, t).step();
