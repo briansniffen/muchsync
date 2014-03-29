@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 #include <openssl/rand.h>
 #include <notmuch.h>
+#include "misc.h"
 #include "muchsync.h"
 #include "infinibuf.h"
 #include "notmuch_db.h"
@@ -263,16 +264,6 @@ show_sync_vector (const versvector &vv)
   }
   sb << '>';
   return sb.str();
-}
-
-istream &
-read_writestamp (istream &in, writestamp &ws)
-{
-  input_match (in, 'R');
-  in >> ws.first;
-  input_match (in, '=');
-  in >> ws.second;
-  return in;
 }
 
 istream &

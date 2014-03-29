@@ -1,4 +1,5 @@
 
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -6,10 +7,20 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include "muchsync.h"		// Should not depend on this...
+#include "misc.h"
 #include "sql_db.h"
 
 using namespace std;
+
+istream &
+read_writestamp (istream &in, writestamp &ws)
+{
+  input_match (in, 'R');
+  in >> ws.first;
+  input_match (in, '=');
+  in >> ws.second;
+  return in;
+}
 
 string
 permissive_percent_encode (const string &raw)
@@ -281,3 +292,13 @@ tag_lookup::lookup (const string &msgid)
   return ok_ = true;
 }
 
+#include "muchsync.h"
+
+string
+trashname (const string &maildir, const string &hash)
+{
+  if (!hash_ok(hash))
+    throw std::runtime_error ("illegal hash: " + hash);
+  return maildir + muchsync_trashdir + "/" +
+    hash.substr(0,2) + "/" + hash.substr(2);
+}

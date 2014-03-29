@@ -14,12 +14,40 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <openssl/rand.h>
+#include "misc.h"
 #include "muchsync.h"
 #include "infinibuf.h"
-#include "sql_db.h"
 #include "notmuch_db.h"
 
 using namespace std;
+
+class msg_sync {
+  sqlite3 *db_;
+  notmuch_db &nm_;
+  sqlstmt_t update_hash_stamp_;
+  sqlstmt_t add_file_;
+  sqlstmt_t del_file_;
+  sqlstmt_t set_link_count_;
+  sqlstmt_t delete_link_count_;
+  sqlstmt_t clear_tags_;
+  sqlstmt_t add_tag_;
+  sqlstmt_t update_message_id_stamp_;
+  sqlstmt_t record_docid_;
+  std::unordered_map<string,i64> dir_ids_;
+  std::pair<i64,i64> mystamp_;
+
+  i64 get_dir_docid (const string &dir);
+public:
+  hash_lookup hashdb;
+  tag_lookup tagdb;
+  msg_sync(notmuch_db &nm, sqlite3 *db);
+  bool hash_sync(const versvector &remote_sync_vector,
+		 const hash_info &remote_hash_info,
+		 const string *sourcefile, const tag_info *tip);
+  bool tag_sync(const versvector &remote_sync_vector,
+		const tag_info &remote_tag_info);
+  void commit();
+};
 
 static string
 myhostname()

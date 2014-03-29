@@ -4,10 +4,10 @@
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
-#include <openssl/sha.h>
 
 #include "cleanup.h"
 #include "sqlstmt.h"
+#include "sql_db.h"
 
 using std::string;
 
@@ -47,14 +47,11 @@ extern string opt_remote_muchsync_path;
 extern string opt_notmuch_config;
 extern const char muchsync_trashdir[];
 extern const char muchsync_tmpdir[];
-// Writestamp is the pair (replica-id, version-number)
-using writestamp = std::pair<i64,i64>;
 // Version vector is a set of writestamps with distinct replica-ids
 using versvector = std::unordered_map<i64,i64>;
 void print_time (string msg);
 versvector get_sync_vector (sqlite3 *db);
 string show_sync_vector (const versvector &vv);
-std::istream &read_writestamp (std::istream &in, writestamp &ws);
 std::istream &read_sync_vector (std::istream &sb, versvector &vv);
 void sync_local_data (sqlite3 *sqldb, const string &maildir);
 
@@ -77,30 +74,8 @@ setconfig (sqlite3 *db, const string &key, const T &value)
 
 /* xapian_sync.cc */
 void xapian_scan (sqlite3 *sqldb, writestamp ws, string maildir);
-string percent_encode (const string &raw);
-string percent_decode (const string &escaped);
 
 /* spawn.cc */
 string cmd_output (const string &cmd);
 void cmd_iofds (int fds[2], const string &cmd);
 
-/* hash.cc */
-class hash_ctx {
-  SHA_CTX ctx_;
-public:
-  static constexpr size_t output_bytes = SHA_DIGEST_LENGTH;
-  hash_ctx() { init(); }
-  void init() { SHA1_Init(&ctx_); }
-  void update(const void *buf, size_t n) { SHA1_Update (&ctx_, buf, n); }
-  string final();
-};
-string get_sha (int dfd, const char *direntry, i64 *sizep);
-
-inline std::istream &
-input_match (std::istream &in, char want)
-{
-  char got;
-  if ((in >> got) && got != want)
-    in.setstate (std::ios_base::failbit);
-  return in;
-}

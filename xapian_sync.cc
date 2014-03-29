@@ -12,6 +12,7 @@
 #include <xapian.h>
 
 #include "muchsync.h"
+#include "misc.h"
 
 using namespace std;
 
@@ -61,6 +62,29 @@ CREATE TEMP TRIGGER link_insert AFTER INSERT ON xapian_files
 )");
 }
 
+static string
+get_sha (int dfd, const char *direntry, i64 *sizep)
+{
+  int fd = openat(dfd, direntry, O_RDONLY);
+  if (fd < 0)
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+  cleanup _c (close, fd);
+
+  hash_ctx ctx;
+  char buf[32768];
+  int n;
+  i64 sz = 0;
+  while ((n = read (fd, buf, sizeof (buf))) > 0) {
+    ctx.update (buf, n);
+    sz += n;
+  }
+  if (n < 0)
+    throw runtime_error (string() + direntry + ": " + strerror (errno));
+  if (sizep)
+    *sizep = sz;
+  return ctx.final();
+}
+
 template<typename T> void
 sync_table (sqlstmt_t &s, T &t, T &te,
 	    function<int(sqlstmt_t &s, T &t)> cmpfn,
@@ -87,62 +111,6 @@ sync_table (sqlstmt_t &s, T &t, T &te,
     update (NULL, &t);
     ++t;
   }
-}
-
-string
-percent_encode (const string &raw)
-{
-  ostringstream outbuf;
-  outbuf.fill('0');
-  outbuf.setf(ios::hex, ios::basefield);
-
-  for (char c : raw) {
-    if (isalnum (c) || (c >= '+' && c <= '.')
-	|| c == '_' || c == '@' || c == '=')
-      outbuf << c;
-    else
-      outbuf << '%' << setw(2) << int (uint8_t (c));
-  }
-  return outbuf.str ();
-}
-
-inline int
-hexdigit (char c)
-{
-  if (c >= '0' && c <= '9')
-    return c - '0';
-  else if (c >= 'a' && c <= 'f')
-    return c - 'a' + 10;
-  else
-    throw runtime_error ("precent_decode: illegal hexdigit " + string (1, c));
-}
-
-string
-percent_decode (const string &encoded)
-{
-  ostringstream outbuf;
-  int escape_pos = 0, escape_val = 0;
-  for (char c : encoded) {
-    switch (escape_pos) {
-    case 0:
-      if (c == '%')
-	escape_pos = 1;
-      else
-	outbuf << c;
-      break;
-    case 1:
-      escape_val = hexdigit(c) << 4;
-      escape_pos = 2;
-      break;
-    case 2:
-      escape_pos = 0;
-      outbuf << char (escape_val | hexdigit(c));
-      break;
-    }
-  }
-  if (escape_pos)
-    throw runtime_error ("percent_decode: incomplete escape");
-  return outbuf.str();
 }
 
 string

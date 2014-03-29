@@ -1,5 +1,8 @@
 // -*- C++ -*-
 
+#ifndef _INFINIBUF_H_
+#define _INFINIBUF_H_ 1
+
 /** \file infinibuf.h
  *  \brief iostreams-friendly buffers that can grow without bounds.
  */
@@ -259,3 +262,5 @@ public:
     }
   }
 };
+
+#endif /* !_INFINIBUF_H_ */

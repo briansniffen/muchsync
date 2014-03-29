@@ -1,5 +1,12 @@
 // -*- C++ -*-
 
+#ifndef _SQL_DB_H
+#define _SQL_DB_H 1
+
+/** \file sql_db.h
+ *  \brief Data structures representing information in SQL database.
+ */
+
 #include <exception>
 #include <iosfwd>
 #include <fstream>
@@ -10,6 +17,9 @@
 #include "sqlstmt.h"
 
 using std::string;
+
+/** Writestamp is the pair (replica-id, version-number). */
+using writestamp = std::pair<i64,i64>;
 
 struct hash_info {
   string hash;
@@ -72,56 +82,13 @@ public:
   const tag_info &info() const { assert (ok()); return ti_; }
 };
 
-class msg_sync {
-  sqlite3 *db_;
-  notmuch_db &nm_;
-  sqlstmt_t update_hash_stamp_;
-  sqlstmt_t add_file_;
-  sqlstmt_t del_file_;
-  sqlstmt_t set_link_count_;
-  sqlstmt_t delete_link_count_;
-  sqlstmt_t clear_tags_;
-  sqlstmt_t add_tag_;
-  sqlstmt_t update_message_id_stamp_;
-  sqlstmt_t record_docid_;
-  std::unordered_map<string,i64> dir_ids_;
-  std::pair<i64,i64> mystamp_;
-
-  i64 get_dir_docid (const string &dir);
-public:
-  hash_lookup hashdb;
-  tag_lookup tagdb;
-  msg_sync(notmuch_db &nm, sqlite3 *db);
-  bool hash_sync(const versvector &remote_sync_vector,
-		 const hash_info &remote_hash_info,
-		 const string *sourcefile, const tag_info *tip);
-  bool tag_sync(const versvector &remote_sync_vector,
-		const tag_info &remote_tag_info);
-  void commit();
-};
+std::istream &read_writestamp (std::istream &in, writestamp &ws);
 
 std::ostream &operator<< (std::ostream &os, const hash_info &hi);
 std::istream &operator>> (std::istream &is, hash_info &hi);
 std::ostream &operator<< (std::ostream &os, const tag_info &ti);
 std::istream &operator>> (std::istream &is, tag_info &ti);
 
-inline bool
-hash_ok (const string &hash)
-{
-  if (hash.size() != 2*hash_ctx::output_bytes)
-    return false;
-  for (char c : hash)
-    if (c < '0' || c > 'f' || (c > '9' && c < 'a'))
-      return false;
-  return true;
-}
+string trashname (const string &maildir, const string &hash);
 
-inline string
-trashname (const string &maildir, const string &hash)
-{
-  if (!hash_ok(hash))
-    throw std::runtime_error ("illegal hash: " + hash);
-  return maildir + muchsync_trashdir + "/" +
-    hash.substr(0,2) + "/" + hash.substr(2);
-}
-
+#endif /* !_SQL_DB_H */
