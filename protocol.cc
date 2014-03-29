@@ -663,14 +663,6 @@ muchsync_server(sqlite3 *db, notmuch_db &nm)
       cout << "200 goodbye\n";
       return;
     }
-    else if (cmd == "conf") {
-      string conf = cmd_output("notmuch config list");
-      if (conf.length())
-        cout << "221-" << conf.length() << '\n'
-             << conf << "221 ok\n";
-      else
-        cout << "410 cannot find configuration\n";
-    }
     else if (cmd == "conffile") {
       ifstream is (opt_notmuch_config);
       ostringstream os;

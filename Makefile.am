@@ -5,9 +5,8 @@ LDADD = $(sqlite3_LIBS)	$(libcrypto_LIBS) $(xapian_LIBS) -lnotmuch
 bin_PROGRAMS = muchsync
 
 muchsync_SOURCES = infinibuf.cc misc.cc muchsync.cc notmuch_db.cc	\
-	protocol.cc spawn.cc sqlstmt.cc sql_db.cc xapian_sync.cc	\
-	cleanup.h misc.h muchsync.h infinibuf.h notmuch_db.h		\
-	sqlstmt.h sql_db.h
+	protocol.cc sqlstmt.cc sql_db.cc xapian_sync.cc cleanup.h	\
+	misc.h muchsync.h infinibuf.h notmuch_db.h sqlstmt.h sql_db.h
 
 CLEANFILES = *~
 maintainer-clean-local:

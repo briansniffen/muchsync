@@ -13,11 +13,10 @@
 using std::string;
 
 /* protocol.cc */
-void muchsync_server (sqlite3 *db, notmuch_db &nm);
-void muchsync_client (sqlite3 *db, notmuch_db &nm,
-		      std::istream &in, std::ostream &out);
-std::istream &get_response (std::istream &in, string &line);
-
+void muchsync_server(sqlite3 *db, notmuch_db &nm);
+void muchsync_client(sqlite3 *db, notmuch_db &nm,
+		     std::istream &in, std::ostream &out);
+std::istream &get_response(std::istream &in, string &line);
 
 /* muchsync.cc */
 extern bool opt_fullscan;
@@ -32,10 +31,4 @@ extern const char muchsync_trashdir[];
 extern const char muchsync_tmpdir[];
 
 /* xapian_sync.cc */
-void xapian_scan (sqlite3 *sqldb, writestamp ws, string maildir);
-void sync_local_data (sqlite3 *sqldb, const string &maildir);
-
-/* spawn.cc */
-string cmd_output (const string &cmd);
-void cmd_iofds (int fds[2], const string &cmd);
-
+void sync_local_data(sqlite3 *sqldb, const string &maildir);

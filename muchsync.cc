@@ -1,29 +1,35 @@
 
 #include <cstring>
-#include <istream>
-#include <iostream>
 #include <iomanip>
+#include <iostream>
 #include <sstream>
-#include <vector>
-#include <stdlib.h>
-#include <unistd.h>
-#include <getopt.h>
 #include <fcntl.h>
+#include <getopt.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
-#include <notmuch.h>
+
 #include "misc.h"
 #include "muchsync.h"
 #include "infinibuf.h"
 
 using namespace std;
 
+#if 1
+struct whattocatch_t {
+  const char *what() noexcept { return "no such exception"; }
+};
+#else
+using whattocatch_t = const exception;
+#endif
+
 #define MUCHSYNC_DEFDIR "/.notmuch/muchsync"
 const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
 const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
 const char muchsync_trashdir[] = MUCHSYNC_DEFDIR "/trash";
 const char muchsync_tmpdir[] = MUCHSYNC_DEFDIR "/tmp";
+
+constexpr char shell[] = "/bin/sh";
 
 bool opt_fullscan;
 bool opt_noscan;
@@ -39,15 +45,7 @@ string opt_remote_muchsync_path = "muchsync";
 string opt_notmuch_config;
 string opt_init_dest;
 
-#if 1
-struct whattocatch_t {
-  const char *what() noexcept { return "no such exception"; }
-};
-#else
-using whattocatch_t = const exception;
-#endif
-
-bool
+static bool
 muchsync_init (const string &maildir, bool create = false)
 {
   string trashbase = maildir + muchsync_trashdir + "/";
@@ -161,6 +159,53 @@ server()
   catch (whattocatch_t &e) {
     cerr << e.what() << '\n';
     exit(1);
+  }
+}
+
+static void
+cmd_iofds (int fds[2], const string &cmd)
+{
+  int ifds[2], ofds[2];
+  if (pipe (ifds))
+    throw runtime_error (string ("pipe: ") + strerror (errno));
+  if (pipe (ofds)) {
+    close (ifds[0]);
+    close (ifds[1]);
+    throw runtime_error (string ("pipe: ") + strerror (errno));
+  }
+
+  pid_t pid = fork();
+  switch (pid) {
+  case -1:
+    close (ifds[0]);
+    close (ifds[1]);
+    close (ofds[0]);
+    close (ofds[1]);
+    throw runtime_error (string ("fork: ") + strerror (errno));
+    break;
+  case 0:
+    close (ifds[0]);
+    close (ofds[1]);
+    if (ofds[0] != 0) {
+      dup2 (ofds[0], 0);
+      close (ofds[0]);
+    }
+    if (ifds[1] != 1) {
+      dup2 (ifds[1], 1);
+      close (ifds[1]);
+    }
+    execl (shell, shell, "-c", cmd.c_str(), nullptr);
+    cerr << shell << ": " << strerror (errno) << '\n';
+    _exit (1);
+    break;
+  default:
+    close (ifds[1]);
+    close (ofds[0]);
+    fcntl (ifds[0], F_SETFD, 1);
+    fcntl (ofds[1], F_SETFD, 1);
+    fds[0] = ifds[0];
+    fds[1] = ofds[1];
+    break;
   }
 }
 
