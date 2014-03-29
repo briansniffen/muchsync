@@ -18,8 +18,6 @@ find_default (typename C::mapped_type def, const C &c, typename C::key_type k)
   return i == c.end() ? def : i->second;
 }
 
-extern const char dbvers[];
-
 constexpr double
 ts_to_double (const timespec &ts)
 {
@@ -54,23 +52,6 @@ versvector get_sync_vector (sqlite3 *db);
 string show_sync_vector (const versvector &vv);
 std::istream &read_sync_vector (std::istream &sb, versvector &vv);
 void sync_local_data (sqlite3 *sqldb, const string &maildir);
-
-/*
- * Example: getconfig(db, "key", &sqlstmt_t::integer)
- */
-template<typename T> T
-getconfig (sqlite3 *db, const string &key)
-{
-  static const char query[] = "SELECT value FROM configuration WHERE key = ?;";
-  return sqlstmt_t(db, query).param(key).step().template column<T>(0);
-}
-template<typename T> void
-setconfig (sqlite3 *db, const string &key, const T &value)
-{
-  static const char query[] =
-    "INSERT OR REPLACE INTO configuration VALUES (?, ?);";
-  sqlstmt_t(db, query).param(key, value).step();
-}
 
 /* xapian_sync.cc */
 void xapian_scan (sqlite3 *sqldb, writestamp ws, string maildir);

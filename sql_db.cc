@@ -7,10 +7,138 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <openssl/rand.h>
 #include "misc.h"
 #include "sql_db.h"
 
 using namespace std;
+
+const char dbvers[] = "muchsync 0";
+
+const char muchsync_schema[] = R"(
+-- General table
+CREATE TABLE configuration (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT);
+CREATE TABLE sync_vector (
+  replica INTEGER PRIMARY KEY,
+  version INTEGER);
+
+-- Shadow copy of the Xapian database to detect changes
+CREATE TABLE xapian_dirs (
+  dir_path TEXT UNIQUE NOT NULL,
+  dir_docid INTEGER PRIMARY KEY,
+  dir_mtime INTEGER);
+CREATE TABLE tags (
+  tag TEXT NOT NULL,
+  docid INTEGER NOT NULL,
+  UNIQUE (docid, tag),
+  UNIQUE (tag, docid));
+CREATE TABLE message_ids (
+  message_id TEXT UNIQUE NOT NULL,
+  docid INTEGER PRIMARY KEY,
+  replica INTEGER,
+  version INTEGER);
+CREATE INDEX message_ids_writestamp ON message_ids (replica, version);
+CREATE TABLE xapian_files (
+  dir_docid INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  docid INTEGER,
+  mtime REAL,
+  inode INTEGER,
+  hash_id INGEGER,
+  PRIMARY KEY (dir_docid, name));
+CREATE INDEX xapian_files_hash_id ON xapian_files (hash_id, dir_docid);
+CREATE TABLE maildir_hashes (
+  hash_id INTEGER PRIMARY KEY,
+  hash TEXT UNIQUE NOT NULL,
+  size INTEGER,
+  message_id TEXT,
+  replica INTEGER,
+  version INTEGER);
+CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
+CREATE INDEX maildir_hashes_writestamp ON maildir_hashes (replica, version);
+CREATE TABLE xapian_nlinks (
+  hash_id INTEGER NOT NULL,
+  dir_docid INTEGER NOT NULL,
+  link_count INTEGER,
+  PRIMARY KEY (hash_id, dir_docid));
+)";
+
+static sqlite3 *
+dbcreate (const char *path)
+{
+  i64 self = 0;
+  if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1
+      || self == 0) {
+    cerr << "RAND_pseudo_bytes failed\n";
+    return nullptr;
+  }
+  self &= ~(i64 (1) << 63);
+
+  sqlite3 *db = nullptr;
+  int err = sqlite3_open_v2 (path, &db,
+			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, nullptr);
+  if (err) {
+    cerr << path << ": " << sqlite3_errstr (err) << '\n';
+    return nullptr;
+  }
+  sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
+
+  try {
+    sqlexec (db, "BEGIN;");
+    sqlexec (db, muchsync_schema);
+    setconfig (db, "dbvers", dbvers);
+    setconfig (db, "self", self);
+    sqlexec (db, "INSERT INTO sync_vector (replica, version)"
+	     " VALUES (%lld, 1);", self);
+    sqlexec (db, "COMMIT;");
+  } catch (sqlerr_t exc) {
+    sqlite3_close_v2 (db);
+    cerr << exc.what () << '\n';
+    return nullptr;
+  }
+  return db;
+}
+
+sqlite3 *
+dbopen (const char *path, bool exclusive)
+{
+  sqlite3 *db = nullptr;
+  if (access (path, 0) && errno == ENOENT)
+    db = dbcreate (path);
+  else {
+    sqlite3_open_v2 (path, &db, SQLITE_OPEN_READWRITE, nullptr);
+    if (exclusive)
+      sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
+  }
+  if (!db)
+    return nullptr;
+
+  sqlexec (db, "PRAGMA secure_delete = 0;");
+
+  try {
+    if (getconfig<string> (db, "dbvers") != dbvers) {
+      cerr << path << ": invalid database version\n";
+      sqlite3_close_v2 (db);
+      return nullptr;
+    }
+    getconfig<i64> (db, "self");
+  }
+  catch (sqldone_t) {
+    cerr << path << ": invalid configuration\n";
+    sqlite3_close_v2 (db);
+    return nullptr;
+  }
+  catch (sqlerr_t &e) {
+    cerr << path << ": " << e.what() << '\n';
+    sqlite3_close_v2 (db);
+    return nullptr;
+  }
+
+  return db;
+}
+
 
 istream &
 read_writestamp (istream &in, writestamp &ws)

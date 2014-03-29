@@ -18,8 +18,37 @@
 
 using std::string;
 
+extern const char dbvers[];
+
 /** Writestamp is the pair (replica-id, version-number). */
 using writestamp = std::pair<i64,i64>;
+std::istream &read_writestamp (std::istream &in, writestamp &ws);
+
+/** Open the SQL database containing muchsync state.
+ *
+ *  If the file does not exist, it is created and initialized with a
+ *  fresh database.
+ */
+sqlite3 *dbopen (const char *path, bool exclusive = false);
+
+
+/*
+ * Example: getconfig(db, "key", &sqlstmt_t::integer)
+ */
+template<typename T> T
+getconfig (sqlite3 *db, const string &key)
+{
+  static const char query[] = "SELECT value FROM configuration WHERE key = ?;";
+  return sqlstmt_t(db, query).param(key).step().template column<T>(0);
+}
+template<typename T> void
+setconfig (sqlite3 *db, const string &key, const T &value)
+{
+  static const char query[] =
+    "INSERT OR REPLACE INTO configuration VALUES (?, ?);";
+  sqlstmt_t(db, query).param(key, value).step();
+}
+
 
 struct hash_info {
   string hash;
@@ -81,8 +110,6 @@ public:
   i64 docid() const { assert (ok()); return docid_; }
   const tag_info &info() const { assert (ok()); return ti_; }
 };
-
-std::istream &read_writestamp (std::istream &in, writestamp &ws);
 
 std::ostream &operator<< (std::ostream &os, const hash_info &hi);
 std::istream &operator>> (std::istream &is, hash_info &hi);

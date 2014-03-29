@@ -12,7 +12,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <openssl/rand.h>
 #include <notmuch.h>
 #include "misc.h"
 #include "muchsync.h"
@@ -21,7 +20,6 @@
 
 using namespace std;
 
-const char dbvers[] = "muchsync 0";
 #define MUCHSYNC_DEFDIR "/.notmuch/muchsync"
 const char muchsync_defdir[] = MUCHSYNC_DEFDIR;
 const char muchsync_dbpath[] = MUCHSYNC_DEFDIR "/state.db";
@@ -125,42 +123,6 @@ print_time (string msg)
   last_time_stamp = now;
 }
 
-sqlite3 *
-dbcreate (const char *path)
-{
-  i64 self = 0;
-  if (RAND_pseudo_bytes ((unsigned char *) &self, sizeof (self)) == -1
-      || self == 0) {
-    cerr << "RAND_pseudo_bytes failed\n";
-    return nullptr;
-  }
-  self &= ~(i64 (1) << 63);
-
-  sqlite3 *db = nullptr;
-  int err = sqlite3_open_v2 (path, &db,
-			     SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, nullptr);
-  if (err) {
-    cerr << path << ": " << sqlite3_errstr (err) << '\n';
-    return nullptr;
-  }
-  sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
-
-  try {
-    sqlexec (db, "BEGIN;");
-    sqlexec (db, schema_def);
-    setconfig (db, "dbvers", dbvers);
-    setconfig (db, "self", self);
-    sqlexec (db, "INSERT INTO sync_vector (replica, version)"
-	     " VALUES (%lld, 1);", self);
-    sqlexec (db, "COMMIT;");
-  } catch (sqlerr_t exc) {
-    sqlite3_close_v2 (db);
-    cerr << exc.what () << '\n';
-    return nullptr;
-  }
-  return db;
-}
-
 bool
 muchsync_init (const string &maildir, bool create = false)
 {
@@ -199,44 +161,6 @@ muchsync_init (const string &maildir, bool create = false)
     }
   }
   return true;
-}
-
-sqlite3 *
-dbopen (const char *path, bool exclusive = false)
-{
-  sqlite3 *db = nullptr;
-  if (access (path, 0) && errno == ENOENT)
-    db = dbcreate (path);
-  else {
-    sqlite3_open_v2 (path, &db, SQLITE_OPEN_READWRITE, nullptr);
-    if (exclusive)
-      sqlexec(db, "PRAGMA locking_mode=EXCLUSIVE;");
-  }
-  if (!db)
-    return nullptr;
-
-  sqlexec (db, "PRAGMA secure_delete = 0;");
-
-  try {
-    if (getconfig<string> (db, "dbvers") != dbvers) {
-      cerr << path << ": invalid database version\n";
-      sqlite3_close_v2 (db);
-      return nullptr;
-    }
-    getconfig<i64> (db, "self");
-  }
-  catch (sqldone_t) {
-    cerr << path << ": invalid configuration\n";
-    sqlite3_close_v2 (db);
-    return nullptr;
-  }
-  catch (sqlerr_t &e) {
-    cerr << path << ": " << e.what() << '\n';
-    sqlite3_close_v2 (db);
-    return nullptr;
-  }
-
-  return db;
 }
 
 versvector
