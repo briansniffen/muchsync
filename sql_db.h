@@ -39,9 +39,9 @@ versvector get_sync_vector (sqlite3 *db);
  */
 sqlite3 *dbopen (const char *path, bool exclusive = false);
 
-
-/*
- * Example: getconfig(db, "key", &sqlstmt_t::integer)
+/** Retrieve a configuration value from the database.
+ *
+ *  Example: `getconfig<i64>(db, "key")`
  */
 template<typename T> T
 getconfig (sqlite3 *db, const string &key)
@@ -49,6 +49,7 @@ getconfig (sqlite3 *db, const string &key)
   static const char query[] = "SELECT value FROM configuration WHERE key = ?;";
   return sqlstmt_t(db, query).param(key).step().template column<T>(0);
 }
+/** Set a configuration value in database. */
 template<typename T> void
 setconfig (sqlite3 *db, const string &key, const T &value)
 {
@@ -57,7 +58,8 @@ setconfig (sqlite3 *db, const string &key, const T &value)
   sqlstmt_t(db, query).param(key, value).step();
 }
 
-
+/** Structure representing all occurences of a file with a particular
+ *  content hash in the maildir. */
 struct hash_info {
   string hash;
   i64 size = -1;
@@ -66,6 +68,8 @@ struct hash_info {
   std::unordered_map<string,i64> dirs;
 };
 
+/** Pre-formatted queries for looking up ::hash_info structures in
+ *  database. */
 class hash_lookup {
   sqlstmt_t gethash_;
   sqlstmt_t getlinks_;
@@ -99,12 +103,19 @@ public:
   std::streambuf *content();
 };
 
+/** Structure representing all the tags associated with a particular
+ *  message ID in the database.
+ *
+ *  Note that multiple content hashes may contain the same message ID.
+ */
 struct tag_info {
   string message_id;
   writestamp tag_stamp = {0, 0};
   std::unordered_set<string> tags;
 };
 
+/** Pre-formatted queries for looking up ::tag_info structures in
+ *  database. */
 class tag_lookup {
   sqlstmt_t getmsg_;
   sqlstmt_t gettags_;

@@ -13,11 +13,12 @@
  */
 class cleanup {
   std::function<void()> action_;
+  static void nop() {}
 public:
-  cleanup() : action_ ([] () {}) {}
+  cleanup() : action_ (nop) {}
   cleanup(const cleanup &) = delete;
   cleanup(cleanup &&c) : action_(c.action_) { c.release(); }
-  template<typename F> cleanup(F &&f) : action_(std::forward<F>(f)) {}
+  template<typename F> cleanup(F &&f) : action_ (std::forward<F>(f)) {}
   template<typename... Args> cleanup(Args... args)
     : action_(std::bind(args...)) {}
   ~cleanup() { action_(); }
@@ -27,7 +28,7 @@ public:
     release();
     old();
   }
-  template<typename F> void reset(F && f) {
+  template<typename F> void reset(F &&f) {
     std::function<void()> old (action_);
     action_ = std::forward<F>(f);
     old();
@@ -37,7 +38,7 @@ public:
     action_ = std::bind(args...);
     old();
   }
-  void release() { action_ = [] () {}; }
+  void release() { action_ = nop; }
 };
 
 /** \brief Like a \ref std::unique_ptr, but half the size because the

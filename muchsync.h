@@ -6,7 +6,6 @@
 #include <unordered_set>
 
 #include "cleanup.h"
-#include "sqlstmt.h"
 #include "sql_db.h"
 #include "notmuch_db.h"
 
