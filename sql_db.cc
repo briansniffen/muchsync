@@ -150,7 +150,48 @@ read_writestamp (istream &in, writestamp &ws)
   return in;
 }
 
+istream &
+read_sync_vector (istream &in, versvector &vv)
+{
+  input_match (in, '<');
+  vv.clear();
+  for (;;) {
+    char c;
+    if ((in >> c) && c == '>')
+      return in;
+    in.unget();
+    writestamp ws;
+    if (!read_writestamp (in, ws))
+      break;
+    vv.insert (ws);
+    if (!(in >> c) || c == '>')
+      break;
+    if (c != ',') {
+      in.setstate (ios_base::failbit);
+      break;
+    }
+  }
+  return in;
+}
+
 string
+show_sync_vector (const versvector &vv)
+{
+  ostringstream sb;
+  sb << '<';
+  bool first = true;
+  for (auto ws : vv) {
+    if (first)
+      first = false;
+    else
+      sb << ",";
+    sb << 'R' << ws.first << '=' << ws.second;
+  }
+  sb << '>';
+  return sb.str();
+}
+
+static string
 permissive_percent_encode (const string &raw)
 {
   ostringstream outbuf;
@@ -419,6 +460,17 @@ tag_lookup::lookup (const string &msgid)
     ti_.tags.insert(gettags_.str(0));
   return ok_ = true;
 }
+
+versvector
+get_sync_vector (sqlite3 *db)
+{
+  versvector vv;
+  sqlstmt_t s (db, "SELECT replica, version FROM sync_vector;");
+  while (s.step().row())
+    vv.emplace (s.integer(0), s.integer(1));
+  return vv;
+}
+
 
 #include "muchsync.h"
 

@@ -16,7 +16,6 @@
 #include "misc.h"
 #include "muchsync.h"
 #include "infinibuf.h"
-#include "notmuch_db.h"
 
 using namespace std;
 
@@ -47,81 +46,6 @@ struct whattocatch_t {
 #else
 using whattocatch_t = const exception;
 #endif
-
-const char schema_def[] = R"(
--- General table
-CREATE TABLE configuration (
-  key TEXT PRIMARY KEY NOT NULL,
-  value TEXT);
-CREATE TABLE sync_vector (
-  replica INTEGER PRIMARY KEY,
-  version INTEGER);
-
--- Shadow copy of the Xapian database to detect changes
-CREATE TABLE xapian_dirs (
-  dir_path TEXT UNIQUE NOT NULL,
-  dir_docid INTEGER PRIMARY KEY,
-  dir_mtime INTEGER);
-CREATE TABLE tags (
-  tag TEXT NOT NULL,
-  docid INTEGER NOT NULL,
-  UNIQUE (docid, tag),
-  UNIQUE (tag, docid));
-CREATE TABLE message_ids (
-  message_id TEXT UNIQUE NOT NULL,
-  docid INTEGER PRIMARY KEY,
-  replica INTEGER,
-  version INTEGER);
-CREATE INDEX message_ids_writestamp ON message_ids (replica, version);
-CREATE TABLE xapian_files (
-  dir_docid INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  docid INTEGER,
-  mtime REAL,
-  inode INTEGER,
-  hash_id INGEGER,
-  PRIMARY KEY (dir_docid, name));
-CREATE INDEX xapian_files_hash_id ON xapian_files (hash_id, dir_docid);
-CREATE TABLE maildir_hashes (
-  hash_id INTEGER PRIMARY KEY,
-  hash TEXT UNIQUE NOT NULL,
-  size INTEGER,
-  message_id TEXT,
-  replica INTEGER,
-  version INTEGER);
-CREATE INDEX maildir_hashes_message_id ON maildir_hashes (message_id);
-CREATE INDEX maildir_hashes_writestamp ON maildir_hashes (replica, version);
-CREATE TABLE xapian_nlinks (
-  hash_id INTEGER NOT NULL,
-  dir_docid INTEGER NOT NULL,
-  link_count INTEGER,
-  PRIMARY KEY (hash_id, dir_docid));
-)";
-
-static double
-time_stamp ()
-{
-  timespec ts;
-  clock_gettime (CLOCK_REALTIME, &ts);
-  return ts_to_double (ts);
-}
-
-static double start_time_stamp {time_stamp()};
-static double last_time_stamp {start_time_stamp};
-
-void
-print_time (string msg)
-{
-  double now = time_stamp();
-  if (opt_verbose > 0) {
-    auto oldFlags = cerr.flags();
-    cerr.setf (ios::fixed, ios::floatfield);
-    cerr << msg << "... " << now - start_time_stamp
-	 << " (+" << now - last_time_stamp << ")\n";
-    cerr.flags (oldFlags);
-  }
-  last_time_stamp = now;
-}
 
 bool
 muchsync_init (const string &maildir, bool create = false)
@@ -161,109 +85,6 @@ muchsync_init (const string &maildir, bool create = false)
     }
   }
   return true;
-}
-
-versvector
-get_sync_vector (sqlite3 *db)
-{
-  versvector vv;
-  sqlstmt_t s (db, "SELECT replica, version FROM sync_vector;");
-  while (s.step().row())
-    vv.emplace (s.integer(0), s.integer(1));
-  return vv;
-}
-
-string
-show_sync_vector (const versvector &vv)
-{
-  ostringstream sb;
-  sb << '<';
-  bool first = true;
-  for (auto ws : vv) {
-    if (first)
-      first = false;
-    else
-      sb << ",";
-    sb << 'R' << ws.first << '=' << ws.second;
-  }
-  sb << '>';
-  return sb.str();
-}
-
-istream &
-read_sync_vector (istream &in, versvector &vv)
-{
-  input_match (in, '<');
-  vv.clear();
-  for (;;) {
-    char c;
-    if ((in >> c) && c == '>')
-      return in;
-    in.unget();
-    writestamp ws;
-    if (!read_writestamp (in, ws))
-      break;
-    vv.insert (ws);
-    if (!(in >> c) || c == '>')
-      break;
-    if (c != ',') {
-      in.setstate (ios_base::failbit);
-      break;
-    }
-  }
-  return in;
-}
-
-void
-sync_local_data (sqlite3 *sqldb, const string &maildir)
-{
-  print_time ("synchronizing muchsync database with Xapian");
-  sqlexec (sqldb, "SAVEPOINT localsync;");
-
-  try {
-    i64 self = getconfig<i64>(sqldb, "self");
-    sqlexec (sqldb, "UPDATE sync_vector"
-	     " SET version = version + 1 WHERE replica = %lld;", self);
-    if (sqlite3_changes (sqldb) != 1)
-      throw runtime_error ("My replica id (" + to_string (self)
-			   + ") not in sync vector");
-    versvector vv = get_sync_vector (sqldb);
-    i64 vers = vv.at(self);
-    writestamp ws { self, vers };
-
-    xapian_scan (sqldb, ws, maildir);
-  }
-  catch (...) {
-    sqlexec (sqldb, "ROLLBACK TO localsync;");
-    throw;
-  }
-  sqlexec (sqldb, "RELEASE localsync;");
-  print_time ("finished synchronizing muchsync database with Xapian");
-}
-
-string
-notmuch_maildir_location()
-{
-  string loc = cmd_output("notmuch config get database.path");
-  while (loc.size() > 0 && (loc.back() == '\n' || loc.back() == '\r'))
-    loc.resize(loc.size()-1);
-  struct stat sb;
-  if (!loc.size() || (!stat(loc.c_str(), &sb) && !S_ISDIR(sb.st_mode)))
-    throw runtime_error("cannot find location of default maildir");
-  return loc;
-}
-
-static string
-get_notmuch_config()
-{
-  char *p = getenv("NOTMUCH_CONFIG");
-  if (p && *p)
-    return p;
-  p = getenv("HOME");
-  if (p && *p)
-    return string(p) + "/.notmuch-config";
-  cerr << "Cannot find HOME directory\n";
-  exit(1);
 }
 
 static void
@@ -498,7 +319,7 @@ main(int argc, char **argv)
 {
   umask (077);
 
-  opt_notmuch_config = get_notmuch_config();
+  opt_notmuch_config = notmuch_db::default_notmuch_config();
 
   int opt;
   while ((opt = getopt_long(argc, argv, "+C:Fr:s:v",

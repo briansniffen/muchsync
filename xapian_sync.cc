@@ -593,3 +593,31 @@ xapian_scan(sqlite3 *sqldb, writestamp ws, string maildir)
   xapian_adjust_nlinks(sqldb, ws);
   print_time ("adjusted link counts");
 }
+
+void
+sync_local_data (sqlite3 *sqldb, const string &maildir)
+{
+  print_time ("synchronizing muchsync database with Xapian");
+  sqlexec (sqldb, "SAVEPOINT localsync;");
+
+  try {
+    i64 self = getconfig<i64>(sqldb, "self");
+    sqlexec (sqldb, "UPDATE sync_vector"
+	     " SET version = version + 1 WHERE replica = %lld;", self);
+    if (sqlite3_changes (sqldb) != 1)
+      throw runtime_error ("My replica id (" + to_string (self)
+			   + ") not in sync vector");
+    versvector vv = get_sync_vector (sqldb);
+    i64 vers = vv.at(self);
+    writestamp ws { self, vers };
+
+    xapian_scan (sqldb, ws, maildir);
+  }
+  catch (...) {
+    sqlexec (sqldb, "ROLLBACK TO localsync;");
+    throw;
+  }
+  sqlexec (sqldb, "RELEASE localsync;");
+  print_time ("finished synchronizing muchsync database with Xapian");
+}
+

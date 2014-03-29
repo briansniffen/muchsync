@@ -24,6 +24,14 @@ extern const char dbvers[];
 using writestamp = std::pair<i64,i64>;
 std::istream &read_writestamp (std::istream &in, writestamp &ws);
 
+/** A version vector is a set of ::writestamps with distinct
+ *  replica-ids.
+ */
+using versvector = std::unordered_map<i64,i64>;
+string show_sync_vector (const versvector &vv);
+std::istream &read_sync_vector (std::istream &sb, versvector &vv);
+versvector get_sync_vector (sqlite3 *db);
+
 /** Open the SQL database containing muchsync state.
  *
  *  If the file does not exist, it is created and initialized with a

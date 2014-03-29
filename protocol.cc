@@ -17,7 +17,6 @@
 #include "misc.h"
 #include "muchsync.h"
 #include "infinibuf.h"
-#include "notmuch_db.h"
 
 using namespace std;
 

@@ -111,3 +111,28 @@ hash_ctx::final()
   SHA1_Final (resbuf, &ctx_);
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
+
+static double
+time_stamp ()
+{
+  timespec ts;
+  clock_gettime (CLOCK_REALTIME, &ts);
+  return ts_to_double (ts);
+}
+
+static double start_time_stamp {time_stamp()};
+static double last_time_stamp {start_time_stamp};
+
+void
+print_time (string msg)
+{
+  double now = time_stamp();
+  if (opt_verbose > 0) {
+    auto oldFlags = cerr.flags();
+    cerr.setf (ios::fixed, ios::floatfield);
+    cerr << msg << "... " << now - start_time_stamp
+	 << " (+" << now - last_time_stamp << ")\n";
+    cerr.flags (oldFlags);
+  }
+  last_time_stamp = now;
+}
