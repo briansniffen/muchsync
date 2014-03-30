@@ -836,6 +836,9 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
   msg_sync msync (nm, db);
   i64 pending = 0;
 
+  int down_links = 0, down_body = 0, down_tags = 0,
+    up_links = 0, up_body = 0, up_tags = 0;
+
   out << "vect " << show_sync_vector(localvv) << "\nlsync\n" << flush;
   sqlexec(db, "BEGIN IMMEDIATE;");
   get_response (in, line);
@@ -862,9 +865,12 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
       out << "send " << hi.hash << '\n';
       pending++;
     }
+    else
+      down_links++;
   }
   out << "tsync\n";
   print_time ("received hashes of new files");
+  down_body = pending;
 
   hash_info hi;
   tag_info ti;
@@ -887,6 +893,7 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
   print_time ("received content of missing messages");
 
   while (get_response (in, line) && line.at(3) == '-') {
+    down_tags++;
     is.str(line.substr(4));
     if (!(is >> ti))
       throw runtime_error ("could not parse tag_info: " + line.substr(4));
@@ -900,6 +907,9 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
 
   sqlexec (db, "COMMIT;");
   print_time("commited changes to local database");
+  cerr << "received: " << down_body << " new messages, "
+       << down_links << " renamed/deleted messages, "
+       << down_tags << " re-tagged messaged\n";
 
   if (opt_noup)
     return;
@@ -917,14 +927,24 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
       is.str(line.substr(4));
       string hash;
       is >> hash;
-      if (send_content(msync.hashdb, msync.tagdb, hash, "recv ", out))
+      if (send_content(msync.hashdb, msync.tagdb, hash, "recv ", out)) {
 	pending++;
+	up_body++;
+      }
     }
+    else
+      up_links++;
   }
   print_time("sent content of new messages to server");
-  pending += send_tags(db, "tags ", out);
+  up_tags = send_tags(db, "tags ", out);
+  pending += up_tags;
   print_time("sent modified tags to server");
   out << "commit\n";
+  if (!opt_upbg || opt_verbose)
+    cerr << "sent:     " << up_body << " new messages, "
+	 << up_links << " renamed/deleted messages, "
+	 << up_tags << " re-tagged messaged\n";
+
   while (pending-- > 0)
     get_response(in, line);
   get_response(in, line);
