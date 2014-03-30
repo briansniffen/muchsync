@@ -11,6 +11,7 @@
 #include <vector>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <openssl/rand.h>
@@ -828,6 +829,7 @@ void
 muchsync_client (sqlite3 *db, notmuch_db &nm,
 		 istream &in, ostream &out)
 {
+  constexpr time_t commit_interval = 10;
   /* Any work done here gets overlapped with server */
   sync_local_data (db, nm.maildir);
   versvector localvv {get_sync_vector (db)}, remotevv;
@@ -849,6 +851,16 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
   set_peer_vector(db, remotevv);
   print_time ("received server's version vector");
 
+  time_t last_commit = time(nullptr);
+  auto maybe_commit = [&last_commit,&nm,db] () {
+    time_t now = time(nullptr);
+    if (now - last_commit >= commit_interval) {
+      nm.close();
+      sqlexec(db, "COMMIT; BEGIN;");
+      last_commit = now;
+    }
+  };
+
   while (get_response (in, line) && line.at(3) == '-') {
     is.str(line.substr(4));
     hash_info hi;
@@ -867,6 +879,7 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
     }
     else
       down_links++;
+    maybe_commit();
   }
   out << "tsync\n";
   print_time ("received hashes of new files");
@@ -889,6 +902,7 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
       throw runtime_error ("msg_sync::sync failed even with source");
     if (opt_verbose > 2)
       cerr << hi << '\n';
+    maybe_commit();
   }
   print_time ("received content of missing messages");
 
@@ -900,11 +914,13 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
     if (opt_verbose > 2)
       cerr << ti << '\n';
     msync.tag_sync(remotevv, ti);
+    maybe_commit();
   }
   print_time ("received tags of new and modified messages");
 
   record_peer_vector(db);
 
+  nm.close();
   sqlexec (db, "COMMIT;");
   print_time("commited changes to local database");
 
