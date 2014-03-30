@@ -907,9 +907,11 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
 
   sqlexec (db, "COMMIT;");
   print_time("commited changes to local database");
-  cerr << "received: " << down_body << " new messages, "
-       << down_links << " renamed/deleted messages, "
-       << down_tags << " re-tagged messaged\n";
+
+  if (opt_verbose || opt_noup || opt_upbg)
+    cerr << "received " << down_body << " messages, "
+	 << down_links << " link changes, "
+	 << down_tags << " tag changes\n";
 
   if (opt_noup)
     return;
@@ -940,13 +942,25 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
   pending += up_tags;
   print_time("sent modified tags to server");
   out << "commit\n";
-  if (!opt_upbg || opt_verbose)
-    cerr << "sent:     " << up_body << " new messages, "
-	 << up_links << " renamed/deleted messages, "
-	 << up_tags << " re-tagged messaged\n";
+
+  if (opt_verbose)
+    cerr << "sent " << up_body << " messages, "
+	 << up_links << " link changes, "
+	 << up_tags << " tag changes\n";
 
   while (pending-- > 0)
     get_response(in, line);
   get_response(in, line);
   print_time("commit succeeded on server");
+
+  if (!opt_upbg || opt_verbose) {
+    int w = 5;
+    cerr << "SUMMARY:\n"
+	 << "  received " << setw(w) << down_body << " messages, "
+	 << setw(w) << down_links << " link changes, "
+	 << setw(w) << down_tags << " tag changes\n";
+    cerr << "      sent " << setw(w) << up_body << " messages, "
+	 << setw(w) << up_links << " link changes, "
+	 << setw(w) << up_tags << " tag changes\n";
+  }
 }
