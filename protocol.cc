@@ -10,8 +10,9 @@
 #include <unordered_set>
 #include <vector>
 #include <fcntl.h>
-#include <unistd.h>
+#include <signal.h>
 #include <time.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <openssl/rand.h>
@@ -20,6 +21,8 @@
 #include "infinibuf.h"
 
 using namespace std;
+
+bool interrupted;
 
 class msg_sync {
   sqlite3 *db_;
@@ -48,6 +51,28 @@ public:
 		const tag_info &remote_tag_info);
   void commit();
 };
+
+static void
+interrupt(int sig)
+{
+  interrupted = true;
+}
+static void
+catch_interrupts(int sig, bool active)
+{
+  struct sigaction act;
+  memset(&act, 0, sizeof(act));
+  if (active) {
+    act.sa_handler = &interrupt;
+    act.sa_flags = SA_RESETHAND;
+  }
+  else {
+    if (interrupted)
+      exit(1);
+    act.sa_handler = SIG_DFL;
+  }
+  sigaction(sig, &act, nullptr);
+}
 
 static string
 myhostname()
@@ -851,10 +876,18 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
   set_peer_vector(db, remotevv);
   print_time ("received server's version vector");
 
+  catch_interrupts(SIGINT, true);
+  catch_interrupts(SIGTERM, true);
   time_t last_commit = time(nullptr);
   auto maybe_commit = [&last_commit,&nm,db] () {
     time_t now = time(nullptr);
-    if (now - last_commit >= commit_interval) {
+    if (interrupted) {
+      cerr << "Interrupted\n";
+      nm.close();
+      sqlexec(db, "COMMIT;");
+      exit(1);
+    }
+    else if (now - last_commit >= commit_interval) {
       nm.close();
       sqlexec(db, "COMMIT; BEGIN;");
       last_commit = now;
@@ -928,6 +961,8 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
     cerr << "received " << down_body << " messages, "
 	 << down_links << " link changes, "
 	 << down_tags << " tag changes\n";
+  catch_interrupts(SIGINT, false);
+  catch_interrupts(SIGTERM, false);
 
   if (opt_noup)
     return;
