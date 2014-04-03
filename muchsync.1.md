@@ -95,15 +95,14 @@ additional copies of messages.
 
 Message tags are synchronized based on notmuch's message-ID (usually
 the Message-ID header of a message), rather than message contents.  On
-conflict, tags are combined combined as follows.  Any tag in the
-notmuch configuration parameter `new.tags` is removed from the message
-unless it appears on both replicas.  Any other tag is added if it
-appears on any replica.  In other words, tags in `new.tags` are
-logically anded, while all other flags are logically ored.  (This
-approach will give the most predictable results if `new.tags` has the
-same value in all your replicas.  The `--init` option ensures this
-initially, but subsequent changes to `new.tags` must be manually
-propagated.)
+conflict, tags are combined as follows.  Any tag in the notmuch
+configuration parameter `new.tags` is removed from the message unless
+it appears on both replicas.  Any other tag is added if it appears on
+any replica.  In other words, tags in `new.tags` are logically anded,
+while all other flags are logically ored.  (This approach will give
+the most predictable results if `new.tags` has the same value in all
+your replicas.  The `--init` option ensures this initially, but
+subsequent changes to `new.tags` must be manually propagated.)
 
 
 # OPTIONS
