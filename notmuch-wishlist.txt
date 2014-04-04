@@ -1,0 +1,42 @@
+Features I really wish notmuch supported:
+
+  * Public access to message and directory Xapian::docids, which could
+    be achieved by exposing the _notmuch_message_get_doc_id and
+    _notmuch_directory_get_document_id functions.
+
+  * A Xapian value attached to each document that represents the time
+    of last modification (i.e., filenames added or tags added).  This
+    would allow super fast incremental message syncs.
+
+  * The ability to use glob patterns or regular expressions for
+    user.other_email, e.g., for situations where one receives mail at
+    <anything>@some.domain.com.
+
+  * Indexing of Delivered-To headers, since this is often the only
+    exact (non-heuristic) way of knowing that you received a
+    particular message from a mailing list.
+
+  * An option to ignore certain directories, especially anything that
+    doesn't end with .../new or .../cur.  (notmuch seems to waste an
+    inordinate amount of time looking at weird databases and other
+    crud left around by imap clients.)
+
+  * A more precise folder query.  (For example, how to match against a
+    top level folder, to find messages in inbox/cur but not
+    inbox/anything/cur.)
+
+  * A way to re-send bounce messages, editing the headers to fix
+    incorrect addresses, which most mailers support.
+
+  * An out-of-the-box feature to stick a Return-Path: header in
+    messages saved directly to the sent folder.
+
+  * Multithreaded message indexing, or at least the ability to merge
+    multiple databases so the expensive indexing part can be spread
+    over multiple CPUs.  (This is quite hard given the current way
+    that thread IDs are created.)
+
+  * Better handling of non-identical messages with identical
+    Message-Ids.  (This is really a design problem, so unlikely to get
+    fixed... it might be better to use content hash instead of the
+    insecure Message-ID header.)
