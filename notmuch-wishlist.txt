@@ -16,11 +16,6 @@ Features I really wish notmuch supported:
     exact (non-heuristic) way of knowing that you received a
     particular message from a mailing list.
 
-  * An option to ignore certain directories, especially anything that
-    doesn't end with .../new or .../cur.  (notmuch seems to waste an
-    inordinate amount of time looking at weird databases and other
-    crud left around by imap clients.)
-
   * A more precise folder query.  (For example, how to match against a
     top level folder, to find messages in inbox/cur but not
     inbox/anything/cur.)
@@ -40,3 +35,13 @@ Features I really wish notmuch supported:
     Message-Ids.  (This is really a design problem, so unlikely to get
     fixed... it might be better to use content hash instead of the
     insecure Message-ID header.)
+
+  * An option to ignore files or directories that don't fit certain
+    patterns, especially anything that doesn't end with .../new or
+    .../cur.  notmuch seems to waste an inordinate amount of time
+    looking at weird databases and other crud left around by imap
+    servers, and explicitly listing each individual file name in
+    new.ignore is a pain.  At least glob patterns would help, but what
+    you really want is a list of allowed directory names (i.e., new
+    and cur), not ignored files/directories.
+
