@@ -200,9 +200,27 @@ that neither your configuration file (by default `~/.notmuch-config`)
 nor `~/maildir` should exist before running this command, as both will
 be created.
 
-To have the command ``notmuch new`` on a client automatically fetch
-new mail from server `myserver`, you can place the following in the
-file ``.notmuch/hooks/post-new`` under your mail directory:
+To create a `notmuch-poll` script that fetches mail from a remote
+server `myserver`, but on that server just runs `notmuch new`, do the
+following:  First, run `muchsync --self` on the server to get the
+replica ID.  Then take the ID returned (e.g., `1968464194667562615`)
+and embed it in a shell script as follows:
+
+    #!/bin/sh
+    self=$($HOME/muchsync --self) || exit 1
+    if [ "$self" = 1968464194667562615 ]; then
+        exec notmuch new
+    else
+        exec $HOME/muchsync -r ./muchsync --upbg myserver
+    fi
+
+The path of such a script is a good candidate for the emacs
+`notmuch-poll-script` variable.
+
+Alternatively, to have the command ``notmuch new`` on a client
+automatically fetch new mail from server `myserver`, you can place the
+following in the file ``.notmuch/hooks/post-new`` under your mail
+directory:
 
     #!/bin/sh
     notmuch --nonew --upbg myserver
@@ -219,6 +237,17 @@ called ```.notmuch/muchsync```.
 notmuch(1).
 
 # BUGS
+
+muchsync expects initially to create replicas from scratch.  If you
+have created a replica using another tool such as offlineimap and you
+try to use muchsync to synchronize them, muchsync will assume every
+file has an update conflict.  This is okay if the two replicas are
+identical; if they are not, it will result in artifacts such as files
+deleted in only one replica reappearing.  Ideally notmuch needs an
+option like `--clobber` that makes a local replica identical to the
+remote one without touching the remote one, so that an old version of
+a mail directory can be used as a disposable cache to bootstrap
+initialization.
 
 muchsync never deletes directories.  If you want to remove a
 subdirectory completely, you must manually execute rmdir on all
@@ -255,8 +284,8 @@ enough (see the next paragraph).
 muchsync makes certain assumptions about the structure of notmuch's
 private types `notmuch_message_t` and `notmuch_directory_t`.  In
 particular, it assumes that the Xapian document ID is the second field
-of these the data structures.  Sadly, there is no efficient and clean
-way to extract this information from the notmuch library interface.
+of these data structures.  Sadly, there is no efficient and clean way
+to extract this information from the notmuch library interface.
 muchsync also makes other assumptions about how tokens are named in
 the Xapian database.  These assumptions are necessary because the
 notmuch library interface and the notmuch dump utility are too slow to
