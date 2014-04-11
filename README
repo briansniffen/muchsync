@@ -1,7 +1,40 @@
-* To build this software after a git checkout, run the following
-  commands:
 
-autoreconf -i
-./configure
-make
+# To get latest the muchsync software, run:
 
+    git clone http://www.scs.stanford.edu/~dm/repos/muchsync.git
+
+# To build it after a git checkout, run the following:
+
+    autoreconf -i
+    ./configure
+    make
+
+[Note:  you need pandoc to build the man page.]
+
+# Using
+
+Muchsync assumes that it's on your path on the server, but you can
+specify the path on the command line with -r.  If you are tracking a
+development version, you can put a symlink to the executable in your
+home directory on all machines, and then run:
+
+    ~/muchsync -r ./muchsync server
+
+Of course, initial clones are kind of slow, so you probably want to
+see what's happening.  You can add -vv before server to see what is
+happening locally, and -vv after to see what is happening on the
+server.  For example:
+
+    ~/muchsync -r ./muchsync -vv server -vv
+
+# Getting started
+
+On the server, initialize the repository by running:
+
+    muchsync -vv
+
+On the client, to create a new replica from scratch, run one of:
+
+    muchsync --init=/path/to/new/inbox -vv server -vv
+
+    muchsync -r ./muchsync --init=/path/to/new/inbox -vv server -vv
