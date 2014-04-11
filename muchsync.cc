@@ -141,12 +141,7 @@ print_self()
   if (!db)
     exit(1);
   cleanup _c (sqlite3_close_v2, db);
-
-  try {
-    sqlstmt_t getself(db,
-		      "SELECT value FROM configuration WHERE key = 'self';");
-    cout << getself.step().integer(0) << '\n';
-  } catch (whattocatch_t e) { cerr << e.what() << '\n'; exit (1); }
+  cout << getconfig<i64>(db, "self") << '\n';
 }
 
 static void
