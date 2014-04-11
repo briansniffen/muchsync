@@ -168,6 +168,13 @@ subsequent changes to `new.tags` must be manually propagated.)
     mail, if you want to begin reading your mail as soon as it has
     been downloaded while the upload continues.
 
+\--self
+:   Print the 64-bit replica ID of the local maildir replica and exit.
+    Potentially useful in higher-level scripts, such as the emacs
+    notmuch-poll-script variable for identifying on which replica one
+    is running, particularly if network file systems allow a replica
+    to be accessed from multiple machines.
+
 \--version
 :   Report on the muchsync version number
 

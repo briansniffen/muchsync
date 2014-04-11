@@ -120,9 +120,33 @@ Additional options:\n\
    --new         Run notmuch new first\n\
    --noup[load]  Do not upload changes to server\n\
    --upbg        Download mail in forground, then upload in background\n\
+   --self        Print local replica identifier and exit\n\
    --version     Print version number and exit\n\
    --help        Print usage\n";
   exit (code);
+}
+
+static void
+print_self()
+{
+  unique_ptr<notmuch_db> nmp;
+  try {
+    nmp.reset(new notmuch_db (opt_notmuch_config));
+  } catch (whattocatch_t e) { cerr << e.what() << '\n'; exit (1); }
+  notmuch_db &nm = *nmp;
+
+  string dbpath = nm.maildir + muchsync_dbpath;
+
+  sqlite3 *db = dbopen(dbpath.c_str(), false);
+  if (!db)
+    exit(1);
+  cleanup _c (sqlite3_close_v2, db);
+
+  try {
+    sqlstmt_t getself(db,
+		      "SELECT value FROM configuration WHERE key = 'self';");
+    cout << getself.step().integer(0) << '\n';
+  } catch (whattocatch_t e) { cerr << e.what() << '\n'; exit (1); }
 }
 
 static void
@@ -161,6 +185,7 @@ server()
     exit(1);
   }
 }
+
 
 static void
 cmd_iofds (int fds[2], const string &cmd)
@@ -342,6 +367,7 @@ enum opttag {
   OPT_NOUP,
   OPT_HELP,
   OPT_NONEW,
+  OPT_SELF,
   OPT_INIT
 };
 
@@ -354,6 +380,7 @@ static const struct option muchsync_options[] = {
   { "noupload", no_argument, nullptr, OPT_NOUP },
   { "nonew", no_argument, nullptr, OPT_NONEW },
   { "init", required_argument, nullptr, OPT_INIT },
+  { "self", no_argument, nullptr, OPT_SELF },
   { "config", required_argument, nullptr, 'C' },
   { "help", no_argument, nullptr, OPT_HELP },
   { nullptr, 0, nullptr, 0 }
@@ -365,6 +392,7 @@ main(int argc, char **argv)
   umask (077);
 
   opt_notmuch_config = notmuch_db::default_notmuch_config();
+  bool opt_self = false;
 
   int opt;
   while ((opt = getopt_long(argc, argv, "+C:Fr:s:v",
@@ -405,6 +433,9 @@ main(int argc, char **argv)
     case OPT_NONEW:
       opt_nonew = true;
       break;
+    case OPT_SELF:
+      opt_self = true;
+      break;
     case OPT_INIT:
       opt_init = true;
       opt_init_dest = optarg;
@@ -415,7 +446,9 @@ main(int argc, char **argv)
       usage();
     }
 
-  if (opt_server) {
+  if (opt_self)
+    print_self();
+  else if (opt_server) {
     if (opt_init || opt_noup || opt_upbg || optind != argc)
       usage();
     server();
