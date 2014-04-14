@@ -400,6 +400,7 @@ msg_sync::hash_sync(const versvector &rvv,
 			      i64(sb.st_ino), hashdb.hash_id()).step();
       if (isnew) {
 	new_msgid = true;
+	// XXX tip might be NULL here when undeleting a file
 	update_message_id_stamp_.reset()
 	  .param(tip->tag_stamp.first, tip->tag_stamp.second, docid).step();
 	add_tag_.reset().bind_int(1, docid);
