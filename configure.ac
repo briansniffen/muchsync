@@ -7,7 +7,7 @@ AM_INIT_AUTOMAKE([-Wall])
 AC_CONFIG_SRCDIR([configure.ac])
 AC_CONFIG_MACRO_DIR([m4])
 
-AC_PROG_CXX([eg++ g++ c++ gpp aCC CC cxx cc++ cl.exe FCC KCC RCC xlC_r xlC])
+AC_PROG_CXX([clang++ eg++ g++ c++ gpp aCC CC cxx cc++ cl.exe FCC KCC RCC xlC_r xlC])
 AX_CXX_COMPILE_STDCXX_11(noext,mandatory)
 CXXFLAGS="$CXXFLAGS -Wall"
 dnl AC_USE_SYSTEM_EXTENSIONS

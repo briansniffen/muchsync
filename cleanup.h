@@ -9,6 +9,21 @@
 
 #include <functional>
 
+inline std::function<void()> &&
+voidify(std::function<void()> &&f) {
+  return move(f);
+}
+inline const std::function<void()> &
+voidify(const std::function<void()> &f) {
+  return f;
+}
+template<typename F> inline std::function<void()>
+voidify(F &&f)
+{
+  return [f]() { f(); };
+}
+
+
 /** \brief Container for a cleanup action.
  */
 class cleanup {
@@ -20,7 +35,7 @@ public:
   cleanup(cleanup &&c) : action_(c.action_) { c.release(); }
   template<typename F> cleanup(F &&f) : action_ (std::forward<F>(f)) {}
   template<typename... Args> cleanup(Args... args)
-    : action_(std::bind(args...)) {}
+    : action_(voidify(std::bind(args...))) {}
   ~cleanup() { action_(); }
   cleanup &operator=(cleanup &&c) { action_.swap(c.action_); return *this; }
   void reset() {

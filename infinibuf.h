@@ -180,7 +180,10 @@ public:
 class ifdstream : public std::istream {
   infinistreambuf isb_;
 public:
-  ifdstream(int fd) : isb_(new infinibuf_infd(fd)) { rdbuf(&isb_); }
+  ifdstream(int fd)
+    : std::istream (nullptr), isb_ (new infinibuf_infd(fd)) {
+    init(&isb_);
+  }
   ~ifdstream() {
     std::lock_guard<infinibuf> _lk (*isb_.get_infinibuf());
     isb_.get_infinibuf()->err(EPIPE);
@@ -190,7 +193,10 @@ public:
 class ofdstream : public std::ostream {
   infinistreambuf isb_;
 public:
-  ofdstream(int fd) : isb_(new infinibuf_outfd(fd)) { rdbuf(&isb_); }
+  ofdstream(int fd)
+    : std::ostream (nullptr), isb_(new infinibuf_outfd(fd)) {
+    init(&isb_);
+  }
   ~ofdstream() {
     if (std::uncaught_exception())
       try { isb_.sputeof(); } catch(...) {}
@@ -199,7 +205,7 @@ public:
   }
 };
 
-/** \brief `istream` from file descriptor with unbounded buffer.
+/** \brief std::istream from file descriptor with unbounded buffer.
  *
  * Continously reads from and buffers input from a file descriptor in
  * another thread.  Closes the file descriptor after receiving EOF.
@@ -209,10 +215,10 @@ public:
 class ifdinfinistream : public std::istream {
   infinistreambuf isb_ { new infinibuf_mt() };
 public:
-  ifdinfinistream (int fd) {
+  ifdinfinistream (int fd) : std::istream (nullptr) {
     std::thread t (infinibuf::input_loop, isb_.get_infinibuf(), fd);
     t.detach();
-    rdbuf(&isb_);
+    init(&isb_);
   }
   ~ifdinfinistream() {
     std::lock_guard<infinibuf> _lk (*isb_.get_infinibuf());
