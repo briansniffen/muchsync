@@ -4,7 +4,7 @@
 
 # NAME
 
-inktool - synchronize maildirs and notmuch databases
+muchsync - synchronize maildirs and notmuch databases
 
 # SYNOPSIS
 
