@@ -204,7 +204,7 @@ xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
        if (vip) {
 	 while (gi != ge && *gi < vip->get_docid())
 	   ++gi;
-	 if (*gi == vip->get_docid()) {
+	 if (gi != ge && *gi == vip->get_docid()) {
 	   if (!sp)
 	     return;
 	   vip = nullptr;
