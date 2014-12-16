@@ -19,6 +19,7 @@ using namespace std;
 // XXX - these things have to match notmuch-private.h
 constexpr int NOTMUCH_VALUE_TIMESTAMP = 0;
 constexpr int NOTMUCH_VALUE_MESSAGE_ID = 1;
+const string notmuch_ghost_term = "Tghost";
 const string notmuch_tag_prefix = "K";
 const string notmuch_directory_prefix = "XDIRECTORY";
 const string notmuch_file_direntry_prefix = "XFDIRENTRY";
@@ -108,7 +109,7 @@ sync_table (sqlstmt_t &s, T &t, T &te,
     }
   }
   while (t != te) {
-    update (NULL, &t);
+    update (nullptr, &t);
     ++t;
   }
 }
@@ -185,6 +186,10 @@ xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
 		     " VALUES (?, 1);"),
     del_message(sqldb, "DELETE FROM message_ids WHERE docid = ?;");
 
+  Xapian::PostingIterator
+    gi = xdb.postlist_begin(notmuch_ghost_term),
+    ge = xdb.postlist_end(notmuch_ghost_term);
+
   Xapian::ValueIterator
     vi = xdb.valuestream_begin (NOTMUCH_VALUE_MESSAGE_ID),
     ve = xdb.valuestream_end (NOTMUCH_VALUE_MESSAGE_ID);
@@ -194,8 +199,17 @@ xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
      [] (sqlstmt_t &s, Xapian::ValueIterator &vi) -> int {
        return s.integer(1) - vi.get_docid();
      },
-     [&add_message,&del_message,&flag_new_message]
+     [&add_message,&del_message,&flag_new_message,&gi,&ge,&ve]
      (sqlstmt_t *sp, Xapian::ValueIterator *vip) {
+       if (vip) {
+	 while (gi != ge && *gi < vip->get_docid())
+	   ++gi;
+	 if (*gi == vip->get_docid()) {
+	   if (!sp)
+	     return;
+	   vip = nullptr;
+	 }
+       }
        if (!sp) {
 	 i64 docid = vip->get_docid();
 	 add_message.reset().param(**vip, docid).step();
