@@ -405,11 +405,11 @@ msg_sync::hash_sync(const versvector &rvv,
 	    add_tag_.reset().bind_text(2, t).step();
 	}
 	else {
-	  record_docid_.param(rhi.message_id, docid).step().reset();
+	  record_docid_.reset().param(rhi.message_id, docid).step();
 	  // The empty tag is always invalid, so if worse comes to
 	  // worst and we crash at the wrong time, the next scan will
 	  // end up bumping the version number on this message ID.
-	  add_tag_.reset().param(docid, "");
+	  add_tag_.reset().param(docid, "").step();
 #if 0
 	  add_tag_.reset().bind_int(1, docid);
 	  for (auto t : nm_.new_tags)
