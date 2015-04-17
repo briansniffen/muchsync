@@ -28,7 +28,7 @@ text index on a single CPU.  This is a limitation of how notmuch
 tracks threads, which makes it impossible to parallelize first-time
 index creation.
 
-Once setup, using muchsync is as easy as typing this each time you
+Once set up, using muchsync is as easy as typing this each time you
 want to check for new mail:
 
     muchsync SERVER
