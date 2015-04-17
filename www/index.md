@@ -1,4 +1,4 @@
-% muchsync - synchronize notmuch mail state across machines
+% muchsync - synchronize notmuch mail across machines
 
 [Notmuch](http://notmuchmail.org/) is a nice mail indexer with front
 ends for [emacs](https://www.gnu.org/software/emacs/) and
