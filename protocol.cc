@@ -316,8 +316,6 @@ msg_sync::hash_sync(const versvector &rvv,
 {
   hash_info lhi;
   i64 docid = -1;
-  bool docid_valid = false;
-  bool new_msgid = false;
 
   if (hashdb.lookup(rhi.hash)) {
     /* We might already be up to date from a previous sync that never
@@ -394,18 +392,30 @@ msg_sync::hash_sync(const versvector &rvv,
 	notmuch_db::get_docid(nm_.add_message(target,
 					      tip ? &tip->tags : nullptr,
 					      &isnew));
-      docid_valid = true;
       i64 dir_id = get_dir_docid(li.first);
       add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.st_mtim),
 			      i64(sb.st_ino), hashdb.hash_id()).step();
       if (isnew) {
-	new_msgid = true;
-	// XXX tip might be NULL here when undeleting a file
-	update_message_id_stamp_.reset()
-	  .param(tip->tag_stamp.first, tip->tag_stamp.second, docid).step();
-	add_tag_.reset().bind_int(1, docid);
-	for (auto t : (tip ? tip->tags : nm_.new_tags))
-	  add_tag_.reset().bind_text(2, t).step();
+	// tip might be NULL here when undeleting a file
+	if (tip) {
+	  update_message_id_stamp_.reset()
+	    .param(tip->tag_stamp.first, tip->tag_stamp.second, docid).step();
+	  add_tag_.reset().bind_int(1, docid);
+	  for (auto t : tip->tags)
+	    add_tag_.reset().bind_text(2, t).step();
+	}
+	else {
+	  record_docid_.param(rhi.message_id, docid).step().reset();
+	  // The empty tag is always invalid, so if worse comes to
+	  // worst and we crash at the wrong time, the next scan will
+	  // end up bumping the version number on this message ID.
+	  add_tag_.reset().param(docid, "");
+#if 0
+	  add_tag_.reset().bind_int(1, docid);
+	  for (auto t : nm_.new_tags)
+	    add_tag_.reset().bind_text(2, t).step();
+#endif
+	}
       }
     }
   /* remove extra links */
@@ -443,9 +453,6 @@ msg_sync::hash_sync(const versvector &rvv,
 	}
       }
     }
-
-  if (new_msgid && docid_valid)
-    record_docid_.param(rhi.message_id, docid).step().reset();
 
   /* Adjust link counts in database */
   for (auto li : save_needlinks)
@@ -713,7 +720,7 @@ muchsync_server(sqlite3 *db, notmuch_db &nm)
 	  cout << "510 unknown hash\n";
 	break;
       case 't':			// tinfo command
-	if (tagdb.lookup(key))
+	if (tagdb.lookup(percent_decode(key)))
 	  cout << "210 " << tagdb.info() << '\n';
 	else
 	  cout << "510 unkown message id\n";
@@ -836,7 +843,7 @@ muchsync_server(sqlite3 *db, notmuch_db &nm)
 }
 
 istream &
-get_response (istream &in, string &line)
+get_response (istream &in, string &line, bool err_ok)
 {
   if (!getline (in, line))
     throw runtime_error ("premature EOF");
@@ -846,7 +853,7 @@ get_response (istream &in, string &line)
     throw runtime_error ("unexpected empty line");
   if (line.size() < 4)
     throw runtime_error ("unexpected short line");
-  if (line.front() != '2')
+  if (line.front() != '2' && (line.front() != '5' || !err_ok))
     throw runtime_error ("bad response: " + line);
   return in;
 }
@@ -916,6 +923,13 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
     maybe_commit();
   }
   out << "tsync\n";
+  int extra_tags = 0;
+  for (sqlstmt_t nolinks (db, "SELECT message_id FROM message_ids"
+			  " WHERE replica = 0 AND version = 0;");
+       nolinks.step().row();) {
+    extra_tags++;
+    out << "tinfo " << permissive_percent_encode(nolinks.str(0)) << '\n';
+  }
   print_time ("received hashes of new files");
   down_body = pending;
 
@@ -942,6 +956,18 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
 
   while (get_response (in, line) && line.at(3) == '-') {
     down_tags++;
+    is.str(line.substr(4));
+    if (!(is >> ti))
+      throw runtime_error ("could not parse tag_info: " + line.substr(4));
+    if (opt_verbose > 2)
+      cerr << ti << '\n';
+    msync.tag_sync(remotevv, ti);
+    maybe_commit();
+  }
+  for (; extra_tags > 0; extra_tags--) {
+    get_response(in, line, true);
+    if (line[0] == '5')
+      continue;
     is.str(line.substr(4));
     if (!(is >> ti))
       throw runtime_error ("could not parse tag_info: " + line.substr(4));

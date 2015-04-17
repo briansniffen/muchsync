@@ -15,7 +15,7 @@ using std::string;
 void muchsync_server(sqlite3 *db, notmuch_db &nm);
 void muchsync_client(sqlite3 *db, notmuch_db &nm,
 		     std::istream &in, std::ostream &out);
-std::istream &get_response(std::istream &in, string &line);
+std::istream &get_response(std::istream &in, string &line, bool err_ok = true);
 
 /* muchsync.cc */
 extern bool opt_fullscan;

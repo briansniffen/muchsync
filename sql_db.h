@@ -137,4 +137,6 @@ std::istream &operator>> (std::istream &is, tag_info &ti);
 
 string trashname (const string &maildir, const string &hash);
 
+string permissive_percent_encode (const string &raw);
+
 #endif /* !_SQL_DB_H */

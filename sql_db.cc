@@ -191,7 +191,7 @@ show_sync_vector (const versvector &vv)
   return sb.str();
 }
 
-static string
+string
 permissive_percent_encode (const string &raw)
 {
   ostringstream outbuf;
