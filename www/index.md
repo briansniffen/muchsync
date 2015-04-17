@@ -4,18 +4,18 @@
 ends for [emacs](https://www.gnu.org/software/emacs/) and
 [vim](http://www.vim.org/).  If you like the idea of fully-indexed,
 tag-based email like gmail, but you don't want a cloud- or web-based
-solution, then notmuch may be for you.  However, because notmuch
-stores all of your mail locally, until now you could only conveniently
-read mail on a single machine.
+solution, then notmuch may be for you.  However, notmuch stores all of
+your mail locally on one machine.  Hence, until now, if you wanted the
+full benefit of notmuch tags, you could only conveniently read your
+email on a single machine.
 
-muchsync brings notmuch to all of your computers by synchronizing your
+Muchsync brings notmuch to all of your computers by synchronizing your
 mail messages and notmuch tags across machines.  The protocol is
-heavily pipelined to work efficiently over high-latency networks as
-when tethering to a cell phone.  Finally, muchsync supports pairwise
-synchronization among arbitrary many replicas.  A version-vector-based
-algorithm allows it to exchange only the minimum information necessary
-to bring replicas up to date regardless of which pairs have previously
-synchronized.
+heavily pipelined to work efficiently over high-latency networks such
+as mobile networks.  Muchsync supports pairwise synchronization among
+arbitrary many replicas.  A version-vector-based algorithm allows it
+to exchange only the minimum information necessary to bring replicas
+up to date regardless of which pairs have previously synchronized.
 
 Setting up muchsync is as easy as typing this the first time you run
 it:
@@ -23,18 +23,21 @@ it:
     muchsync --init $HOME/inbox SERVER
 
 Here `SERVER` is your existing mail server.  Initialization can take a
-very long time because it builds a mail index and notmuch currently
-makes it impossible to spread that task over more than one CPU.
+*very* long time because it downloads all your email and builds a full
+text index on a single CPU.  This is a limitation of how notmuch
+tracks threads, which makes it impossible to parallelize first-time
+index creation.
 
-Using muchsync is as easy as typing this each time you want to check
-for new mail:
+Once setup, using muchsync is as easy as typing this each time you
+want to check for new mail:
 
     muchsync SERVER
 
 That command brings bring the client and `SERVER` up to date with any
-tag and message changes.  Of course, if after synchronizing with a
-server you want to push the changes onto another machine `LAPTOP`,
-then all you need to run is:
+tag and message changes, and should generally run efficiently if you
+don't have much mail to download.  If, after using the above command
+to synchronize your desktop with a server, you also want your mail on
+a laptop, you can push the mail from your desktop to the laptop with:
 
     muchsync LAPTOP
 
