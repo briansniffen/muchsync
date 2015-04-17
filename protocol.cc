@@ -396,6 +396,7 @@ msg_sync::hash_sync(const versvector &rvv,
       add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.st_mtim),
 			      i64(sb.st_ino), hashdb.hash_id()).step();
       if (isnew) {
+	record_docid_.reset().param(rhi.message_id, docid).step();
 	// tip might be NULL here when undeleting a file
 	if (tip) {
 	  update_message_id_stamp_.reset()
@@ -405,7 +406,6 @@ msg_sync::hash_sync(const versvector &rvv,
 	    add_tag_.reset().bind_text(2, t).step();
 	}
 	else {
-	  record_docid_.reset().param(rhi.message_id, docid).step();
 	  // The empty tag is always invalid, so if worse comes to
 	  // worst and we crash at the wrong time, the next scan will
 	  // end up bumping the version number on this message ID.
@@ -971,6 +971,7 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
     is.str(line.substr(4));
     if (!(is >> ti))
       throw runtime_error ("could not parse tag_info: " + line.substr(4));
+    down_tags++;
     if (opt_verbose > 2)
       cerr << ti << '\n';
     msync.tag_sync(remotevv, ti);
