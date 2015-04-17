@@ -49,7 +49,15 @@ libraries from [notmuch](http://www.notmuchmail.org/),
 [OpenSSL](https://www.openssl.org)'s libcrypto.  To run muchsync, you
 will need [ssh](http://www.openssh.com/).
 
-## [Download](src/)
+## Download
+
+* [Click here to download releases](src/)
+
+* Or, to contribute, clone the repo with:
+
+    ~~~~
+    git clone http://www.muchsync.org/muchsync.git
+    ~~~~
 
 ## Documentation
 
