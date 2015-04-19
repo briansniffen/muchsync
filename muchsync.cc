@@ -15,10 +15,12 @@
 
 using namespace std;
 
-#if 1
-struct whattocatch_t {
+#if 0
+// This gives core dumps to make it easier to debug
+struct no_such_exception_t {
   const char *what() noexcept { return "no such exception"; }
 };
+using whattocatch_t = no_such_exception_t;
 #else
 using whattocatch_t = const exception;
 #endif
@@ -117,7 +119,7 @@ Additional options:\n\
    -r path       Specify path to notmuch executable on server\n\
    -s ssh-cmd    Specify ssh command and arguments\n\
    --config file Specify path to notmuch config file (same as -C)\n\
-   --new         Run notmuch new first\n\
+   --nonew       No not run notmuch new first\n\
    --noup[load]  Do not upload changes to server\n\
    --upbg        Download mail in forground, then upload in background\n\
    --self        Print local replica identifier and exit\n\
@@ -328,17 +330,6 @@ client(int ac, char **av)
     exit(1);
   if (!opt_nonew)
     nmp->run_new();
-#if 0
-  if (opt_init && !mkdir((nmp->maildir + "/.notmuch/hooks").c_str(), 0777)) {
-    int fd = open ((nmp->maildir + "/.notmuch/hooks/post-new").c_str(),
-		   O_CREAT|O_WRONLY|O_EXCL|O_TRUNC, 0777);
-    ofdstream of (fd);
-    of << "#!/bin/sh\nmuchsync --nonew --upbg -r " << opt_remote_muchsync_path;
-    for (int i = 0; i < ac; i++)
-      of << ' ' << av[i];
-    of << " --new" << flush;
-  }
-#endif
   string dbpath = nmp->maildir + muchsync_dbpath;
   sqlite3 *db = dbopen(dbpath.c_str(), true);
   if (!db)
