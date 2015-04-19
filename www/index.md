@@ -1,4 +1,8 @@
-% muchsync - synchronize [notmuch mail](http://notmuchmail.org/) across machines
+% muchsync
+
+<div align="center" style="margin-top: 10px;"><img src="logo.png"/></div>
+
+# muchsync - synchronize [notmuch mail](http://notmuchmail.org/) across machines
 
 [Notmuch](http://notmuchmail.org/) is a nice mail indexer with front
 ends for emacs and vim.  If you like the idea of fully-indexed,
