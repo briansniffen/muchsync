@@ -119,7 +119,7 @@ Additional options:\n\
    -r path       Specify path to notmuch executable on server\n\
    -s ssh-cmd    Specify ssh command and arguments\n\
    --config file Specify path to notmuch config file (same as -C)\n\
-   --nonew       No not run notmuch new first\n\
+   --nonew       Do not run notmuch new first\n\
    --noup[load]  Do not upload changes to server\n\
    --upbg        Download mail in forground, then upload in background\n\
    --self        Print local replica identifier and exit\n\
