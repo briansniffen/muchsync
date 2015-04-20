@@ -1,7 +1,7 @@
 
 all: index.html muchsync.html logo.png
 
-CSS = http://netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap.min.css \
+CSS = https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css \
         local.css
 
 PANDOC = pandoc -s -t html5 --template=template.html \
