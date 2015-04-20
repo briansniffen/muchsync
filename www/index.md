@@ -2,7 +2,7 @@
 
 <div class="text-center" style="margin-top:10px;">
 <img src="logo.png"/ alt="logo" width="524" height="119"
-style="max-width:80%;"/>
+style="max-width:100%;"/>
 </div>
 
 # muchsync - synchronize [notmuch mail](http://notmuchmail.org/) across machines
