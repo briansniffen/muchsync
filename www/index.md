@@ -87,8 +87,11 @@ will need [ssh](http://www.openssh.com/).
 ## Contact
 
 Please [email](http://www.scs.stanford.edu/~dm/addr/) questions,
-comments, testimonials, and bug reports to the author (preferably with
-the word "muchsync" in the email subject).
+comments, testimonials, bug reports, patches, and pull requests to the
+author (preferably with the word "muchsync" in the email subject).
+For pull requests, please spare me the trouble of navigating any web
+sites and include include a raw `git fetch` command that makes
+`FETCH_HEAD` point to whatever it is you would like me to merge.
 
 muchsync is brought to you by
 [David Mazi&egrave;res](http://www.scs.stanford.edu/~dm/) of the

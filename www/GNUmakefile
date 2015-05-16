@@ -4,7 +4,7 @@ all: index.html muchsync.html logo.png
 CSS = https://maxcdn.bootstrapcdn.com/bootstrap/3.3.4/css/bootstrap.min.css \
         local.css
 
-PANDOC = pandoc -s -t html5 --template=template.html \
+PANDOC = pandoc -S -s -t html5 --template=template.html \
 	$(patsubst %, --css=%, $(CSS))
 
 DEPS = template.html GNUmakefile
