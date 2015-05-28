@@ -104,6 +104,18 @@ the most predictable results if `new.tags` has the same value in all
 your replicas.  The `--init` option ensures this initially, but
 subsequent changes to `new.tags` must be manually propagated.)
 
+## File deletion
+
+Because publishing software that actually deletes people's email is a
+scary prospect, muchsync for the moment never actually deletes mail
+files.  Though this may change in the future, for the moment muchsync
+moves any deleted messages to the directory `.notmuch/muchsync/trash`
+under your mail directory (naming deleted messages by their content
+hash).  If you really want to delete mail to reclaim disk space or for
+privacy reasons, you will need to run the following on each replica:
+
+    cd "$(notmuch config get database.path)"
+    rm -rf .notmuch/muchsync/trash
 
 # OPTIONS
 
