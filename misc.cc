@@ -9,6 +9,11 @@
 #include <sys/types.h>
 #include "misc.h"
 
+#ifdef __MACH__
+#include <mach/clock.h>
+#include <mach/mach.h>
+#endif
+
 using namespace std;
 
 string
@@ -20,7 +25,7 @@ percent_encode (const string &raw)
 
   for (char c : raw) {
     if (isalnum (c) || (c >= '+' && c <= '.')
-	|| c == '_' || c == '@' || c == '=')
+    || c == '_' || c == '@' || c == '=')
       outbuf << c;
     else
       outbuf << '%' << setw(2) << int (uint8_t (c));
@@ -48,9 +53,9 @@ percent_decode (const string &encoded)
     switch (escape_pos) {
     case 0:
       if (c == '%')
-	escape_pos = 1;
+    escape_pos = 1;
       else
-	outbuf << c;
+    outbuf << c;
       break;
     case 1:
       escape_val = hexdigit(c) << 4;
@@ -98,7 +103,7 @@ hexdump (const string &s)
   if (ret.size() != 2 * s.size()) {
     cerr << ret.size() << " != 2 * " << s.size () << "\n";
     cerr << "s[0] == " << hex << unsigned (s[0]) << ", s.back() = "
-	 << unsigned (s.back()) << "\n";
+     << unsigned (s.back()) << "\n";
     terminate();
   }
   return ret;
@@ -116,7 +121,17 @@ static double
 time_stamp ()
 {
   timespec ts;
+  #ifdef __MACH__ // OS X does not have clock_gettime, use clock_get_time
+  clock_serv_t cclock;
+  mach_timespec_t mts;
+  host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &cclock);
+  clock_get_time(cclock, &mts);
+  mach_port_deallocate(mach_task_self(), cclock);
+  ts.tv_sec = mts.tv_sec;
+  ts.tv_nsec = mts.tv_nsec;
+  #else
   clock_gettime (CLOCK_REALTIME, &ts);
+  #endif
   return ts_to_double (ts);
 }
 
@@ -131,7 +146,7 @@ print_time (string msg)
     auto oldFlags = cerr.flags();
     cerr.setf (ios::fixed, ios::floatfield);
     cerr << msg << "... " << now - start_time_stamp
-	 << " (+" << now - last_time_stamp << ")\n";
+     << " (+" << now - last_time_stamp << ")\n";
     cerr.flags (oldFlags);
   }
   last_time_stamp = now;

@@ -28,10 +28,10 @@ static void
 drop_triggers(sqlite3 *db)
 {
   for (const char *trigger
-	 : { "tag_delete", "tag_insert", "link_delete", "link_insert" })
+     : { "tag_delete", "tag_insert", "link_delete", "link_insert" })
     sqlexec (db, "DROP TRIGGER IF EXISTS %s;", trigger);
   for (const char *table
-	 : { "modified_docids", "modified_xapian_dirs", "modified_hashes" })
+     : { "modified_docids", "modified_xapian_dirs", "modified_hashes" })
     sqlexec(db, "DROP TABLE IF EXISTS %s;", table);
 }
 
@@ -88,8 +88,8 @@ get_sha (int dfd, const char *direntry, i64 *sizep)
 
 template<typename T> void
 sync_table (sqlstmt_t &s, T &t, T &te,
-	    function<int(sqlstmt_t &s, T &t)> cmpfn,
-	    function<void(sqlstmt_t *s, T *t)> update)
+        function<int(sqlstmt_t &s, T &t)> cmpfn,
+        function<void(sqlstmt_t *s, T *t)> update)
 {
   s.step();
   while (s.row()) {
@@ -118,7 +118,7 @@ string
 tag_from_term (const string &term)
 {
   assert (!strncmp (term.c_str(), notmuch_tag_prefix.c_str(),
-		    notmuch_tag_prefix.length()));
+            notmuch_tag_prefix.length()));
   return percent_encode (term.substr (notmuch_tag_prefix.length()));
 }
 
@@ -132,17 +132,17 @@ static void
 xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb, const writestamp &ws)
 {
   sqlexec(sqldb, "DROP TABLE IF EXISTS dead_tags; "
-	  "CREATE TEMP TABLE dead_tags (tag TEXT PRIMARY KEY); "
-	  "INSERT INTO dead_tags SELECT DISTINCT tag FROM tags;");
+      "CREATE TEMP TABLE dead_tags (tag TEXT PRIMARY KEY); "
+      "INSERT INTO dead_tags SELECT DISTINCT tag FROM tags;");
   sqlstmt_t
     scan (sqldb, "SELECT docid, rowid FROM tags"
-	  " WHERE tag = ? ORDER BY docid ASC;"),
+      " WHERE tag = ? ORDER BY docid ASC;"),
     add_tag (sqldb, "INSERT INTO tags (docid, tag) VALUES (?, ?);"),
     del_tag (sqldb, "DELETE FROM tags WHERE rowid = ?;"),
     record_tag (sqldb, "DELETE FROM dead_tags WHERE tag = ?;");
 
   for (Xapian::TermIterator ti = xdb.allterms_begin(notmuch_tag_prefix),
-	 te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
+     te = xdb.allterms_end(notmuch_tag_prefix); ti != te; ti++) {
     string tag = tag_from_term (*ti);
     if (opt_verbose > 1)
       cerr << "  " << tag << "\n";
@@ -156,34 +156,34 @@ xapian_scan_tags (sqlite3 *sqldb, Xapian::Database &xdb, const writestamp &ws)
     sync_table<Xapian::PostingIterator>
       (scan, pi, pe,
        [] (sqlstmt_t &s, Xapian::PostingIterator &p) -> int {
-	 return s.integer(0) - *p;
+     return s.integer(0) - *p;
        },
        [&] (sqlstmt_t *sp, Xapian::PostingIterator *pp) {
-	 if (!sp)
-	   add_tag.reset().bind_int(1, **pp).step();
-	 else if (!pp)
-	   del_tag.reset().bind_value(1, sp->value(1)).step();
+     if (!sp)
+       add_tag.reset().bind_int(1, **pp).step();
+     else if (!pp)
+       del_tag.reset().bind_value(1, sp->value(1)).step();
        });
   }
 
   sqlexec(sqldb, "DELETE FROM tags WHERE tag IN (SELECT * FROM dead_tags);");
   sqlexec(sqldb, "UPDATE message_ids SET replica = %lld, version = %lld"
-	  " WHERE docid IN (SELECT docid FROM modified_docids WHERE new = 0);",
-	  ws.first, ws.second);
+      " WHERE docid IN (SELECT docid FROM modified_docids WHERE new = 0);",
+      ws.first, ws.second);
 }
 
 static void
 xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
-			 Xapian::Database xdb)
+             Xapian::Database xdb)
 {
   sqlstmt_t
     scan(sqldb,
-	  "SELECT message_id, docid FROM message_ids ORDER BY docid ASC;"),
+      "SELECT message_id, docid FROM message_ids ORDER BY docid ASC;"),
     add_message(sqldb,
-		"INSERT INTO message_ids (message_id, docid, replica, version)"
-		" VALUES (?, ?, %lld, %lld);", ws.first, ws.second),
+        "INSERT INTO message_ids (message_id, docid, replica, version)"
+        " VALUES (?, ?, %lld, %lld);", ws.first, ws.second),
     flag_new_message(sqldb, "INSERT INTO modified_docids (docid, new)"
-		     " VALUES (?, 1);"),
+             " VALUES (?, 1);"),
     del_message(sqldb, "DELETE FROM message_ids WHERE docid = ?;");
 
   Xapian::PostingIterator
@@ -202,27 +202,27 @@ xapian_scan_message_ids (sqlite3 *sqldb, const writestamp &ws,
      [&add_message,&del_message,&flag_new_message,&gi,&ge,&ve]
      (sqlstmt_t *sp, Xapian::ValueIterator *vip) {
        if (vip) {
-	 while (gi != ge && *gi < vip->get_docid())
-	   ++gi;
-	 if (gi != ge && *gi == vip->get_docid()) {
-	   if (!sp)
-	     return;
-	   vip = nullptr;
-	 }
+     while (gi != ge && *gi < vip->get_docid())
+       ++gi;
+     if (gi != ge && *gi == vip->get_docid()) {
+       if (!sp)
+         return;
+       vip = nullptr;
+     }
        }
        if (!sp) {
-	 i64 docid = vip->get_docid();
-	 add_message.reset().param(**vip, docid).step();
-	 flag_new_message.reset().param(docid).step();
+     i64 docid = vip->get_docid();
+     add_message.reset().param(**vip, docid).step();
+     flag_new_message.reset().param(docid).step();
        }
        else if (!vip)
-	 del_message.reset().param(sp->value(1)).step();
+     del_message.reset().param(sp->value(1)).step();
        else if (sp->str(0) != **vip) {
-	 // This should be really unusual
-	 cerr << "warning: message id changed from <"
-	      << sp->str(0) << "> to <" << **vip << ">\n";
-	 del_message.reset().param(sp->value(1)).step();
-	 add_message.reset().param(**vip, i64(vip->get_docid())).step();
+     // This should be really unusual
+     cerr << "warning: message id changed from <"
+          << sp->str(0) << "> to <" << **vip << ">\n";
+     del_message.reset().param(sp->value(1)).step();
+     add_message.reset().param(**vip, i64(vip->get_docid())).step();
        }
      });
 }
@@ -245,11 +245,11 @@ xapian_scan_directories (sqlite3 *sqldb, Xapian::Database &xdb)
 {
   sqlstmt_t
     scandirs(sqldb, "SELECT dir_path, dir_docid, dir_mtime FROM xapian_dirs"
-	     " ORDER BY dir_path;"),
+         " ORDER BY dir_path;"),
     deldir(sqldb, "DELETE FROM xapian_dirs WHERE dir_docid = ?;"),
     delfiles(sqldb, "DELETE FROM xapian_files WHERE dir_docid = ?;"),
     adddir(sqldb, "INSERT INTO xapian_dirs (dir_path, dir_docid, dir_mtime)"
-	   " VALUES (?, ?, ?);"),
+       " VALUES (?, ?, ?);"),
     upddir(sqldb, "UPDATE xapian_dirs SET dir_mtime = ? WHERE dir_docid = ?;"),
     flagdir(sqldb, "INSERT INTO modified_xapian_dirs (dir_docid) VALUES (?);");
 
@@ -327,32 +327,32 @@ public:
   fileops(sqlite3 *db, const writestamp &ws);
   void del_file(i64 rowid) { del_file_.reset().param(rowid).step(); }
   void add_file(const string &dir, int dfd, i64 dir_docid,
-		string name, i64 docid);
+        string name, i64 docid);
   void check_file(const string &dir, int dfd, i64 dir_docid);
 };
 
 fileops::fileops(sqlite3 *db, const writestamp &ws)
   : scan_dir_(db, "SELECT rowid, name, docid%s"
-	      " FROM xapian_files WHERE dir_docid = ? ORDER BY name;",
-	      opt_fullscan ? ", mtime, inode, hash_id" : ""),
+          " FROM xapian_files WHERE dir_docid = ? ORDER BY name;",
+          opt_fullscan ? ", mtime, inode, hash_id" : ""),
     get_msgid_(db, "SELECT message_id FROM message_ids WHERE docid = ?;"),
     del_file_(db, "DELETE FROM xapian_files WHERE rowid = ?;"),
     add_file_(db, "INSERT INTO xapian_files"
-	      " (dir_docid, name, docid, mtime, inode, hash_id)"
-	      " VALUES (?, ?, ?, ?, ?, ?);"),
+          " (dir_docid, name, docid, mtime, inode, hash_id)"
+          " VALUES (?, ?, ?, ?, ?, ?);"),
     upd_file_(db, "UPDATE xapian_files SET mtime = ?, inode = ?"
-	      " WHERE rowid = ?;"),
+          " WHERE rowid = ?;"),
     get_hashid_(db, opt_fullscan
-	      ? "SELECT hash_id, size, message_id FROM maildir_hashes"
-	        " WHERE hash = ?;"
-	      : "SELECT hash_id FROM maildir_hashes WHERE hash = ?;"),
+          ? "SELECT hash_id, size, message_id FROM maildir_hashes"
+            " WHERE hash = ?;"
+          : "SELECT hash_id FROM maildir_hashes WHERE hash = ?;"),
     get_hash_(db, "SELECT hash, size FROM maildir_hashes WHERE hash_id = ?;"),
     add_hash_(db, "INSERT OR REPLACE INTO maildir_hashes "
-	      " (hash, size, message_id, replica, version)"
-	      " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second),
+          " (hash, size, message_id, replica, version)"
+          " VALUES (?, ?, ?, %lld, %lld);", ws.first, ws.second),
     upd_hash_(db, "UPDATE maildir_hashes SET size = ?, message_id = ?"
-	      " WHERE hash_id = ?;",
-	      ws.first, ws.second)
+          " WHERE hash_id = ?;",
+          ws.first, ws.second)
 {
 }
 
@@ -392,7 +392,7 @@ fileops::get_file_hash_id(int dfd, const string &name, i64 docid)
 
 void
 fileops::add_file(const string &dir, int dfd, i64 dir_docid,
-		  string name, i64 docid)
+          string name, i64 docid)
 {
   struct stat sb;
   if (fstatat(dfd, name.c_str(), &sb, 0)) {
@@ -405,8 +405,14 @@ fileops::add_file(const string &dir, int dfd, i64 dir_docid,
 
   i64 hash_id = get_file_hash_id(dfd, name, docid);
   add_file_.reset()
-    .param(dir_docid, name, docid, ts_to_double(sb.st_mtim),
-	   i64(sb.st_ino), hash_id).step();
+    .param(dir_docid, name, docid, ts_to_double(
+                                                #ifdef __MACH__
+                                                sb.st_mtimespec
+                                                #else
+                                                sb.st_mtim
+                                                #endif
+                                                ),
+       i64(sb.st_ino), hash_id).step();
 }
 
 void
@@ -424,7 +430,13 @@ fileops::check_file(const string &dir, int dfd, i64 dir_docid)
   if (!S_ISREG(sb.st_mode))
     return;
 
-  double fs_mtim = ts_to_double(sb.st_mtim);
+  double fs_mtim = ts_to_double(
+                                #ifdef __MACH__
+                                sb.st_mtimespec
+                                #else
+                                sb.st_mtim
+                                #endif
+                                );
   i64 fs_inode = sb.st_ino, fs_size = sb.st_size;
   double db_mtim = scan_dir_.real(3);
   i64 db_inode = scan_dir_.integer(4);
@@ -444,17 +456,17 @@ fileops::check_file(const string &dir, int dfd, i64 dir_docid)
   else {
     del_file_.reset().param(rowid).step();
     add_file_.reset().param(dir_docid, name, docid, fs_mtim, fs_inode,
-			    fs_hashid);
+                fs_hashid);
   }
 }
 
 static void
 xapian_scan_filenames (sqlite3 *db, const string &maildir,
-		       const writestamp &ws, Xapian::Database xdb)
+               const writestamp &ws, Xapian::Database xdb)
 {
   sqlstmt_t dirscan (db, "SELECT dir_path, dir_docid FROM xapian_dirs%s;",
-		     opt_fullscan ? ""
-		     : " NATURAL JOIN modified_xapian_dirs");
+             opt_fullscan ? ""
+             : " NATURAL JOIN modified_xapian_dirs");
   fileops f (db, ws);
 
   while (dirscan.step().row()) {
@@ -473,7 +485,7 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
     f.scan_dir_.reset().param(dir_docid).step();
 
     string dirtermprefix = (notmuch_file_direntry_prefix
-			    + to_string (dir_docid) + ":");
+                + to_string (dir_docid) + ":");
     Xapian::TermIterator ti = xdb.allterms_begin(dirtermprefix),
       te = xdb.allterms_end(dirtermprefix);
     size_t dirtermprefixlen = dirtermprefix.size();
@@ -486,19 +498,19 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
       const char *xname = &term[dirtermprefixlen];
       int cmp = strcmp(dbname,xname);
       if (!cmp) {
-	if (opt_fullscan)
-	  f.check_file(dir, dfd, dir_docid);
-	f.scan_dir_.step();
-	++ti;
+    if (opt_fullscan)
+      f.check_file(dir, dfd, dir_docid);
+    f.scan_dir_.step();
+    ++ti;
       }
       else if (cmp < 0) {
-	f.del_file(f.scan_dir_.integer(0));
-	f.scan_dir_.step();
+    f.del_file(f.scan_dir_.integer(0));
+    f.scan_dir_.step();
       }
       else {
-	to_add.emplace(term.substr(dirtermprefixlen),
-		       xapian_get_unique_posting(xdb, term));
-	++ti;
+    to_add.emplace(term.substr(dirtermprefixlen),
+               xapian_get_unique_posting(xdb, term));
+    ++ti;
       }
     }
     while (f.scan_dir_.row()) {
@@ -508,7 +520,7 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
     while (ti != te) {
       string term = *ti;
       to_add.emplace(term.substr(dirtermprefixlen),
-		     xapian_get_unique_posting(xdb, term));
+             xapian_get_unique_posting(xdb, term));
       ++ti;
     }
 
@@ -521,12 +533,12 @@ xapian_scan_filenames (sqlite3 *db, const string &maildir,
       struct dirent *e;
       auto notfound = to_add.end();
       while ((e = readdir(d)) && !to_add.empty()) {
-	string name (e->d_name);
-	auto action = to_add.find(name);
-	if (action != notfound) {
-	  f.add_file(dir, dfd, dir_docid, action->first, action->second);
-	  to_add.erase(action);
-	}
+    string name (e->d_name);
+    auto action = to_add.find(name);
+    if (action != notfound) {
+      f.add_file(dir, dfd, dir_docid, action->first, action->second);
+      to_add.erase(action);
+    }
       }
     }
   }
@@ -537,18 +549,18 @@ xapian_adjust_nlinks(sqlite3 *db, writestamp ws)
 {
   sqlstmt_t
     newcount(db, "SELECT hash_id, dir_docid, count(*)"
-	     " FROM xapian_files NATURAL JOIN modified_hashes"
-	     " GROUP BY hash_id, dir_docid ORDER BY hash_id, dir_docid;"),
+         " FROM xapian_files NATURAL JOIN modified_hashes"
+         " GROUP BY hash_id, dir_docid ORDER BY hash_id, dir_docid;"),
     oldcount(db, "SELECT hash_id, dir_docid, link_count, xapian_nlinks.rowid"
-	     " FROM xapian_nlinks NATURAL JOIN modified_hashes"
-	     " ORDER BY hash_id, dir_docid;"),
+         " FROM xapian_nlinks NATURAL JOIN modified_hashes"
+         " ORDER BY hash_id, dir_docid;"),
     updcount(db, "UPDATE xapian_nlinks SET link_count = ? WHERE rowid = ?;"),
     delcount(db, "DELETE FROM xapian_nlinks WHERE rowid = ?;"),
     addcount(db, "INSERT INTO xapian_nlinks (hash_id, dir_docid, link_count)"
-	     " VALUES (?, ?, ?);"),
+         " VALUES (?, ?, ?);"),
     updhash(db, "UPDATE maildir_hashes SET replica = %lld, version = %lld"
-	    " WHERE hash_id = ?;", ws.first, ws.second);
-    
+        " WHERE hash_id = ?;", ws.first, ws.second);
+
   newcount.step();
   oldcount.step();
   while (newcount.row() || oldcount.row()) {
@@ -562,8 +574,8 @@ xapian_adjust_nlinks(sqlite3 *db, writestamp ws)
     if (d == 0) {
       i64 cnt = newcount.integer(2);
       if (cnt != oldcount.integer(2)) {
-	updhash.reset().param(newcount.value(0)).step();
-	updcount.reset().param(cnt, oldcount.value(3)).step();
+    updhash.reset().param(newcount.value(0)).step();
+    updcount.reset().param(cnt, oldcount.value(3)).step();
       }
       oldcount.step();
       newcount.step();
@@ -571,7 +583,7 @@ xapian_adjust_nlinks(sqlite3 *db, writestamp ws)
     else if (d < 0) {
       // file deleted and (hash_id, dir_id) not present newcount
       if (oldcount.integer(2))
-	updhash.reset().param(oldcount.value(0)).step();
+    updhash.reset().param(oldcount.value(0)).step();
       delcount.reset().param(oldcount.value(3)).step();
       oldcount.step();
     }
@@ -579,7 +591,7 @@ xapian_adjust_nlinks(sqlite3 *db, writestamp ws)
       // file added and (hash_id, dir_id) not present in oldcount
       updhash.reset().param(newcount.value(0)).step();
       addcount.reset().param(newcount.value(0), newcount.value(1),
-			     newcount.value(2)).step();
+                 newcount.value(2)).step();
       newcount.step();
     }
   }
@@ -617,10 +629,10 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
   try {
     i64 self = getconfig<i64>(sqldb, "self");
     sqlexec (sqldb, "UPDATE sync_vector"
-	     " SET version = version + 1 WHERE replica = %lld;", self);
+         " SET version = version + 1 WHERE replica = %lld;", self);
     if (sqlite3_changes (sqldb) != 1)
       throw runtime_error ("My replica id (" + to_string (self)
-			   + ") not in sync vector");
+               + ") not in sync vector");
     versvector vv = get_sync_vector (sqldb);
     i64 vers = vv.at(self);
     writestamp ws { self, vers };
@@ -634,4 +646,3 @@ sync_local_data (sqlite3 *sqldb, const string &maildir)
   sqlexec (sqldb, "RELEASE localsync;");
   print_time ("finished synchronizing muchsync database with Xapian");
 }
-
