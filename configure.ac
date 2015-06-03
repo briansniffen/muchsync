@@ -21,7 +21,7 @@ PKG_CHECK_MODULES([libcrypto], [libcrypto])
 AC_PATH_PROG(XAPIAN_CONFIG, xapian-config)
 test -n "$XAPIAN_CONFIG" || AC_MSG_ERROR(Cannot find xapian-config)
 if ! xapian_CPPFLAGS=$($XAPIAN_CONFIG --cxxflags) \
-   || ! xapian_LIBS=$($XAPIAN_CONFIG --ltlibs); then
+   || ! xapian_LIBS=$($XAPIAN_CONFIG --libs); then
    AC_MSG_ERROR(Error running $XAPIAN_CONFIG)
 fi
 AC_SUBST(xapian_CPPFLAGS)
