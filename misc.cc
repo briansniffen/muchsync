@@ -1,7 +1,8 @@
-#include <stdexcept>
+#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
@@ -112,26 +113,21 @@ hash_ctx::final()
   return hexdump ({ reinterpret_cast<const char *> (resbuf), sizeof (resbuf) });
 }
 
-static double
-time_stamp ()
-{
-  timespec ts;
-  clock_gettime (CLOCK_REALTIME, &ts);
-  return ts_to_double (ts);
-}
+using stp = std::chrono::time_point<std::chrono::steady_clock>;
 
-static double start_time_stamp {time_stamp()};
-static double last_time_stamp {start_time_stamp};
+stp start_time_stamp{stp::clock::now()};
+stp last_time_stamp{start_time_stamp};
 
 void
 print_time (string msg)
 {
-  double now = time_stamp();
+  using namespace std::chrono;
+  stp now = stp::clock::now();
   if (opt_verbose > 0) {
     auto oldFlags = cerr.flags();
     cerr.setf (ios::fixed, ios::floatfield);
-    cerr << msg << "... " << now - start_time_stamp
-	 << " (+" << now - last_time_stamp << ")\n";
+    cerr << msg << "... " << duration<double>(now - start_time_stamp).count()
+	 << " (+" << duration<double>(now - last_time_stamp).count() << ")\n";
     cerr.flags (oldFlags);
   }
   last_time_stamp = now;

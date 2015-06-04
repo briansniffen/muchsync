@@ -11,7 +11,6 @@
 #include <vector>
 #include <fcntl.h>
 #include <signal.h>
-#include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -101,9 +100,12 @@ maildir_name()
   static int ndeliveries = 0;
 
   ostringstream os;
-  struct timespec ts;
-  clock_gettime (CLOCK_REALTIME, &ts);
-  os << ts.tv_sec << ".M" << ts.tv_nsec << 'P' << pid
+  using namespace std::chrono;
+  auto now = system_clock::now().time_since_epoch();
+  
+  os << duration_cast<seconds>(now).count()
+     << ".M" << duration_cast<nanoseconds>(now % seconds(1)).count()
+     << 'P' << pid
      << 'Q' << ++ndeliveries
      << 'R' << setfill('0') << hex << setw(2 * sizeof(randint())) << randint()
      << '.' << hostname;
@@ -393,7 +395,7 @@ msg_sync::hash_sync(const versvector &rvv,
 					      tip ? &tip->tags : nullptr,
 					      &isnew));
       i64 dir_id = get_dir_docid(li.first);
-      add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.st_mtim),
+      add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.ST_MTIM),
 			      i64(sb.st_ino), hashdb.hash_id()).step();
       if (isnew) {
 	record_docid_.reset().param(rhi.message_id, docid).step();

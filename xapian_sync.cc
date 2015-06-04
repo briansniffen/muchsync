@@ -405,7 +405,7 @@ fileops::add_file(const string &dir, int dfd, i64 dir_docid,
 
   i64 hash_id = get_file_hash_id(dfd, name, docid);
   add_file_.reset()
-    .param(dir_docid, name, docid, ts_to_double(sb.st_mtim),
+    .param(dir_docid, name, docid, ts_to_double(sb.ST_MTIM),
 	   i64(sb.st_ino), hash_id).step();
 }
 
@@ -424,7 +424,7 @@ fileops::check_file(const string &dir, int dfd, i64 dir_docid)
   if (!S_ISREG(sb.st_mode))
     return;
 
-  double fs_mtim = ts_to_double(sb.st_mtim);
+  double fs_mtim = ts_to_double(sb.ST_MTIM);
   i64 fs_inode = sb.st_ino, fs_size = sb.st_size;
   double db_mtim = scan_dir_.real(3);
   i64 db_inode = scan_dir_.integer(4);

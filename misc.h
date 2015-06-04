@@ -5,7 +5,13 @@
 
 #include <cstddef>
 #include <string>
+#include <time.h>
+#include <sys/time.h>
 #include <openssl/sha.h>
+
+#ifndef ST_MTIM
+#define ST_MTIM 1
+#endif //!ST_MTIM
 
 using std::string;
 

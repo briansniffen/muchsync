@@ -21,11 +21,40 @@ PKG_CHECK_MODULES([libcrypto], [libcrypto])
 AC_PATH_PROG(XAPIAN_CONFIG, xapian-config)
 test -n "$XAPIAN_CONFIG" || AC_MSG_ERROR(Cannot find xapian-config)
 if ! xapian_CPPFLAGS=$($XAPIAN_CONFIG --cxxflags) \
-   || ! xapian_LIBS=$($XAPIAN_CONFIG --ltlibs); then
+   || ! xapian_LIBS=$($XAPIAN_CONFIG --libs); then
    AC_MSG_ERROR(Error running $XAPIAN_CONFIG)
 fi
 AC_SUBST(xapian_CPPFLAGS)
 AC_SUBST(xapian_LIBS)
+
+AC_MSG_CHECKING(For st_mtim in struct stat)
+AC_COMPILE_IFELSE(
+[AC_LANG_PROGRAM([#include <time.h>
+#include <sys/time.h>
+#include <sys/stat.h>],
+[int sz = sizeof(stat::st_mtim);])],
+have_st_mtim=yes, have_st_mtim=no)
+AC_MSG_RESULT($have_st_mtim)
+
+if test yes = "$have_st_mtim"; then
+   ST_MTIM=st_mtim
+else
+   AC_MSG_CHECKING(For st_mtimespec in struct stat)
+   AC_COMPILE_IFELSE(
+   [AC_LANG_PROGRAM([#include <time.h>
+#include <sys/time.h>
+#include <sys/stat.h>],
+   [int sz = sizeof(stat::st_mtimespec);])],
+   have_st_mtimespec=yes, have_st_mtimespec=no)
+   AC_MSG_RESULT($have_st_mtimespec)
+   if test yes = "$have_st_mtimespec"; then
+      ST_MTIM=st_mtimespec
+   else
+	AC_MSG_ERROR(Cannot find nanoseconds mtime in stat struct)
+   fi
+fi
+AC_DEFINE_UNQUOTED(ST_MTIM, $ST_MTIM,
+Name of timespec modification time field in stat structure)
 
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
