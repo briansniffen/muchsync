@@ -114,18 +114,12 @@ sync_table (sqlstmt_t &s, T &t, T &te,
   }
 }
 
-string
+static string
 tag_from_term (const string &term)
 {
-  assert (!strncmp (term.c_str(), notmuch_tag_prefix.c_str(),
-		    notmuch_tag_prefix.length()));
-  return percent_encode (term.substr (notmuch_tag_prefix.length()));
-}
-
-string
-term_from_tag (const string &tag)
-{
-  return notmuch_tag_prefix + percent_decode (tag);
+  assert(!strncmp(term.c_str(), notmuch_tag_prefix.c_str(),
+		  notmuch_tag_prefix.length()));
+  return term.substr(notmuch_tag_prefix.length());
 }
 
 static void
