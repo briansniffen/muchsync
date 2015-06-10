@@ -1,0 +1,11 @@
+* Changes in release 1
+
+Fix a bug where tags containing '%' characters were not properly
+handled.
+
+Portability fixes for Mac OS X, which does not have clock_gettime.
+
+Clarify in man page that muchsync uses a trash directory instead of
+actually deleting files.
+
+Catch exceptions to exit rather than dump core on error.
