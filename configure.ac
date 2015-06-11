@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT(muchsync, 0)
+AC_INIT(muchsync, 1)
 AM_INIT_AUTOMAKE([-Wall])
 AC_CONFIG_SRCDIR([configure.ac])
 AC_CONFIG_MACRO_DIR([m4])
@@ -11,7 +11,8 @@ dnl On arch, clang++ is not compatible with all libraries
 dnl AC_PROG_CXX([clang++ eg++ g++ c++ gpp aCC CC cxx cc++ cl.exe FCC KCC RCC xlC_r xlC])
 AC_PROG_CXX
 AX_CXX_COMPILE_STDCXX_11(noext,mandatory)
-CXXFLAGS="$CXXFLAGS -Wall"
+: ${WFLAGS=-Wall}
+CXXFLAGS="$CXXFLAGS $WFLAGS"
 dnl AC_USE_SYSTEM_EXTENSIONS
 AC_LANG(C++)
 # -pthread Seems to be required by g++ -stc=c++11
@@ -34,7 +35,7 @@ AC_COMPILE_IFELSE(
 [AC_LANG_PROGRAM([#include <time.h>
 #include <sys/time.h>
 #include <sys/stat.h>],
-[int sz = sizeof(stat::st_mtim);])],
+[return sizeof(stat::st_mtim) > 0;])],
 have_st_mtim=yes, have_st_mtim=no)
 AC_MSG_RESULT($have_st_mtim)
 

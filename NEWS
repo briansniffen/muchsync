@@ -1,7 +1,16 @@
 * Changes in release 1
 
+Various compabitility fixes for Debian Wheezy (thanks Simó Albert i
+Beltran).
+
+Allow ./configure WFLAGS="-Wall -Werror" to specify warnings (still
+use -Wall by default).
+
+For git only, make autogen.sh fetch pre-formatted muchsync.1 over http
+when pandoc not available.
+
 Fix a bug where tags containing '%' characters were not properly
-handled.
+handled (thanks Brian Sniffen).
 
 Portability fixes for Mac OS X, which does not have clock_gettime.
 

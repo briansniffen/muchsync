@@ -6,6 +6,7 @@
 #include <cassert>
 #include <string>
 #include <tuple>
+#include <stdexcept>
 #include <sqlite3.h>
 
 using i64 = sqlite3_int64;

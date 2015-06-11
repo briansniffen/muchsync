@@ -104,7 +104,8 @@ tag_stderr(string tag)
   cerr.rdbuf(isb);
 }
 
-[[noreturn]] void
+//[[noreturn]]
+void
 usage (int code = 1)
 {
   (code ? cerr : cout) << "\
