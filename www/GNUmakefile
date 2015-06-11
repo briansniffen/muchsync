@@ -26,4 +26,4 @@ out/muchsync.1: ../muchsync.1.md
 	cp ../muchsync.1 $@
 
 clean:
-	rm -f *~ out
+	rm -rf *~ out
