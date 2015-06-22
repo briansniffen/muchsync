@@ -53,11 +53,11 @@ want to check for new mail:
 
     muchsync SERVER
 
-That command brings bring the client and `SERVER` up to date with any
-tag and message changes, and should generally run efficiently if you
-don't have much mail to download.  If, after using the above command
-to synchronize your desktop with a server, you also want your mail on
-a laptop, you can push the mail from your desktop to the laptop with:
+That command brings the client and `SERVER` up to date with any tag
+and message changes, and should generally run efficiently if you don't
+have much mail to download.  If, after using the above command to
+synchronize your desktop with a server, you also want your mail on a
+laptop, you can push the mail from your desktop to the laptop with:
 
     muchsync LAPTOP
 
@@ -90,8 +90,8 @@ Please [email](http://www.scs.stanford.edu/~dm/addr/) questions,
 comments, testimonials, bug reports, patches, and pull requests to the
 author (preferably with the word "muchsync" in the email subject).
 For pull requests, please spare me the trouble of navigating any web
-sites and include include a raw `git fetch` command that makes
-`FETCH_HEAD` point to whatever it is you would like me to merge.
+sites and include a raw `git fetch` command that makes `FETCH_HEAD`
+point to whatever it is you would like me to merge.
 
 muchsync is brought to you by
 [David Mazi&egrave;res](http://www.scs.stanford.edu/~dm/) of the
