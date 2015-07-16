@@ -1,15 +1,21 @@
 
+# Intro
+
+Muchsync is a mail synchronizer for notmuch.  The project homepage is
+[www.muchsync.org](http://www.muchsync.org/).
+
 # To get latest the muchsync software, run:
 
-    git clone http://www.scs.stanford.edu/~dm/repos/muchsync.git
+    git clone http://www.muchsync.org/muchsync.git
 
 # To build it after a git checkout, run the following:
 
-    autoreconf -i
+    ./autogen.sh
     ./configure
     make
 
-[Note:  you need pandoc to build the man page.]
+[Note:  you need pandoc to build the man page, otherwise `autogen.sh`
+will fetch it from the web.]
 
 # Using
 
