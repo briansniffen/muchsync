@@ -44,10 +44,10 @@ public:
   tag_lookup tagdb;
   msg_sync(notmuch_db &nm, sqlite3 *db);
   bool hash_sync(const versvector &remote_sync_vector,
-		 const hash_info &remote_hash_info,
-		 const string *sourcefile, const tag_info *tip);
+         const hash_info &remote_hash_info,
+         const string *sourcefile, const tag_info *tip);
   bool tag_sync(const versvector &remote_sync_vector,
-		const tag_info &remote_tag_info);
+        const tag_info &remote_tag_info);
   void commit();
 };
 
@@ -102,7 +102,7 @@ maildir_name()
   ostringstream os;
   using namespace std::chrono;
   auto now = system_clock::now().time_since_epoch();
-  
+
   os << duration_cast<seconds>(now).count()
      << ".M" << duration_cast<nanoseconds>(now % seconds(1)).count()
      << 'P' << pid
@@ -131,8 +131,8 @@ static writestamp
 get_mystamp(sqlite3 *db)
 {
   sqlstmt_t s (db, "SELECT replica, version "
-	       "FROM configuration JOIN sync_vector ON (value = replica) "
-	       "WHERE key = 'self';");
+           "FROM configuration JOIN sync_vector ON (value = replica) "
+           "WHERE key = 'self';");
   if (!s.step().row())
     throw runtime_error ("Cannot find myself in sync_vector");
   return { s.integer(0), s.integer(1) };
@@ -141,23 +141,23 @@ get_mystamp(sqlite3 *db)
 msg_sync::msg_sync (notmuch_db &nm, sqlite3 *db)
   : db_(db), nm_ (nm),
     update_hash_stamp_(db_, "UPDATE maildir_hashes "
-		       "SET replica = ?, version = ? WHERE hash_id = ?;"),
+               "SET replica = ?, version = ? WHERE hash_id = ?;"),
     add_file_(db_, "INSERT INTO xapian_files"
-	      " (dir_docid, name, docid, mtime, inode, hash_id)"
-	      " VALUES (?, ?, ?, ?, ?, ?);"),
+          " (dir_docid, name, docid, mtime, inode, hash_id)"
+          " VALUES (?, ?, ?, ?, ?, ?);"),
     del_file_(db, "DELETE FROM xapian_files"
-	      " WHERE (dir_docid = ?) & (name = ?);"),
+          " WHERE (dir_docid = ?) & (name = ?);"),
     set_link_count_(db_, "INSERT OR REPLACE INTO xapian_nlinks"
-		    " (hash_id, dir_docid, link_count) VALUES (?, ?, ?);"),
+            " (hash_id, dir_docid, link_count) VALUES (?, ?, ?);"),
     delete_link_count_(db_, "DELETE FROM xapian_nlinks"
-		       " WHERE (hash_id = ?) & (dir_docid = ?);"),
+               " WHERE (hash_id = ?) & (dir_docid = ?);"),
     clear_tags_(db_, "DELETE FROM tags WHERE docid = ?;"),
     add_tag_(db_, "INSERT OR IGNORE INTO tags (docid, tag) VALUES (?, ?);"),
     update_message_id_stamp_(db_, "UPDATE message_ids SET"
-			     " replica = ?, version = ? WHERE docid = ?;"),
+                 " replica = ?, version = ? WHERE docid = ?;"),
     record_docid_(db_, "INSERT OR IGNORE INTO message_ids"
-		  " (message_id, docid, replica, version)"
-		  " VALUES (?, ?, 0, 0);"),
+          " (message_id, docid, replica, version)"
+          " VALUES (?, ?, 0, 0);"),
     mystamp_(get_mystamp(db_)),
     hashdb (nm_.maildir, db_),
     tagdb (db_)
@@ -178,8 +178,8 @@ sanity_check_path (const string &path)
   if (path.size() < 3)
     return true;
   return (path.substr(0, 3) != "../"
-	  && path.substr(path.size()-3) != "/.."
-	  && path.find("/../") == string::npos);
+      && path.substr(path.size()-3) != "/.."
+      && path.find("/../") == string::npos);
 }
 
 inline bool
@@ -202,12 +202,12 @@ recursive_mkdir(string path)
       path[n] = '\0';
     if (!is_dir (path)) {
       if (mkdir (path.c_str(), 0777)) {
-	cerr << "creating directory " << path
-	     << " failed (" << strerror(errno) << ")\n";
-	return false;
+    cerr << "creating directory " << path
+         << " failed (" << strerror(errno) << ")\n";
+    return false;
       }
       if (opt_verbose > 0)
-	cerr << "created directory " << path.c_str() << '\n';
+    cerr << "created directory " << path.c_str() << '\n';
     }
     if (n == string::npos)
       return true;
@@ -261,17 +261,17 @@ msg_sync::get_dir_docid(const string &dir)
 
   i64 dir_docid = nm_.get_dir_docid(dir.c_str());
   sqlexec (db_, "INSERT OR REPLACE INTO xapian_dirs"
-	   " (dir_path, dir_docid, dir_mtime) VALUES (%Q, %lld, -1);",
-	   dir.c_str(), i64(dir_docid));
+       " (dir_path, dir_docid, dir_mtime) VALUES (%Q, %lld, -1);",
+       dir.c_str(), i64(dir_docid));
   dir_ids_.emplace(dir, dir_docid);
   return dir_docid;
 }
 
 static void
 resolve_one_link_conflict(const unordered_map<string,i64> &a,
-			  const unordered_map<string,i64> &b,
-			  const string &name,
-			  unordered_map<string,i64> &out)
+              const unordered_map<string,i64> &b,
+              const string &name,
+              unordered_map<string,i64> &out)
 {
   if (out.find(name) != out.end())
     return;
@@ -290,8 +290,8 @@ resolve_one_link_conflict(const unordered_map<string,i64> &a,
   string newpath = base + "new", curpath = base + "cur";
   i64 curval = max(find_default(0, a, curpath), find_default(0, b, curpath));
   i64 newval = (max(find_default(0, a, curpath) + find_default(0, a, newpath),
-		    find_default(0, b, curpath) + find_default(0, b, newpath))
-		- curval);
+            find_default(0, b, curpath) + find_default(0, b, newpath))
+        - curval);
   if (curval)
     out[curpath] = curval;
   if (newval)
@@ -300,7 +300,7 @@ resolve_one_link_conflict(const unordered_map<string,i64> &a,
 
 static unordered_map<string,i64>
 resolve_link_conflicts(const unordered_map<string,i64> &a,
-		       const unordered_map<string,i64> &b)
+               const unordered_map<string,i64> &b)
 {
   unordered_map<string,i64> ret;
   for (auto ia : a)
@@ -312,9 +312,9 @@ resolve_link_conflicts(const unordered_map<string,i64> &a,
 
 bool
 msg_sync::hash_sync(const versvector &rvv,
-		    const hash_info &rhi,
-		    const string *sourcep,
-		    const tag_info *tip)
+            const hash_info &rhi,
+            const string *sourcep,
+            const tag_info *tip)
 {
   hash_info lhi;
   i64 docid = -1;
@@ -373,51 +373,46 @@ msg_sync::hash_sync(const versvector &rvv,
   for (auto li : needlinks)
     for (; li.second > 0; --li.second) {
       if (!sanity_check_path(li.first))
-	break;
+    break;
       string newname;
       string target =
-	new_maildir_path(hashdb.maildir + "/" + li.first, &newname);
+    new_maildir_path(hashdb.maildir + "/" + li.first, &newname);
       if (link(source.c_str(), target.c_str())
-	  && (errno != ENOENT
-	      || !maildir_mkdir(hashdb.maildir + "/" + li.first)
-	      || link(source.c_str(), target.c_str())))
-	  throw runtime_error (string("link (\"") + source + "\", \""
-			       + target + "\"): " + strerror(errno));
+      && (errno != ENOENT
+          || !maildir_mkdir(hashdb.maildir + "/" + li.first)
+          || link(source.c_str(), target.c_str())))
+      throw runtime_error (string("link (\"") + source + "\", \""
+                   + target + "\"): " + strerror(errno));
 
       cleanup end_atomic;
       if (tip) {
-	nm_.begin_atomic();
-	end_atomic.reset(mem_fn(&notmuch_db::end_atomic), ref(nm_));
+    nm_.begin_atomic();
+    end_atomic.reset(mem_fn(&notmuch_db::end_atomic), ref(nm_));
       }
       bool isnew;
       docid =
-	notmuch_db::get_docid(nm_.add_message(target,
-					      tip ? &tip->tags : nullptr,
-					      &isnew));
+    notmuch_db::get_docid(nm_.add_message(target,
+                          tip ? &tip->tags : nullptr,
+                          &isnew));
       i64 dir_id = get_dir_docid(li.first);
       add_file_.reset().param(dir_id, newname, docid, ts_to_double(sb.ST_MTIM),
-			      i64(sb.st_ino), hashdb.hash_id()).step();
+                  i64(sb.st_ino), hashdb.hash_id()).step();
       if (isnew) {
-	record_docid_.reset().param(rhi.message_id, docid).step();
-	// tip might be NULL here when undeleting a file
-	if (tip) {
-	  update_message_id_stamp_.reset()
-	    .param(tip->tag_stamp.first, tip->tag_stamp.second, docid).step();
-	  add_tag_.reset().bind_int(1, docid);
-	  for (auto t : tip->tags)
-	    add_tag_.reset().bind_text(2, t).step();
-	}
-	else {
-	  // The empty tag is always invalid, so if worse comes to
-	  // worst and we crash at the wrong time, the next scan will
-	  // end up bumping the version number on this message ID.
-	  add_tag_.reset().param(docid, "").step();
-#if 0
-	  add_tag_.reset().bind_int(1, docid);
-	  for (auto t : nm_.new_tags)
-	    add_tag_.reset().bind_text(2, t).step();
-#endif
-	}
+    record_docid_.reset().param(rhi.message_id, docid).step();
+    // tip might be NULL here when undeleting a file
+    if (tip) {
+      update_message_id_stamp_.reset()
+        .param(tip->tag_stamp.first, tip->tag_stamp.second, docid).step();
+      add_tag_.reset().bind_int(1, docid);
+      for (auto t : tip->tags)
+        add_tag_.reset().bind_text(2, t).step();
+    }
+    else {
+      // The empty tag is always invalid, so if worse comes to
+      // worst and we crash at the wrong time, the next scan will
+      // end up bumping the version number on this message ID.
+      add_tag_.reset().param(docid, "").step();
+    }
       }
     }
   /* remove extra links */
@@ -425,34 +420,34 @@ msg_sync::hash_sync(const versvector &rvv,
     for (int i = 0, e = hashdb.nlinks(); i < e; i++) {
       i64 &n = needlinks[hashdb.links().at(i).first];
       if (n < 0) {
-	string path = hashdb.link_path(i);
-	bool err;
-	if (deleting) {
-	  string dest = trashname(hashdb.maildir, rhi.hash);
-	  err = rename (path.c_str(), dest.c_str());
-	  if (err)
-	    cerr << "rename " << path << ' '
-		 << trashname(hashdb.maildir, rhi.hash)
-		 << ": " << strerror (errno) << '\n';
-	  /* You can't rename a file onto itself, so if the trash
-	   * already contains a hard link to the same inode, we need
-	   * to delete the original. */
-	  else
-	    unlink (path.c_str());
-	}
-	else {
-	  err = unlink (path.c_str());
-	  if (err)
-	    cerr << "unlink " << path << ' '
-		 << ": " << strerror (errno) << '\n';
-	}
-	if (!err) {
-	  ++n;
-	  auto df = hashdb.links()[i];
-	  i64 dir_docid = get_dir_docid(df.first);
-	  del_file_.reset().param(dir_docid, df.second).step();
-	  nm_.remove_message(path);
-	}
+    string path = hashdb.link_path(i);
+    bool err;
+    if (deleting) {
+      string dest = trashname(hashdb.maildir, rhi.hash);
+      err = rename (path.c_str(), dest.c_str());
+      if (err)
+        cerr << "rename " << path << ' '
+         << trashname(hashdb.maildir, rhi.hash)
+         << ": " << strerror (errno) << '\n';
+      /* You can't rename a file onto itself, so if the trash
+       * already contains a hard link to the same inode, we need
+       * to delete the original. */
+      else
+        unlink (path.c_str());
+    }
+    else {
+      err = unlink (path.c_str());
+      if (err)
+        cerr << "unlink " << path << ' '
+         << ": " << strerror (errno) << '\n';
+    }
+    if (!err) {
+      ++n;
+      auto df = hashdb.links()[i];
+      i64 dir_docid = get_dir_docid(df.first);
+      del_file_.reset().param(dir_docid, df.second).step();
+      nm_.remove_message(path);
+    }
       }
     }
 
@@ -462,10 +457,10 @@ msg_sync::hash_sync(const versvector &rvv,
       i64 dir_docid = get_dir_docid(li.first);
       i64 newcount = find_default(0, lhi.dirs, li.first) + li.second;
       if (newcount > 0)
-	set_link_count_.reset()
-	  .param(hashdb.hash_id(), dir_docid, newcount).step();
+    set_link_count_.reset()
+      .param(hashdb.hash_id(), dir_docid, newcount).step();
       else
-	delete_link_count_.reset().param(hashdb.hash_id(), dir_docid).step();
+    delete_link_count_.reset().param(hashdb.hash_id(), dir_docid).step();
     }
 
   if (clean_trash)
@@ -500,8 +495,12 @@ msg_sync::tag_sync(const versvector &rvv, const tag_info &rti)
     // But logically AND new_tags
     for (auto i : nm_.new_tags)
       if (rti.tags.find(i) == rti.tags.end()
-	  || lti.tags.find(i) == lti.tags.end())
-	newtags.erase(i);
+      ||  lti.tags.find(i) == lti.tags.end())
+        newtags.erase(i);
+    for (auto i : nm_.and_tags)
+      if (rti.tags.find(i) == rti.tags.end()
+      ||  lti.tags.find(i) == lti.tags.end())
+        newtags.erase(i);
   }
 
   nm_.set_tags(msg, newtags);
@@ -540,7 +539,7 @@ receive_message (istream &in, const hash_info &hi, const string &maildir)
     tmp.write(buf, n);
     if (!tmp.good())
       throw runtime_error (string("error writing mail file: ")
-			   + strerror(errno));
+               + strerror(errno));
     size -= n;
   }
   tmp.close();
@@ -564,7 +563,7 @@ INSERT OR REPLACE INTO peer_vector
   SELECT DISTINCT replica, 0 FROM maildir_hashes;
 )");
   sqlstmt_t pvadd (sqldb, "INSERT OR REPLACE INTO"
-		   " peer_vector (replica, known_version) VALUES (?, ?);");
+           " peer_vector (replica, known_version) VALUES (?, ?);");
   for (writestamp ws : vv)
     pvadd.param(ws.first, ws.second).step().reset();
 }
@@ -595,7 +594,7 @@ SELECT h.hash_id, hash, size, message_id, h.replica, h.version,
 FROM (peer_vector p JOIN maildir_hashes h
       ON ((p.replica = h.replica) & (p.known_version < h.version)))
 LEFT OUTER JOIN xapian_nlinks USING (hash_id);)");
-  
+
   i64 count = 0;
   hash_info hi;
   changed.step();
@@ -612,7 +611,7 @@ LEFT OUTER JOIN xapian_nlinks USING (hash_id);)");
     else {
       hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
       while (changed.step().row() && changed.integer(0) == hash_id)
-	hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
+    hi.dirs.emplace(dirs[changed.integer(6)], changed.integer(7));
     }
     out << prefix << hi << '\n';
     if (opt_verbose > 3)
@@ -645,7 +644,7 @@ FROM (peer_vector p JOIN message_ids m
     else {
       ti.tags.insert (changed.str(4));
       while (changed.step().row() && changed.integer(0) == docid)
-	ti.tags.insert (changed.str(4));
+    ti.tags.insert (changed.str(4));
     }
     out << prefix << ti << '\n';
     if (opt_verbose > 3)
@@ -657,13 +656,13 @@ FROM (peer_vector p JOIN message_ids m
 
 static bool
 send_content(hash_lookup &hashdb, tag_lookup &tagdb, const string &hash,
-	     const string &prefix, ostream &out)
+         const string &prefix, ostream &out)
 {
   streambuf *sb;
   if (hashdb.lookup(hash) && (sb = hashdb.content())
       && tagdb.lookup(hashdb.info().message_id)) {
     out << prefix << hashdb.info()
-	<< ' ' << tagdb.info() << '\n' << sb;
+    << ' ' << tagdb.info() << '\n' << sb;
     return true;
   }
   return false;
@@ -704,137 +703,137 @@ muchsync_server(sqlite3 *db, notmuch_db &nm)
       ifstream is (opt_notmuch_config);
       ostringstream os;
       if (is.is_open() && (os << is.rdbuf())) {
-	string conf (os.str());
-	cout << "221-" << conf.length() << '\n'
-	     << conf << "221 ok\n";
+    string conf (os.str());
+    cout << "221-" << conf.length() << '\n'
+         << conf << "221 ok\n";
       }
       else
-	cout << "410 cannot find configuration\n";
+    cout << "410 cannot find configuration\n";
     }
     else if (cmd.substr(1) == "info") {
       string key;
       cmdstream >> key;
       switch (cmd[0]) {
-      case 'l':			// linfo command
-	if (hashdb.lookup(key))
-	  cout << "210 " << hashdb.info() << '\n';
-	else
-	  cout << "510 unknown hash\n";
-	break;
-      case 't':			// tinfo command
-	if (tagdb.lookup(percent_decode(key)))
-	  cout << "210 " << tagdb.info() << '\n';
-	else
-	  cout << "510 unkown message id\n";
-	break;
+      case 'l':         // linfo command
+    if (hashdb.lookup(key))
+      cout << "210 " << hashdb.info() << '\n';
+    else
+      cout << "510 unknown hash\n";
+    break;
+      case 't':         // tinfo command
+    if (tagdb.lookup(percent_decode(key)))
+      cout << "210 " << tagdb.info() << '\n';
+    else
+      cout << "510 unkown message id\n";
+    break;
       default:
-	cout << "500 unknown verb " << cmd << '\n';
-	break;
+    cout << "500 unknown verb " << cmd << '\n';
+    break;
       }
     }
     else if (cmd == "send") {
       string hash;
       cmdstream >> hash;
       if (send_content(hashdb, tagdb, hash, "220-", cout))
-	cout << "220 " << hash << '\n';
+    cout << "220 " << hash << '\n';
       else if (hashdb.ok())
-	cout << "420 cannot open file\n";
+    cout << "420 cannot open file\n";
       else
-	cout << "520 unknown hash\n";
+    cout << "520 unknown hash\n";
     }
     else if (cmd == "vect") {
       if (!read_sync_vector(cmdstream, remotevv)) {
-	cout << "500 could not parse vector\n";
-	remotevv_valid = false;
+    cout << "500 could not parse vector\n";
+    remotevv_valid = false;
       }
       else {
-	set_peer_vector(db, remotevv);
-	remotevv_valid = true;
-	cout << "200 " << show_sync_vector (get_sync_vector (db)) << '\n';
+    set_peer_vector(db, remotevv);
+    remotevv_valid = true;
+    cout << "200 " << show_sync_vector (get_sync_vector (db)) << '\n';
       }
     }
     else if (cmd == "link") {
       xbegin();
       hash_info hi;
       if (!remotevv_valid)
-	cout << "500 must follow vect command\n";
+    cout << "500 must follow vect command\n";
       else if (!(cmdstream >> hi))
-	cout << "500 could not parse hash_info\n";
+    cout << "500 could not parse hash_info\n";
       else if (msync.hash_sync(remotevv, hi, nullptr, nullptr)) {
-	if (opt_verbose > 3)
-	  cerr << "received-links " << hi << '\n';
-	cout << "220 " << hi.hash << " ok\n";
+    if (opt_verbose > 3)
+      cerr << "received-links " << hi << '\n';
+    cout << "220 " << hi.hash << " ok\n";
       }
       else
-	cout << "520 " << hi.hash << " missing content\n";
+    cout << "520 " << hi.hash << " missing content\n";
     }
     else if (cmd == "recv") {
       xbegin();
       hash_info hi;
       tag_info ti;
       if (!remotevv_valid)
-	cout << "500 must follow vect command\n";
+    cout << "500 must follow vect command\n";
       else if (!(cmdstream >> hi >> ti))
-	cout << "500 could not parse hash_info or tag_info\n";
+    cout << "500 could not parse hash_info or tag_info\n";
       else {
-	string path;
-	try {
-	  path = receive_message(cin, hi, nm.maildir);
-	  if (!msync.hash_sync(remotevv, hi, &path, &ti))
-	    cout << "550 failed to synchronize message\n";
-	  else {
-	    if (opt_verbose > 3)
-	      cerr << "received-file " << hi << '\n';
-	    cout << "250 ok\n";
-	  }
-	}
-	catch (exception e) {
-	  cerr << e.what() << '\n';
-	  cout << "550 " << e.what() << '\n';
-	}
-	unlink(path.c_str());
+    string path;
+    try {
+      path = receive_message(cin, hi, nm.maildir);
+      if (!msync.hash_sync(remotevv, hi, &path, &ti))
+        cout << "550 failed to synchronize message\n";
+      else {
+        if (opt_verbose > 3)
+          cerr << "received-file " << hi << '\n';
+        cout << "250 ok\n";
+      }
+    }
+    catch (exception e) {
+      cerr << e.what() << '\n';
+      cout << "550 " << e.what() << '\n';
+    }
+    unlink(path.c_str());
       }
     }
     else if (cmd == "tags") {
       xbegin();
       tag_info ti;
       if (!remotevv_valid)
-	cout << "500 must follow vect command\n";
+    cout << "500 must follow vect command\n";
       else if (!(cmdstream >> ti))
-	cout << "500 could not parse hash_info\n";
+    cout << "500 could not parse hash_info\n";
       else if (msync.tag_sync(remotevv, ti)) {
-	if (opt_verbose > 3)
-	  cerr << "received-tags " << ti << '\n';
-	cout << "220 ok\n";
+    if (opt_verbose > 3)
+      cerr << "received-tags " << ti << '\n';
+    cout << "220 ok\n";
       }
       else
-	cout << "520 unknown message-id\n";
+    cout << "520 unknown message-id\n";
     }
     else if (cmd.substr(1) == "sync") {
       if (!remotevv_valid)
-	cout << "500 must follow vect command\n";
+    cout << "500 must follow vect command\n";
       else
-	switch (cmd[0]) {
-	case 'l':			// lsync command
-	  send_links (db, "210-", cout);
-	  cout << "210 ok\n";
-	  break;
-	case 't':			// tsync command
-	  send_tags (db, "210-", cout);
-	  cout << "210 ok\n";
-	  break;
-	default:
-	  cout << "500 unknown verb " << cmd << '\n';
-	  break;
-	}
+    switch (cmd[0]) {
+    case 'l':           // lsync command
+      send_links (db, "210-", cout);
+      cout << "210 ok\n";
+      break;
+    case 't':           // tsync command
+      send_tags (db, "210-", cout);
+      cout << "210 ok\n";
+      break;
+    default:
+      cout << "500 unknown verb " << cmd << '\n';
+      break;
+    }
     }
     else if (cmd == "commit") {
       if (!remotevv_valid)
-	cout << "500 must follow vect command\n";
+    cout << "500 must follow vect command\n";
       record_peer_vector(db);
       if (transaction) {
-	transaction = false;
-	sqlexec(db, "COMMIT;");
+    transaction = false;
+    sqlexec(db, "COMMIT;");
       }
       cout << "200 ok\n";
       remotevv_valid = false;
@@ -862,7 +861,7 @@ get_response (istream &in, string &line, bool err_ok)
 
 void
 muchsync_client (sqlite3 *db, notmuch_db &nm,
-		 istream &in, ostream &out)
+         istream &in, ostream &out)
 {
   constexpr time_t commit_interval = 10;
   /* Any work done here gets overlapped with server */
@@ -912,9 +911,9 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
     bool ok = msync.hash_sync (remotevv, hi, nullptr, nullptr);
     if (opt_verbose > 2) {
       if (ok)
-	cerr << hi << '\n';
+    cerr << hi << '\n';
       else
-	cerr << hi.hash << " UNKNOWN\n";
+    cerr << hi.hash << " UNKNOWN\n";
     }
     if (!ok) {
       out << "send " << hi.hash << '\n';
@@ -927,7 +926,7 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
   out << "tsync\n";
   int extra_tags = 0;
   for (sqlstmt_t nolinks (db, "SELECT message_id FROM message_ids"
-			  " WHERE replica = 0 AND version = 0;");
+              " WHERE replica = 0 AND version = 0;");
        nolinks.step().row();) {
     extra_tags++;
     out << "tinfo " << permissive_percent_encode(nolinks.str(0)) << '\n';
@@ -946,7 +945,7 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
     cleanup _unlink (unlink, path.c_str());
     getline (in, line);
     if (line.size() < 4 || line.at(0) != '2' || line.at(3) != ' '
-	|| line.substr(4) != hi.hash)
+    || line.substr(4) != hi.hash)
       throw runtime_error ("lost sync while receiving message: " + line);
     if (!msync.hash_sync (remotevv, hi, &path, &ti))
       throw runtime_error ("msg_sync::sync failed even with source");
@@ -989,8 +988,8 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
 
   if (opt_verbose || opt_noup || opt_upbg)
     cerr << "received " << down_body << " messages, "
-	 << down_links << " link changes, "
-	 << down_tags << " tag changes\n";
+     << down_links << " link changes, "
+     << down_tags << " tag changes\n";
   catch_interrupts(SIGINT, false);
   catch_interrupts(SIGTERM, false);
 
@@ -1011,8 +1010,8 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
       string hash;
       is >> hash;
       if (send_content(msync.hashdb, msync.tagdb, hash, "recv ", out)) {
-	pending++;
-	up_body++;
+    pending++;
+    up_body++;
       }
     }
     else
@@ -1026,8 +1025,8 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
 
   if (opt_verbose)
     cerr << "sent " << up_body << " messages, "
-	 << up_links << " link changes, "
-	 << up_tags << " tag changes\n";
+     << up_links << " link changes, "
+     << up_tags << " tag changes\n";
 
   while (pending-- > 0)
     get_response(in, line);
@@ -1037,11 +1036,11 @@ muchsync_client (sqlite3 *db, notmuch_db &nm,
   if (!opt_upbg || opt_verbose) {
     int w = 5;
     cerr << "SUMMARY:\n"
-	 << "  received " << setw(w) << down_body << " messages, "
-	 << setw(w) << down_links << " link changes, "
-	 << setw(w) << down_tags << " tag changes\n";
+     << "  received " << setw(w) << down_body << " messages, "
+     << setw(w) << down_links << " link changes, "
+     << setw(w) << down_tags << " tag changes\n";
     cerr << "      sent " << setw(w) << up_body << " messages, "
-	 << setw(w) << up_links << " link changes, "
-	 << setw(w) << up_tags << " tag changes\n";
+     << setw(w) << up_links << " link changes, "
+     << setw(w) << up_tags << " tag changes\n";
   }
 }

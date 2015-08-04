@@ -36,6 +36,7 @@ public:
   const string notmuch_config;
   const string maildir;
   const tags_t new_tags;
+  const tags_t and_tags;
   const bool sync_flags;
 
   static string default_notmuch_config();
@@ -63,8 +64,9 @@ public:
   }
   message_t get_message(const char *msgid);
   message_t add_message(const string &path,
-			const tags_t *new_tags = nullptr, 
-			bool *was_new = nullptr);
+            const tags_t *new_tags = nullptr,
+            const tags_t *and_tags = nullptr,
+            bool *was_new = nullptr);
   void remove_message(const string &path);
   void set_tags(notmuch_message_t *msg, const tags_t &tags);
   Xapian::docid get_dir_docid(const char *path);

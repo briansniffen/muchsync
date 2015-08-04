@@ -48,13 +48,13 @@ notmuch_db::get_message(const char *msgid)
 {
   notmuch_message_t *message;
   nmtry("notmuch_database_find_message",
-	notmuch_database_find_message (notmuch(), msgid, &message));
+    notmuch_database_find_message (notmuch(), msgid, &message));
   return message_t (message);
 }
 
 notmuch_db::message_t
 notmuch_db::add_message(const string &path, const tags_t *newtags,
-			bool *was_new)
+                        const tags_t *andtags, bool *was_new)
 {
   notmuch_status_t err;
   notmuch_message_t *message;
@@ -62,6 +62,7 @@ notmuch_db::add_message(const string &path, const tags_t *newtags,
   if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID) {
     nmtry("notmuch_database_add_message", err);
     set_tags(message, newtags ? *newtags : new_tags);
+    set_tags(message, andtags ? *andtags : and_tags);
   }
   if (was_new)
     *was_new = err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID;
@@ -83,12 +84,12 @@ notmuch_db::set_tags(notmuch_message_t *msg, const tags_t &tags)
   // Deliberately don't unthaw message if we throw exception
   nmtry("notmuch_message_freeze", notmuch_message_freeze(msg));
   nmtry("notmuch_message_remove_all_tags",
-	notmuch_message_remove_all_tags(msg));
+    notmuch_message_remove_all_tags(msg));
   for (auto tag : tags)
     nmtry("notmuch_message_add_tag", notmuch_message_add_tag(msg, tag.c_str()));
   if (sync_flags)
     nmtry("notmuch_message_maildir_flags_to_tags",
-	  notmuch_message_tags_to_maildir_flags(msg));
+      notmuch_message_tags_to_maildir_flags(msg));
   nmtry("notmuch_message_thaw", notmuch_message_thaw(msg));
 }
 
@@ -129,6 +130,7 @@ notmuch_db::notmuch_db(string config, bool create)
   : notmuch_config (config),
     maildir (chomp(get_config("database.path"))),
     new_tags (lines(get_config("new.tags"))),
+    and_tags (lines(get_config("muchsync.and_tags"))),
     sync_flags (conf_to_bool(get_config("maildir.synchronize_flags")))
 {
   if (maildir.empty())
@@ -143,7 +145,7 @@ notmuch_db::notmuch_db(string config, bool create)
       throw runtime_error(nmdir + ": cannot access directory");
     mkdir(maildir.c_str(), 0777);
     nmtry("notmuch_database_create",
-	  notmuch_database_create(maildir.c_str(), &notmuch_));
+      notmuch_database_create(maildir.c_str(), &notmuch_));
   }
 }
 
@@ -174,7 +176,7 @@ notmuch_db::run_notmuch(const char *const *av, const char *errprefix)
     if (fds[1] != 1) {
       dup2(fds[1], 1);
       if (errprefix && fds[1] != 2)
-	::close(fds[1]);
+    ::close(fds[1]);
     }
     setenv("NOTMUCH_CONFIG", notmuch_config.c_str(), 1);
     execvp("notmuch", const_cast<char *const*> (av));
@@ -207,7 +209,7 @@ notmuch_db::get_dir_docid(const char *path)
 {
   unique_obj<notmuch_directory_t, notmuch_directory_destroy> dir;
   nmtry("notmuch_database_get_directory",
-	notmuch_database_get_directory(notmuch(), path, &dir.get()));
+    notmuch_database_get_directory(notmuch(), path, &dir.get()));
   if (!dir)
     throw range_error (path + string (": directory not found in notmuch"));
 
@@ -225,11 +227,11 @@ notmuch_db::notmuch ()
   if (!notmuch_) {
     notmuch_status_t err =
       notmuch_database_open (maildir.c_str(),
-			     NOTMUCH_DATABASE_MODE_READ_WRITE,
-			     &notmuch_);
+                 NOTMUCH_DATABASE_MODE_READ_WRITE,
+                 &notmuch_);
     if (err)
       throw runtime_error (maildir + ": "
-			   + notmuch_status_to_string(err));
+               + notmuch_status_to_string(err));
   }
   return notmuch_;
 }
