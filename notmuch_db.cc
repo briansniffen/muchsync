@@ -54,7 +54,7 @@ notmuch_db::get_message(const char *msgid)
 
 notmuch_db::message_t
 notmuch_db::add_message(const string &path, const tags_t *newtags,
-                        const tags_t *andtags, bool *was_new)
+                        bool *was_new)
 {
   notmuch_status_t err;
   notmuch_message_t *message;
@@ -62,7 +62,6 @@ notmuch_db::add_message(const string &path, const tags_t *newtags,
   if (err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID) {
     nmtry("notmuch_database_add_message", err);
     set_tags(message, newtags ? *newtags : new_tags);
-    set_tags(message, andtags ? *andtags : and_tags);
   }
   if (was_new)
     *was_new = err != NOTMUCH_STATUS_DUPLICATE_MESSAGE_ID;

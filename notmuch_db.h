@@ -65,7 +65,6 @@ public:
   message_t get_message(const char *msgid);
   message_t add_message(const string &path,
             const tags_t *new_tags = nullptr,
-            const tags_t *and_tags = nullptr,
             bool *was_new = nullptr);
   void remove_message(const string &path);
   void set_tags(notmuch_message_t *msg, const tags_t &tags);
